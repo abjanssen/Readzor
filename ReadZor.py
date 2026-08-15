@@ -2,8 +2,7 @@
     # 5* in worker determination still neded on slurm now that stream is continuous?
     # check barcodes
     # logging
-    #make a full auto help to show settings. print when combination of flags --full-auto/-GO and --help
-    # change minimum length to off, now its 1/3rd
+    # if --gzip-output; compress and write chunks on workers. Later; concatenate chunks. n chunks = n workers, maybe 3x for paired files.
     
 #!/usr/bin/env python3
 
@@ -26,7 +25,7 @@ import time
 import numpy as np
 
 ##### Definition of constant values #####
-VERSION = "0.0.2"
+VERSION = "0.0.3"
 STRICT_NUCLEOTIDE_REGEX = re.compile(r'^[ATCG]+$')
 LENIENT_NUCLEOTIDE_REGEX = re.compile(r'^[ATCGN]+$')
 PHRED_REGEX = re.compile(r'^[!-~]+$')
@@ -42,6 +41,14 @@ DEFAULT_ADAPTERS = [
     ("Illumina_RNA","ACTGTCTCTTATACACATCT"),
     ("TruSeq_small_RNA","TGGAATTCTCGGGTGCCAAGG")
 ]
+FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "full_auto"}
+FULL_AUTO_OVERRIDES = {
+    "endqual_filter_flag": True,
+    "adapter_trim_flag": True,
+    "nucl_filter": True,
+    "progress": True,
+    "min_length": 100,
+}
 
 ##### Progress tracker #####
 def estimate_bytes_per_read(filepath):
@@ -207,7 +214,7 @@ class ProgressTracker:
 
         stats = (
             f" 100% ({self.done:,} reads analyzed). "
-            f"Avg rate: {rate:,.0f} reads/s. Total time: {time_str}."
+            f"Average rate: {rate:,.0f} reads/s. Total time: {time_str}."
         )
 
         max_bar_len = term_width - len(stats) - 3
@@ -291,8 +298,8 @@ def worker_determination(threads):
     local) and whether the user provided an explicit thread request:
     
     - **On a Slurm-managed cluster** (SLURM_CPUS_PER_TASK detected):
-        - If `threads` is an int: returns `threads * 5`.
-        - Otherwise: returns `SLURM_CPUS_PER_TASK * 5`.
+        - If `threads` is an int: returns `threads * 10`.
+        - Otherwise: returns `SLURM_CPUS_PER_TASK * 10`.
     - **On a local/non-Slurm system**:
         - If `threads` is an int: returns `threads` as-is.
         - Otherwise: returns `(available CPUs - 1)`, minimum of 1.
@@ -307,7 +314,7 @@ def worker_determination(threads):
         int: The number of worker processes to spawn, always >= 1.
     
     Notes:
-        - On Slurm systems, the 5x multiplier allows for efficient handling of
+        - On Slurm systems, the 10x multiplier allows for efficient handling of
           I/O-bound operations alongside CPU-bound work.
         - Boolean values are explicitly excluded from int detection to prevent
           True/False being treated as 1/0.
@@ -317,10 +324,10 @@ def worker_determination(threads):
     threads_is_int = isinstance(threads, int) and not isinstance(threads, bool)
     if slurm_cpus is not None:
         if threads_is_int:
-            return max(1, threads * 5)
+            return max(1, threads * 10)
         else:
             try:
-                return max(1, int(slurm_cpus) * 5)
+                return max(1, int(slurm_cpus) * 10)
             except ValueError:
                 available_cpu = os.cpu_count() or 1
                 return max(1, available_cpu - 1)
@@ -836,22 +843,22 @@ def open_fastq_writer(filepath, output_dir, gzip_output):
     return open(out_filepath, "xb")
 
 ##### Processing reads functions #####
-def trim_ends_quality(quality_arr, min_quality_both, min_quality_start, min_quality_end, endsquality_filter_flag):
+def trim_ends_quality(quality_arr, min_quality_both, endqual_min_start, endqual_min_end, endqual_filter_flag):
     """
     Determines per-read trim boundaries based on quality thresholds at each end.
 
-    For each read, finds the position meeting `min_quality_start` at the start,
-    and the position meeting `min_quality_end` at the end. Vectorized
+    For each read, finds the position meeting `endqual_min_start` at the start,
+    and the position meeting `endqual_min_end` at the end. Vectorized
     across all reads in a chunk. Reads with no position meeting the threshold
-    are assigned zero-length cutoffs. If `endsquality_filter_flag` is False,
+    are assigned zero-length cutoffs. If `endqual_filter_flag` is False,
     returns full-length arrays without trimming.
 
     Args:
         quality_arr (numpy.ndarray): (n_reads, read_length) array of per-base quality scores.
         min_quality_both (int | None): Minimum quality fallback to keep bases from both ends.
-        min_quality_start (int | None): Minimum quality to keep bases from the start of the read.
-        min_quality_end (int | None): Minimum quality to keep bases from the end of the read.
-        endsquality_filter_flag (bool): Flag to enable or disable end quality trimming.
+        endqual_min_start (int | None): Minimum quality to keep bases from the start of the read.
+        endqual_min_end (int | None): Minimum quality to keep bases from the end of the read.
+        endqual_filter_flag (bool): Flag to enable or disable end quality trimming.
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: A tuple of `(start_cutoffs, end_cutoffs)` 
@@ -859,22 +866,22 @@ def trim_ends_quality(quality_arr, min_quality_both, min_quality_start, min_qual
             boundaries per read.
     """
     n_reads, length = quality_arr.shape
-    if not endsquality_filter_flag:
+    if not endqual_filter_flag:
         return np.zeros(n_reads, dtype = np.int32), np.full(n_reads, length, dtype = np.int32)
-    if min_quality_start is None:
-        min_quality_start = min_quality_both if min_quality_both is not None else 0
-    if min_quality_end is None:
-        min_quality_end = min_quality_both if min_quality_both is not None else 0
-    qual_mask = quality_arr >= min_quality_start
+    if endqual_min_start is None:
+        endqual_min_start = min_quality_both if min_quality_both is not None else 0
+    if endqual_min_end is None:
+        endqual_min_end = min_quality_both if min_quality_both is not None else 0
+    qual_mask = quality_arr >= endqual_min_start
     start_good_pos = qual_mask.any(axis=1)
     start_cutoffs = qual_mask.argmax(axis=1)
     start_cutoffs = np.where(start_good_pos, start_cutoffs, 0)
-    if min_quality_end == min_quality_start:
+    if endqual_min_end == endqual_min_start:
         end_cutoffs = length - qual_mask[:, ::-1].argmax(axis=1)
         end_cutoffs = np.where(start_good_pos, end_cutoffs, 0)
         return start_cutoffs.astype(np.int32), end_cutoffs.astype(np.int32)
     else:
-        qual_mask = quality_arr >= min_quality_end
+        qual_mask = quality_arr >= endqual_min_end
         any_good_right = qual_mask.any(axis=1)
         end_cutoffs = length - qual_mask[:, ::-1].argmax(axis=1)
         end_cutoffs = np.where(any_good_right, end_cutoffs, 0)
@@ -957,7 +964,7 @@ def homopolymer_nucleotide_trimming(sequence_arr, poly_length_both, poly_length_
     
     return left_cutoffs, right_cutoffs
 
-def n_end_trimming(sequence_arr, n_end_trimming_flag):
+def n_end_trimming(sequence_arr, n_trimming_flag):
     """
     Removes leading and trailing N-bases from each read.
 
@@ -969,7 +976,7 @@ def n_end_trimming(sequence_arr, n_end_trimming_flag):
     Args:
         sequence_arr (numpy.ndarray): (n_reads, read_length) array of
             per-base ASCII sequence codes.
-        n_end_trimming_flag (bool): Whether N-end trimming is enabled. If False, returns
+        n_trimming_flag (bool): Whether N-end trimming is enabled. If False, returns
             boundaries that trim nothing (left=0, right=read_length) for
             every read.
 
@@ -979,7 +986,7 @@ def n_end_trimming(sequence_arr, n_end_trimming_flag):
             boundaries per read.
     """
     n_reads, sequence_length = sequence_arr.shape
-    if not n_end_trimming_flag: 
+    if not n_trimming_flag: 
         return np.zeros(n_reads, dtype=np.int32), np.full(n_reads, sequence_length, dtype=np.int32)
     lefts, rights = homopolymer_nucleotide_trimming(sequence_arr, poly_length_both = 1, poly_length_start = 0, poly_length_end = 0, poly_bases_both = "N", poly_bases_start = None, poly_bases_end = None, poly_filter_flag = True)
     return lefts, rights
@@ -1306,12 +1313,12 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
     left_list = []
     right_list = []
     for left, right in [
-        trim_ends_quality(quality_arr, min_quality_both = parameters["min_quality_both"], min_quality_start = parameters["min_quality_start"], min_quality_end = parameters["min_quality_end"], endsquality_filter_flag = parameters["endsquality_filter_flag"]),
+        trim_ends_quality(quality_arr, min_quality_both = parameters["min_quality_both"], endqual_min_start = parameters["endqual_min_start"], endqual_min_end = parameters["endqual_min_end"], endqual_filter_flag = parameters["endqual_filter_flag"]),
         sliding_window_quality(quality_arr, slider_quality = parameters["slider_quality"], slider_window = parameters["slider_window"], slider_step = parameters["slider_step"], slider_filter_flag = parameters["slider_filter_flag"]),
         homopolymer_nucleotide_trimming(sequence_arr, poly_length_both = parameters["poly_length_both"], poly_length_start = parameters["poly_length_start"], poly_length_end = parameters["poly_length_end"], poly_bases_both = parameters["poly_bases_both"], poly_bases_start = parameters["poly_bases_start"], poly_bases_end = parameters["poly_bases_end"], poly_filter_flag = parameters["poly_filter_flag"]),
         adapter_trimming(sequence_arr, parameters["adapter_sequences"], adapter_trim_flag=parameters["adapter_trim_flag"]),
         cut_set_ends(sequence_arr, cut_both = parameters["cut_both"], cut_start = parameters["cut_start"], cut_end = parameters["cut_end"], cut_flag = parameters["cut_flag"]),
-        n_end_trimming(sequence_arr, n_end_trimming_flag = parameters["n_end_trimming_flag"]),
+        n_end_trimming(sequence_arr, n_trimming_flag = parameters["n_trimming_flag"]),
         kmer_complexity_scan(sequence_arr, kmer_scan = parameters["kmer_filter_flag"], kmer = parameters["kmer_size"], low_complex_cutoff = parameters["kmer_cutoff"], allow_n = parameters["allow_n_kmer"])
         ]:
         left_list.append(left)
@@ -1544,12 +1551,12 @@ def trim_reads(records, phred_offset, minimum_length, maximum_length, read_lengt
     sequence_arr = seq_to_bin(sequence_list = valid_sequences)
     left_list, right_list = [], []
     for left, right in [
-        trim_ends_quality(quality_arr, min_quality_both = parameters["min_quality_both"], min_quality_start = parameters["min_quality_start"], min_quality_end = parameters["min_quality_end"], endsquality_filter_flag = parameters["endsquality_filter_flag"]),
+        trim_ends_quality(quality_arr, min_quality_both = parameters["min_quality_both"], endqual_min_start = parameters["endqual_min_start"], endqual_min_end = parameters["endqual_min_end"], endqual_filter_flag = parameters["endqual_filter_flag"]),
         sliding_window_quality(quality_arr, slider_quality = parameters["slider_quality"], slider_window = parameters["slider_window"], slider_step = parameters["slider_step"], slider_filter_flag = parameters["slider_filter_flag"]),
         homopolymer_nucleotide_trimming(sequence_arr, poly_length_both = parameters["poly_length_both"], poly_length_start = parameters["poly_length_start"], poly_length_end = parameters["poly_length_end"], poly_bases_both = parameters["poly_bases_both"], poly_bases_start = parameters["poly_bases_start"], poly_bases_end = parameters["poly_bases_end"], poly_filter_flag = parameters["poly_filter_flag"]),
         adapter_trimming(sequence_arr, parameters["adapter_sequences"], adapter_trim_flag=parameters["adapter_trim_flag"]),
         cut_set_ends(sequence_arr, cut_both = parameters["cut_both"], cut_start = parameters["cut_start"], cut_end = parameters["cut_end"], cut_flag = parameters["cut_flag"]),
-        n_end_trimming(sequence_arr, n_end_trimming_flag = parameters["n_end_trimming_flag"]),
+        n_end_trimming(sequence_arr, n_trimming_flag = parameters["n_trimming_flag"]),
         kmer_complexity_scan(sequence_arr, kmer_scan = parameters["kmer_filter_flag"], kmer = parameters["kmer_size"], low_complex_cutoff = parameters["kmer_cutoff"], allow_n = parameters["allow_n_kmer"])
     ]:
         left_list.append(left)
@@ -1811,6 +1818,38 @@ class CleanHelpFormatter(argparse.HelpFormatter):
         help_text = re.sub(r"\n\n(?=  -)", "\n", help_text)
         return help_text
     
+def print_full_auto_help(parser):
+    """
+    Prints the effective settings --full-auto/-GO applies, grouped by the
+    parser's argument groups, using each argument's registered default
+    (or its full-auto override, where one exists).
+    """
+    print(
+        "\n"
+        "When --full-auto/-GO is specified, only input parameters --input-files/-i, --input-paired/-ip, and --input-unpaired/-iu are respected."
+        "\nIf none of these are provided, ReadZor will auto-detect FASTQ files in the current working directory."
+        "\nAll other user-provided parameters are ignored."
+        "\n"
+        "\nIn full automatic mode, the default settings are used, with the following specific changes:"
+        "\n"
+    )
+     
+    for group in parser._action_groups:
+        rows = []
+        for action in group._group_actions:
+            dest = action.dest
+            if dest not in FULL_AUTO_OVERRIDES:
+                continue
+            option = action.option_strings[0] if action.option_strings else dest
+            rows.append((option, FULL_AUTO_OVERRIDES[dest]))
+        if not rows:
+            continue
+        print(f"{group.title}:")
+        for option, value in rows:
+            print(f"    {option:<28} {value}")
+        print()
+        
+
 def parse_args():
     """
     Parses ReadZor's command-line arguments into a resolved parameters dict.
@@ -1834,7 +1873,7 @@ def parse_args():
             - minimum_length, maximum_length (int or None): Read length bounds.
             - min_quality_both (int or None): Phred score for end trimming
               (applied to both ends unless overridden).
-            - min_quality_start, min_quality_end (int or None): Phred score
+            - endqual_min_start, endqual_min_end (int or None): Phred score
               thresholds for trimming the 5' and 3' ends specifically;
               override min_quality_trim for their respective end if given.
             - minimum_average_qual (int or None): Minimum average read quality.
@@ -1860,7 +1899,7 @@ def parse_args():
             - chunk_size (int or None): Requested chunk size.
             - output_dir (str): Resolved output directory (defaults to the
               current working directory if not specified).
-
+ 
     Side Effects:
         If --version is passed, prints the version string and exits the
         program immediately (via `exit()`). If neither --files nor --paired
@@ -1875,11 +1914,12 @@ def parse_args():
         formatter_class=CleanHelpFormatter,
         add_help=False
     )   
-
+ 
     general_group = parser.add_argument_group("General settings")
     general_group.add_argument(
-        "--help", "-h", action='help', default = argparse.SUPPRESS,
-        help='[FLAG] Show this help message and exit.'
+        "--help", "-h", action = "store_true", default = False,
+        help='[FLAG] Show this help message and exit. Combine with --full-auto/-GO for more information on fully automatic mode.'
+ 
     )
     general_group.add_argument(
         "--version", "-v", action = "store_true", default = False,
@@ -1887,13 +1927,13 @@ def parse_args():
     )
     general_group.add_argument(
         "--full-auto", "-GO", action = "store_true", default = False,
-        help="[FLAG] Run ReadZor in fully automatic mode. Input files auto-detected from current working directory or user-specified through applicable options. All other input arguments will be ignored."
+        help="[FLAG] Run ReadZor in fully automatic mode. Combine with --help/-h for more information on fully automatic mode."
     )
     general_group.add_argument(
     "--progress", action="store_true", default=False,
     help="[FLAG] Show a live progress bar and estimated time remaining during processing, based on estimated read counts. Default: off."
     )
-
+ 
     input_group = parser.add_argument_group(
         "Input options",
         "Specify input FASTQ files using any combination of --input-files, --input-paired, and --input-unpaired. "
@@ -1911,7 +1951,7 @@ def parse_args():
         "--input-unpaired", "-iu", nargs='+', default = None, metavar = "",
         help="Unpaired FASTQ files."
     )
-
+ 
     output_group = parser.add_argument_group("Output options")
     output_group.add_argument(
         "--output", "-o", type=str, default = None, metavar = "",
@@ -1925,15 +1965,15 @@ def parse_args():
         "--gzip-level", type=int, default = 4, metavar = "", choices=range(1, 10),
         help="Set gzip compression level. Higher compression decreases processing speed. Possible levels: 1-9. Default: 4."
     )
-
+ 
     general_quality_group = parser.add_argument_group("General output filter options")
     general_quality_group.add_argument(
         "--min-average-qual", type=int, default = 0, metavar = "", choices=range(0, 127),
         help="Minimum average quality of output read. Default: 0."
     )
     general_quality_group.add_argument(
-        "--min-length", type=int, default = None, metavar = "", 
-        help="Minimum length of output read. Default: 1/3 of raw read length."
+        "--min-length", type=int, default = 0, metavar = "", 
+        help="Minimum length of output read. Default: 0."
     )
     general_quality_group.add_argument(
         "--max-length", type = int, default = None, metavar = "", 
@@ -1943,12 +1983,12 @@ def parse_args():
         "--nucl-filter", action="store_true", default=False,
         help="[FLAG] Reject raw reads containing N bases anywhere in read. Default: off."
     )
-
+ 
     trim_ends_group = parser.add_argument_group("Set-length end trimming",
                                                 "Trim a set number of bases of the ends of each read, independent of sequence or quality."
                                                 )
     trim_ends_group.add_argument(
-        "--cut-flag", "-cl",action="store_true", default = False,
+        "--cut-flag", "-clf",action="store_true", default = False,
         help="[FLAG] Turn on set-length end trimming module. Default: off."
     )
     trim_ends_group.add_argument(
@@ -1961,35 +2001,35 @@ def parse_args():
     )
     trim_ends_group.add_argument(
         "--cut-both", "-cb", type=int, default = 0, metavar="", 
-        help="Number of bases to trim from both ends of the read. Overwritten by --cut-start and --cut-end. Default: 0"
+        help="Number of bases to trim from both ends of the read. Overwritten by --cut-start and --cut-end. Default: 0."
     )
-
+ 
     quality_ends_group = parser.add_argument_group("Quality-dependent end trimming",
                                                    "Trim the ends of each read, dependent on quality. Ends of reads will be trimmed up to first position that fulfills quality requirement.")
     quality_ends_group.add_argument(
-        "--endsquality-filter-flag", action="store_true", default = False,
+        "--endqual-filter-flag", "-eff", action="store_true", default = False,
         help="[FLAG] Turn on quality-dependent end trimming. Default: off."
     )
     quality_ends_group.add_argument(
-        "--min-quality-start", type = int, default = 25, metavar="", choices=range(0, 127),
-        help="Specific phred score threshold for the start of the read. Default: 25"
+        "--endqual-min-start", "-ems", type = int, default = 25, metavar="", choices=range(0, 127),
+        help="Specific phred score threshold for the start of the read. Default: 25."
     )
     quality_ends_group.add_argument(
-        "--min-quality-end", type=int, default = 25, metavar="",choices=range(0, 127),
-        help="Specific phred score threshold for the end of the read.  Default: 25"
+        "--endqual-min-end", "-eme", type=int, default = 25, metavar="",choices=range(0, 127),
+        help="Specific phred score threshold for the end of the read.  Default: 25."
     )
     quality_ends_group.add_argument(
-        "--min-quality-both", type=int, default = 25, metavar="", choices=range(0, 127),
-        help="Phred score threshold for the quality trimming of read ends. Overwritten by --min-quality-start and --min-quality-end. Default: 25"
+        "--endqual-min-both", "-emb", type=int, default = 25, metavar="", choices=range(0, 127),
+        help="Phred score threshold for the quality trimming of read ends. Overwritten by --endqual-min-start and --endqual-min-end. Default: 25."
     )
     
     n_ends_group = parser.add_argument_group("N nucleotide end-trimming",
                                              "Trim the ends of each read for N bases. Redundant when --nucl-filter is set.")
     n_ends_group.add_argument(
-        "--n-end-trimming-flag", action="store_true", default = False,
+        "--n-trimming-flag", "-ntf", action="store_true", default = False,
         help="[FLAG] Turn on N nucleotide end-trimming. Default: off."
     )
-
+ 
     sliding_window_group = parser.add_argument_group("Sliding window quality trimming",
                                                      "Trim the reads for quality based on a sliding window of size X, moved with stepsize Y. Longest portion survives in case of mid-read quality dropoff.")
     sliding_window_group.add_argument(
@@ -2008,7 +2048,7 @@ def parse_args():
         "--slider-step", "-ss", type = int, default = 1, metavar="",
         help="Sliding window step size. Default: 1."
     )
-
+ 
     homopolymer_nucleotide_trimming = parser.add_argument_group("Homopolymer nucleotide trimming",
                                                                 "Illumina NovaSeq, NextSeq, and MiniSeq use a two-color chemistry, in which guanine bases are unlabeled. In event of short fragments, this can result in homolopolymer G calls at the end of reads.")
     homopolymer_nucleotide_trimming.add_argument(
@@ -2017,7 +2057,7 @@ def parse_args():
     )
     homopolymer_nucleotide_trimming.add_argument(
         "--poly-bases-start", "-pbs", type = str, default = None, metavar = "",
-        help='Base(s) to check for a homopolymer run at start of read. Comma-separated bases are checked independently. Default: None.'
+        help='Base(s) to check for a homopolymer run at start of read. Comma-separated bases are checked independently. Default: none.'
     )
     homopolymer_nucleotide_trimming.add_argument(
         "--poly-bases-end", "-pbe", type = str, default = "G", metavar = "",
@@ -2025,7 +2065,7 @@ def parse_args():
     )
     homopolymer_nucleotide_trimming.add_argument(
         "--poly-bases-both", "-pbb", type = str, default = None, metavar = "",
-        help='Base(s) to check for a homopolymer run at both read ends. Comma-separated bases are checked independently. Overwritten by poly_bases_start and poly_bases_end. Default: None.'
+        help='Base(s) to check for a homopolymer run at both read ends. Comma-separated bases are checked independently. Overwritten by poly_bases_start and poly_bases_end. Default: none.'
     )
     homopolymer_nucleotide_trimming.add_argument(
         "--poly-length-start", "-pls", type = int, default = 0, metavar = "",
@@ -2037,7 +2077,7 @@ def parse_args():
     )
     homopolymer_nucleotide_trimming.add_argument(
         "--poly-length-both", "-plb", type = int, default = 0, metavar = "",
-        help="Minimum length of homopolymer run at start and end of read required to trigger trimming. Default: 0"
+        help="Minimum length of homopolymer run at start and end of read required to trigger trimming. Default: 0."
     )
     
     adapter_trimming = parser.add_argument_group("Adapter trimming",
@@ -2050,7 +2090,7 @@ def parse_args():
         "--adapter-fasta", "-ad", type = str, default = None, metavar="",
         help="Fasta file with additional adapter sequences to trim for."
     )
-
+ 
     low_complexity_group = parser.add_argument_group("Low complexity filtering",
                                                      "Detect complexity of reads using kmer-based nucleotide frequencies. Low complex reads discarded entirely.")
     low_complexity_group.add_argument(
@@ -2087,7 +2127,7 @@ def parse_args():
         "--mgi-run", type = str, default = "PLACEHOLDERrun", metavar="",
         help="Run ID for Illumina header conversion. Default: 'PLACEHOLDERrun'."
     )    
-
+ 
     advanced_group = parser.add_argument_group("Advanced options",
                                                "Further options that can be specified to alter the behaviour of ReadZor.")
     advanced_group.add_argument(
@@ -2114,12 +2154,20 @@ def parse_args():
     if len(sys.argv) == 1:
         parser.print_help(sys.stderr)
         sys.exit(1)
-
+ 
     args = parser.parse_args()
+ 
+    if args.help and args.full_auto:
+        print_full_auto_help(parser)
+        sys.exit()
+    if args.help:
+        parser.print_help()
+        sys.exit()
+ 
     if args.version:
         print(f"ReadZor version: {VERSION}")
         sys.exit()
-
+ 
     if args.full_auto:
         if not (args.input_files or args.input_paired or args.input_unpaired):
             cwd = os.getcwd()
@@ -2133,11 +2181,22 @@ def parse_args():
                 parser.error(
                     f"--full-auto was set but no FASTQ files were detected in {cwd}."
                 )
+ 
+        # --- Full-auto overrides ---
+        print("[WARNING] --full-auto/-GO specified; ignoring all other input parameters (except input file parameters).")
+ 
+        for action in parser._actions:
+            dest = action.dest
+            if dest == "help" or dest in FULL_AUTO_PRESERVED_DESTS:
+                continue
+            reset_value = FULL_AUTO_OVERRIDES.get(dest, action.default)
+            setattr(args, dest, reset_value)
     elif not (args.input_files or args.input_paired or args.input_unpaired):
         parser.error(
             "You must specify any combination of --input-files, --input-paired, and/or --input-unpaired (unless using --full-auto)."
         )
-
+ 
+ 
     # --- Store parameters ---
     parameters = {}
     parameters["full_auto"] = args.full_auto
@@ -2146,14 +2205,14 @@ def parse_args():
     parameters["paired_files"] = group_paired_input_into_pairs(files = args.input_paired, parser = parser)
     parameters["minimum_length"] = args.min_length
     parameters["maximum_length"] = args.max_length
-    parameters["min_quality_both"] = args.min_quality_both
-    parameters["min_quality_start"] = args.min_quality_start
-    parameters["min_quality_end"] = args.min_quality_end
+    parameters["min_quality_both"] = args.endqual_min_both
+    parameters["endqual_min_start"] = args.endqual_min_start
+    parameters["endqual_min_end"] = args.endqual_min_end
     parameters["minimum_average_qual"] = args.min_average_qual
     parameters["cut_start"] = args.cut_start
     parameters["cut_end"] = args.cut_end
     parameters["cut_both"] = args.cut_both
-    parameters["n_end_trimming_flag"] = args.n_end_trimming_flag
+    parameters["n_trimming_flag"] = args.n_trimming_flag
     parameters["slider_window"] = args.slider_window
     parameters["slider_step"] = args.slider_step
     parameters["slider_quality"] = args.slider_quality
@@ -2178,7 +2237,7 @@ def parse_args():
     parameters["kmer_cutoff"] = args.kmer_cutoff
     parameters["allow_n_kmer"] = args.nucl_filter
     parameters["cut_flag"] = args.cut_flag
-    parameters["endsquality_filter_flag"] = args.endsquality_filter_flag
+    parameters["endqual_filter_flag"] = args.endqual_filter_flag
     parameters["slider_filter_flag"] = args.slider_filter_flag
     parameters["poly_filter_flag"] = args.poly_filter_flag
     parameters["poly_bases_start"] = args.poly_bases_start
@@ -2188,34 +2247,18 @@ def parse_args():
     parameters["poly_length_end"] = args.poly_length_end
     parameters["poly_length_both"] = args.poly_length_both
     parameters["show_progress"] = args.progress
-
-    # --- Full-auto overrides ---
-    if parameters["full_auto"]:
-        parameters.update({
-            "gzip_output": False,
-            "endsquality_filter_flag": True,
-            "cut_flag": False,
-            "mgi_convert_flag": False,
-            "n_end_trimming_flag": False,
-            "kmer_filter_flag": False,
-            "slider_filter_flag": False,
-            "poly_filter_flag": False,
-            "adapter_trim_flag": True,
-            "nucl_filter": True,
-            "show_progress": True
-        })
-
+ 
     if parameters["nucl_filter"]:
-        parameters["n_end_trimming_flag"] = False
-
+        parameters["n_trimming_flag"] = False
+ 
     if parameters["adapter_trim_flag"] and parameters.get("adapter_fasta"):
         parameters["adapter_sequences"] = DEFAULT_ADAPTERS + load_adapters_from_fasta(parameters["adapter_fasta"])
     else:
         parameters["adapter_sequences"] = DEFAULT_ADAPTERS
-
+ 
     parameters["threads"] = worker_determination(parameters["threads"])    
     parameters["chunk_size"] = chunk_size_setter(parameters["chunk_size"])
-
+ 
     if parameters["nucl_filter"]:
         parameters["nucleotide_regex"] = STRICT_NUCLEOTIDE_REGEX
     else:
