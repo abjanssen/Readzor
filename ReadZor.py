@@ -4,7 +4,7 @@
     # if --gzip-output; compress and write chunks on workers. Later; concatenate chunks. n chunks = n workers, maybe 3x for paired files.
     # double check gzip_isal thing with workers, probably not ok, even with fork, migth be platform dependent, maybe test for workers, than choose gzip vs gzip_isal? Mac vs others?
     # try out python 3.13t for GIL free work
-    # read fastq as bytes instead of utf?
+    # fix bug if botha  fastq and fast.gz of same file are present in -GO mode, no trimming.
     
 #!/usr/bin/env python3
 
@@ -13,7 +13,6 @@ import argparse
 from collections import defaultdict
 import datetime
 import gzip
-import io
 import itertools
 import multiprocessing as mp
 import os
@@ -28,10 +27,10 @@ import numpy as np
 from isal import igzip as gzip_isal
 
 ##### Definition of constant values #####
-VERSION = "0.0.4"
-STRICT_NUCLEOTIDE_REGEX = re.compile(r'^[ATCG]+$')
-LENIENT_NUCLEOTIDE_REGEX = re.compile(r'^[ATCGN]+$')
-PHRED_REGEX = re.compile(r'^[!-~]+$')
+VERSION = "0.0.5"
+STRICT_NUCLEOTIDE_REGEX = re.compile(rb'^[ATCG]+$')
+LENIENT_NUCLEOTIDE_REGEX = re.compile(rb'^[ATCGN]+$')
+PHRED_REGEX = re.compile(rb'^[!-~]+$')
 DEFAULT_ADAPTERS = [
     ("TruSeq3", "AGATCGGAAGAGC"), #12x in human genome
     ("TruSeq3_R1", "AGATCGGAAGAGCACACGTCTGAACTCCAGTCA"), 
@@ -72,10 +71,10 @@ def estimate_bytes_per_read(filepath):
         ValueError: If the file contains no readable FASTQ records.
     """
     for header, sequence, plus, quality in lazy_fastq(filepath):
-        header_bytes = len(header.encode('utf-8')) + 1
-        seq_bytes = len(sequence.encode('utf-8')) + 1 
-        plus_bytes = len(plus.encode('utf-8')) + 1
-        qual_bytes = len(quality.encode('utf-8')) + 1
+        header_bytes = len(header) + 1
+        seq_bytes = len(sequence) + 1 
+        plus_bytes = len(plus) + 1
+        qual_bytes = len(quality) + 1
         return header_bytes + seq_bytes + plus_bytes + qual_bytes
     raise ValueError(f"No FASTQ records found in '{filepath}'; cannot estimate bytes per read.")
 
@@ -454,12 +453,12 @@ def lazy_fastq(filepath):
     if is_gz_file(filepath):
         raw = open(filepath, 'rb', buffering=10 * 1024 * 1024)
         try:
-            fastq_file = io.TextIOWrapper(gzip_isal.GzipFile(fileobj=raw), encoding='utf-8')
+            fastq_file = gzip_isal.GzipFile(fileobj=raw)
         except Exception:
             raw.close()
             raise
     else:
-        fastq_file = open(filepath, 'r', buffering=10 * 1024 * 1024, encoding='utf-8')
+        fastq_file = open(filepath, 'rb', buffering=10 * 1024 * 1024)
     with fastq_file:
         lines = iter(fastq_file)
         for header in lines:
@@ -504,7 +503,7 @@ def find_paired_files(filepaths):
                     first_line = file.readline()
         except (IOError, OSError):
             continue
-        header = first_line.decode('utf-8', errors='replace').strip().lstrip('@')
+        header = first_line.strip().lstrip(b'@')
         if not header:
             continue
         base_id, read_num = read_info_from_header(header)
@@ -554,17 +553,17 @@ def read_info_from_header(header):
     """
     read_num = None
     header = header.strip()
-    if ' ' in header:
-        parts = header.split(' ', 1)
+    if b' ' in header:
+        parts = header.split(b' ', 1)
         base_id = parts[0]
-        m = re.match(r'([12]):', parts[1])
+        m = re.match(rb'([12]):', parts[1])
         if m:
             read_num = int(m.group(1))
     else:
-        m = re.search(r'/([12])$', header)
+        m = re.search(rb'/([12])$', header)
         if m:
             read_num = int(m.group(1))
-            base_id = re.sub(r'/[12]$', '', header)
+            base_id = re.sub(rb'/[12]$', b'', header)
         else:
             base_id = header
     return base_id, read_num
@@ -600,7 +599,7 @@ def detect_phred_offset(filepath, reads_for_phred_offset, phred_offset):
         for _, _, _, quality in reader:
             if count >= reads_for_phred_offset:
                 break
-            q_bytes = np.frombuffer(quality.encode('utf-8'), dtype=np.uint8)
+            q_bytes = np.frombuffer(quality, dtype=np.uint8)
             min_ascii = min(min_ascii, q_bytes.min())
             max_ascii = max(max_ascii, q_bytes.max())
             count += 1
@@ -646,11 +645,11 @@ def validate_fastq(header, sequence, plus, quality, min_raw_read_length, nucleot
         ValueError: If a read length mismatch occurs against the expected length,
             or if the quality string length does not match the sequence length.
     """
-    if header[:1] != "@":
+    if header[:1] != b"@":
         return False
     if len(header) <= 1 or not header[1:].strip():
         return False
-    if plus[:1] != '+':
+    if plus[:1] != b'+':
         return False
     if len(plus) > 1 and plus[1:] != header[1:]:
         return False
@@ -756,7 +755,7 @@ def qual_to_bin(quality_list, phred_offset):
         numpy.ndarray: Signed 8-bit integer array of shape
             (len(quality_list), read_length) with true quality scores.
     """
-    joined = ''.join(quality_list).encode('utf-8')
+    joined = b''.join(quality_list)
     array = np.frombuffer(joined, dtype=np.uint8).astype(np.int8).reshape(len(quality_list), len(quality_list[0])) - phred_offset
     return array
 
@@ -775,7 +774,7 @@ def seq_to_bin(sequence_list):
         numpy.ndarray: Signed 8-bit integer array of shape
             (len(sequence_list), read_length) of ASCII character codes.
     """
-    joined = ''.join(sequence_list).encode('utf-8')
+    joined = b''.join(sequence_list)
     array = np.frombuffer(joined, dtype = np.uint8).astype(np.int8).reshape(len(sequence_list), len(sequence_list[0]))
     return array
 
@@ -801,12 +800,12 @@ def header_mgi_to_illumina(mgi_header, barcode5, barcode7, instrument, run):
     Raises:
         ValueError: If the header doesn't match the expected MGI format.
     """
-    mgi_header = mgi_header.lstrip("@").strip()
-    strings = re.search(r"^(\w+)L(\d+)C(\d+)R(\d{3})(\d+)\/([12])", mgi_header)
+    mgi_header = mgi_header.lstrip(b"@").strip()
+    strings = re.search(rb"^(\w+)L(\d+)C(\d+)R(\d{3})(\d+)\/([12])", mgi_header)
     if strings is None:
         raise ValueError(f"Header does not match expected MGI format: {mgi_header!r}")
-    illumina_header = "@%s:%s:%s:%d:%d:%d:%d %d:N:0:%s+%s"%(
-    instrument, run, strings.group(1), int(strings.group(2)), int(strings.group(5)), int(strings.group(3)), int(strings.group(4)), int(strings.group(6)), barcode5, barcode7)
+    illumina_header = b"@%b:%b:%b:%d:%d:%d:%d %d:N:0:%b+%b" % (
+    instrument.encode('ascii'), run.encode('ascii'), strings.group(1), int(strings.group(2)), int(strings.group(5)), int(strings.group(3)), int(strings.group(4)), int(strings.group(6)), barcode5.encode('ascii'), barcode7.encode('ascii'))
     return illumina_header
     
 ##### Writing files functions #####
@@ -1301,7 +1300,7 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
     if not valid_headers:
         return [], 0, rejected
     if parameters["mgi_convert_flag"]:
-        valid_pluses = [f"{plus}_OriginalHeader:{header}" for plus, header in zip(valid_pluses, valid_headers)]
+        valid_pluses = [plus + b"_OriginalHeader:" + header for plus, header in zip(valid_pluses, valid_headers)]
         valid_headers = [header_mgi_to_illumina(header, parameters["mgi_bc5"], parameters["mgi_bc7"], parameters["mgi_instrument"], parameters["mgi_run"]) for header in valid_headers]
     quality_arr = qual_to_bin(quality_list = valid_qualities, phred_offset = phred_offset)
     sequence_arr = seq_to_bin(sequence_list = valid_sequences)
@@ -1337,13 +1336,11 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
         if not keep:
             rejected += 1
             continue
-        results.append(f"{header}\n{sequence[left:right]}\n{plus_line}\n{quality[left:right]}\n")
+        results.append(b"%b\n%b\n%b\n%b\n" % (header, sequence[left:right], plus_line, quality[left:right]))
     len_results = len(results)
-    results = "".join(results)
+    results = b"".join(results)
     if gzip_output:
-        results = gzip.compress(results.encode('utf-8'), compresslevel=gzip_level)
-    else:
-        results = results.encode('utf-8')
+        results = gzip.compress(results, compresslevel=gzip_level)
     return results, len_results, rejected
 
 def generate_unpaired_tasks(filepaths, chunk_size, parameters):
@@ -1540,7 +1537,7 @@ def trim_reads(records, phred_offset, minimum_length, maximum_length, read_lengt
     if not valid_headers:
         return {}, len(records) // 4
     if parameters["mgi_convert_flag"]:
-        valid_pluses = [f"{plus}_OriginalHeader:{header}" for plus, header in zip(valid_pluses, valid_headers)]
+        valid_pluses = [plus + b"_OriginalHeader:" + header for plus, header in zip(valid_pluses, valid_headers)]
         valid_headers = [header_mgi_to_illumina(header, parameters["mgi_bc5"], parameters["mgi_bc7"], parameters["mgi_instrument"], parameters["mgi_run"]) for header in valid_headers]
     quality_arr = qual_to_bin(quality_list = valid_qualities, phred_offset = phred_offset)
     sequence_arr = seq_to_bin(sequence_list = valid_sequences)
@@ -1579,7 +1576,7 @@ def trim_reads(records, phred_offset, minimum_length, maximum_length, read_lengt
         seq_out = valid_sequences[i][left:right]
         qual_out = valid_qualities[i][left:right]
         base_id, _ = read_info_from_header(valid_headers[i])
-        survivors[base_id] = f"{valid_headers[i]}\n{seq_out}\n{valid_pluses[i]}\n{qual_out}\n"
+        survivors[base_id] = b"%b\n%b\n%b\n%b\n" % (valid_headers[i], seq_out, valid_pluses[i], qual_out)
 
     return survivors, rejected
 
@@ -1625,18 +1622,15 @@ def process_paired_chunk(chunks, phred_offset, read_length, minimum_length, maxi
     singles_out.extend(v for bid, v in survivors_2.items() if bid not in paired_ids)
     num_singles = len(singles_out)
     num_paired = len(paired_out_1)
-    paired_out_1 = "".join(paired_out_1)
-    paired_out_2 = "".join(paired_out_2)
-    singles_out = "".join(singles_out)
 
+    paired_out_1 = b"".join(paired_out_1)
+    paired_out_2 = b"".join(paired_out_2)
+    singles_out = b"".join(singles_out)
+    
     if gzip_output:
-        paired_out_1 = gzip.compress(paired_out_1.encode('utf-8'), compresslevel=gzip_level)
-        paired_out_2 = gzip.compress(paired_out_2.encode('utf-8'), compresslevel=gzip_level)
-        singles_out = gzip.compress(singles_out.encode('utf-8'), compresslevel=gzip_level)
-    else:
-        paired_out_1 = paired_out_1.encode('utf-8')
-        paired_out_2 = paired_out_2.encode('utf-8')
-        singles_out = singles_out.encode('utf-8')
+        paired_out_1 = gzip.compress(paired_out_1, compresslevel=gzip_level)
+        paired_out_2 = gzip.compress(paired_out_2, compresslevel=gzip_level)
+        singles_out = gzip.compress(singles_out, compresslevel=gzip_level)
     return paired_out_1, paired_out_2, singles_out, num_paired, num_singles, rejected_1 + rejected_2
 
 ##### Input handler functions #####
