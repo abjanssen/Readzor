@@ -1,8 +1,10 @@
 #Ideas:
-    # 5* in worker determination still neded on slurm now that stream is continuous?
     # check barcodes
     # logging
     # if --gzip-output; compress and write chunks on workers. Later; concatenate chunks. n chunks = n workers, maybe 3x for paired files.
+    # double check gzip_isal thing with workers, probably not ok, even with fork, migth be platform dependent, maybe test for workers, than choose gzip vs gzip_isal? Mac vs others?
+    # try out python 3.13t for GIL free work
+    # read fastq as bytes instead of utf?
     
 #!/usr/bin/env python3
 
@@ -13,7 +15,7 @@ import datetime
 import gzip
 import io
 import itertools
-from multiprocessing import Pool
+import multiprocessing as mp
 import os
 import random
 import re
@@ -23,9 +25,10 @@ import sys
 import time
 
 import numpy as np
+from isal import igzip as gzip_isal
 
 ##### Definition of constant values #####
-VERSION = "0.0.3"
+VERSION = "0.0.4"
 STRICT_NUCLEOTIDE_REGEX = re.compile(r'^[ATCG]+$')
 LENIENT_NUCLEOTIDE_REGEX = re.compile(r'^[ATCGN]+$')
 PHRED_REGEX = re.compile(r'^[!-~]+$')
@@ -46,8 +49,9 @@ FULL_AUTO_OVERRIDES = {
     "endqual_filter_flag": True,
     "adapter_trim_flag": True,
     "nucl_filter": True,
-    "progress": True,
     "min_length": 100,
+    "progress": True, #remove before submit
+    "gzip": False  #remove before submit
 }
 
 ##### Progress tracker #####
@@ -75,7 +79,7 @@ def estimate_bytes_per_read(filepath):
         return header_bytes + seq_bytes + plus_bytes + qual_bytes
     raise ValueError(f"No FASTQ records found in '{filepath}'; cannot estimate bytes per read.")
 
-def estimate_gzip_ratio(filepath, sample_bytes=4 * 1024 * 1024):
+def estimate_gzip_ratio(filepath, sample_bytes=1 * 1024 * 1024):
     """
     Estimate a gzip file's compression ratio (uncompressed / compressed) by
     decompressing a leading sample, rather than the whole file.
@@ -87,7 +91,7 @@ def estimate_gzip_ratio(filepath, sample_bytes=4 * 1024 * 1024):
     compressed_read = 0
     uncompressed_read = 0
     with open(filepath, 'rb') as raw:
-        decompressor = gzip.GzipFile(fileobj=raw)
+        decompressor = gzip_isal.GzipFile(fileobj=raw)
         while uncompressed_read < sample_bytes:
             chunk = decompressor.read(1024 * 1024)
             if not chunk:
@@ -228,15 +232,6 @@ class ProgressTracker:
         line = line[: term_width - 1].ljust(term_width - 1)
         sys.stderr.write(line + "\n")
         sys.stderr.flush()
-        
-class _NullTracker:
-    """No-op progress tracker used as a drop-in stand-in for a real progress
-    bar when progress display is disabled. Mirrors the minimal
-    interface (`update`, `close`) so calling code doesn't need conditional
-    branches to check whether tracking is active.
-    """
-    def update(self, n): pass
-    def close(self): pass
 
 ##### Helper functions #####
 def group_paired_input_into_pairs(files, parser):
@@ -459,7 +454,7 @@ def lazy_fastq(filepath):
     if is_gz_file(filepath):
         raw = open(filepath, 'rb', buffering=10 * 1024 * 1024)
         try:
-            fastq_file = io.TextIOWrapper(gzip.GzipFile(fileobj=raw), encoding='utf-8')
+            fastq_file = io.TextIOWrapper(gzip_isal.GzipFile(fileobj=raw), encoding='utf-8')
         except Exception:
             raw.close()
             raise
@@ -499,7 +494,7 @@ def find_paired_files(filepaths):
             if is_gz_file(filepath):
                 raw = open(filepath, 'rb', buffering=1024)
                 try:
-                    file = gzip.GzipFile(fileobj=raw)
+                    file = gzip_isal.GzipFile(fileobj=raw)
                     with file:
                         first_line = file.readline()
                 finally:
@@ -734,13 +729,13 @@ def chunk_size_setter(chunk_size):
             None (auto-detect).
 
     Returns:
-        int: The resolved chunk size — 20000 on Slurm systems, 1000
+        int: The resolved chunk size — 30000 on Slurm systems, 1000
             otherwise, unless overridden.
     """
     if chunk_size is not None:
         return chunk_size
     if shutil.which('sinfo') is not None or shutil.which('sbatch') is not None:
-        chunk_size = 20000
+        chunk_size = 30000
     else:
         chunk_size = 1000
     return chunk_size
@@ -1673,7 +1668,7 @@ def unified_worker(task):
     else:
         raise ValueError(f"Unknown or missing task type: {task_type}")
 
-def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, threads, chunk_size, parameters):
+def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, threads, chunk_size, show_progress, parameters):
     """
     Top-level orchestrator that separates input files into paired and
     unpaired groups, sets up file writers, and runs the multiprocessing pool
@@ -1695,17 +1690,19 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
     unpaired = auto_unpaired + (unpaired_files or [])
     paired = auto_paired + (paired_files or [])
     
-    total_reads = 0
-    for file in unpaired:
-        total_reads += count_reads_estimated(file)
-    for f1, f2 in paired:
-        total_reads += count_reads_estimated(f1) + count_reads_estimated(f2)
-        
-    class _NullTracker:
-        def update(self, n): pass
-        def close(self): pass
-    tracker = ProgressTracker(total_reads) if parameters["show_progress"] else _NullTracker()
-    
+    if show_progress:
+        total_reads = 0
+        for file in unpaired:
+            total_reads += count_reads_estimated(file)
+        for f1, f2 in paired:
+            total_reads += count_reads_estimated(f1) + count_reads_estimated(f2)
+        tracker = ProgressTracker(total_reads)
+    else:
+        class _NullTracker:
+            def update(self, n): pass
+            def close(self): pass
+        tracker = _NullTracker()
+            
     file_stats = {}
     file_writing_handles = {}
     for file in unpaired:
@@ -1727,7 +1724,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
         yield from generate_unpaired_tasks(filepaths=unpaired, chunk_size=chunk_size, parameters=parameters)
         yield from generate_paired_tasks(files=paired, chunk_size=chunk_size, parameters=parameters)
     try:
-        with Pool(threads) as pool:
+        with mp.Pool(threads) as pool:
             for result in pool.imap_unordered(unified_worker, unified_chunk_streamer(), chunksize=1):
                 if result[0] == "unpaired":  # Unpaired result: (type, filepath, chunk_results, kept, rejected)
                     _, filepath, chunk_results, kept, rejected = result
@@ -2357,9 +2354,19 @@ if __name__ == "__main__":
     via the top-level orchestrator, and exports summary metrics and final parameters.
     Finishes with a sign-off message.
     """
+    for method in ['fork', 'forkserver', 'spawn']:
+        if method in mp.get_all_start_methods():
+            try:
+                mp.set_start_method(method)
+                break
+            except RuntimeError:
+                pass
     parameters = parse_args()
+    start_time = time.time() #TIME EXTRA
     created_output_dir = create_folder_structure(parameters["output_dir"])
     used_command = " ".join(map(shlex.quote, [sys.executable] + sys.argv))
-    summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], parameters = parameters)
+    summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], parameters = parameters)
     write_summary_and_statistics(summary_results, parameters, used_command, output_dir = created_output_dir)
+    elapsed = time.time() - start_time  #TIME EXTRA
+    print(f"\nTotal elapsed time: {elapsed:.5f}") #TIME EXTRA
     print_final_message()

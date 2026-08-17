@@ -121,7 +121,9 @@ This project is provded under the GNU General Public License v3.0 (GPLv3).
 ## Author
 [Axel B. Janssen](https://scholar.google.com/citations?user=TWi-ysEAAAAJ&hl)
 
-
+## Olionucleotide sequences
+The oligonucleotide sequences used for adapter trimming, included in this work, are copyrighted and protected by intellectual property, including issued or pending patents, copyright, and trade secrets.
+Oligonucleotide sequences © 2019 Illumina, Inc. All rights reserved.
 
 
 
