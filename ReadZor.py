@@ -9,13 +9,13 @@
     # if no trimming flags, active_pipeline will be empty, which will cause an error. might want to skip a lot of stuff, if no trimming flags set.
     # update validate_fastq???
     # benchmark to /dev/null
+    # take all filter flag in trim functions, no longer needed with active_pipeline building
 #!/usr/bin/env python3
 
 ##### Import packages #####
 import argparse
 from collections import defaultdict
 import datetime
-import gzip
 import itertools
 import multiprocessing as mp
 import os
@@ -28,9 +28,10 @@ import time
 
 import numpy as np
 from isal import igzip as gzip_isal
+from zlib_ng import gzip_ng as gzip_zlib
 
 ##### Definition of constant values #####
-VERSION = "0.0.6"
+VERSION = "0.0.7"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3", "AGATCGGAAGAGC"), #12x in human genome
@@ -299,8 +300,8 @@ def worker_determination(threads):
     local) and whether the user provided an explicit thread request:
     
     - **On a Slurm-managed cluster** (SLURM_CPUS_PER_TASK detected):
-        - If `threads` is an int: returns `threads * 10`.
-        - Otherwise: returns `SLURM_CPUS_PER_TASK * 10`.
+        - If `threads` is an int: returns `threads * 5`.
+        - Otherwise: returns `SLURM_CPUS_PER_TASK * 5`.
     - **On a local/non-Slurm system**:
         - If `threads` is an int: returns `threads` as-is.
         - Otherwise: returns `(available CPUs - 1)`, minimum of 1.
@@ -325,10 +326,10 @@ def worker_determination(threads):
     threads_is_int = isinstance(threads, int) and not isinstance(threads, bool)
     if slurm_cpus is not None:
         if threads_is_int:
-            return max(1, threads * 10)
+            return max(1, threads * 5)
         else:
             try:
-                return max(1, int(slurm_cpus) * 10)
+                return max(1, int(slurm_cpus) * 5)
             except ValueError:
                 available_cpu = os.cpu_count() or 1
                 return max(1, available_cpu - 1)
@@ -443,6 +444,7 @@ def is_gz_file(filepath):
             return file.read(2) == b'\x1f\x8b'
     except (IOError, OSError):
         return False
+    
 def lazy_fastq(filepath):
     """
     Lazily yield FASTQ records one at a time without loading the entire file.
@@ -495,6 +497,8 @@ def find_paired_files(filepaths):
             - A list of filepaths that could not be matched with a valid pair.
     """
     base_ids = {}
+    if filepaths is None:
+        filepaths = []
     for filepath in filepaths:
         try:
             if is_gz_file(filepath):
@@ -745,7 +749,7 @@ def qual_to_bin(quality_list, phred_offset):
             (len(quality_list), read_length) with true quality scores.
     """
     joined = b''.join(quality_list)
-    array = np.frombuffer(joined, dtype=np.uint8).astype(np.int8).reshape(len(quality_list), len(quality_list[0])) - phred_offset
+    array = np.frombuffer(joined, dtype=np.int8).reshape(len(quality_list), len(quality_list[0])) - phred_offset
     return array
 
 def seq_to_bin(sequence_list):
@@ -764,8 +768,8 @@ def seq_to_bin(sequence_list):
             (len(sequence_list), read_length) of ASCII character codes.
     """
     joined = b''.join(sequence_list)
-    array = np.frombuffer(joined, dtype = np.uint8).astype(np.int8).reshape(len(sequence_list), len(sequence_list[0]))
-    return array
+    array = np.frombuffer(joined, dtype = np.int8).reshape(len(sequence_list), len(sequence_list[0]))
+    return array    
 
 def header_mgi_to_illumina(mgi_header, barcode5, barcode7, instrument, run):
     """
@@ -882,25 +886,28 @@ def trim_ends_quality(quality_arr, min_quality_both, endqual_min_start, endqual_
     """
     n_reads, length = quality_arr.shape
     if not endqual_filter_flag:
-        return np.zeros(n_reads, dtype = np.int32), np.full(n_reads, length, dtype = np.int32)
+        return np.zeros(n_reads, dtype=np.int32), np.full(n_reads, length, dtype=np.int32)
     if endqual_min_start is None:
         endqual_min_start = min_quality_both if min_quality_both is not None else 0
     if endqual_min_end is None:
         endqual_min_end = min_quality_both if min_quality_both is not None else 0
     qual_mask = quality_arr >= endqual_min_start
-    start_good_pos = qual_mask.any(axis=1)
     start_cutoffs = qual_mask.argmax(axis=1)
-    start_cutoffs = np.where(start_good_pos, start_cutoffs, 0)
-    if endqual_min_end == endqual_min_start:
-        end_cutoffs = length - qual_mask[:, ::-1].argmax(axis=1)
-        end_cutoffs = np.where(start_good_pos, end_cutoffs, 0)
-        return start_cutoffs.astype(np.int32), end_cutoffs.astype(np.int32)
+    zero_rows = start_cutoffs == 0
+    if zero_rows.any():
+        start_good_pos = qual_mask[:, 0] | ~zero_rows  
     else:
+        start_good_pos = None 
+    if start_good_pos is not None:
+        start_cutoffs = np.where(start_good_pos, start_cutoffs, 0)
+    if endqual_min_end != endqual_min_start:
         qual_mask = quality_arr >= endqual_min_end
-        any_good_right = qual_mask.any(axis=1)
-        end_cutoffs = length - qual_mask[:, ::-1].argmax(axis=1)
-        end_cutoffs = np.where(any_good_right, end_cutoffs, 0)
-        return start_cutoffs.astype(np.int32), end_cutoffs.astype(np.int32)
+    end_cutoffs = length - qual_mask[:, ::-1].argmax(axis=1)
+    zero_end_rows = end_cutoffs == length
+    if zero_end_rows.any():
+        end_good_pos = qual_mask[:, -1] | ~zero_end_rows
+        end_cutoffs = np.where(end_good_pos, end_cutoffs, 0)
+    return start_cutoffs.astype(np.int32), end_cutoffs.astype(np.int32)
         
 def homopolymer_nucleotide_trimming(sequence_arr, poly_length_both, poly_length_start, poly_length_end, poly_bases_both, poly_bases_start, poly_bases_end, poly_filter_flag):
     """
@@ -1040,8 +1047,7 @@ def cut_set_ends(sequence_arr, cut_both, cut_start, cut_end, cut_flag):
     if not cut_flag:
         return np.zeros(n_reads, dtype = np.int32), np.full(n_reads, length, dtype = np.int32)
     cut_start = cut_start if cut_start != 0 else cut_both
-    cut_end = cut_end if cut_end != 0 else cut_both
-    cut_end = length - cut_end
+    cut_end = length - cut_end if cut_end != 0 else length - cut_both
     if cut_start > cut_end:
         cut_start = cut_end
     return np.full(n_reads, cut_start, dtype=np.int32), np.full(n_reads, cut_end, dtype=np.int32)
@@ -1163,9 +1169,10 @@ def adapter_trimming(sequence_arr, trim_sequences, adapter_trim_flag):
     
     adapter_byte_strs = list({seq.encode('utf-8') for _, seq in trim_sequences})
     sequence_arr = sequence_arr.astype(np.uint8)
-
+    all_bytes = sequence_arr.tobytes()
+    
     for i in range(n_reads):
-        row_bytes = sequence_arr[i].tobytes()
+        row_bytes = all_bytes[i*length:(i+1)*length]
         best = length
         for adapter_bytes in adapter_byte_strs:
             pos = row_bytes.find(adapter_bytes)
@@ -1190,12 +1197,14 @@ def average_quality_batch(quality_arr, lefts, rights):
         numpy.ndarray: Per-read mean quality within [left, right), shape
             (n_reads,). Reads with an empty window (right <= left) get 0.0.
     """
-    n_reads = quality_arr.shape[0]
-    cumsum = np.concatenate([np.zeros((n_reads, 1), dtype = np.int32), np.cumsum(quality_arr, axis = 1, dtype=np.int32)], axis = 1)
+    n_reads, length = quality_arr.shape
+    cumsum = np.empty((n_reads, length + 1), dtype=np.int32)
+    cumsum[:, 0] = 0
+    np.cumsum(quality_arr, axis=1, dtype=np.int32, out=cumsum[:, 1:])
     row_indices = np.arange(n_reads)
     sums = cumsum[row_indices, rights] - cumsum[row_indices, lefts]
     counts = rights - lefts
-    avg_qualities = np.divide(sums, counts, out = np.zeros_like(sums, dtype = np.float64), where=counts > 0)
+    avg_qualities = np.divide(sums, counts, out=np.zeros_like(sums, dtype=np.float64), where=counts > 0)
     return avg_qualities
 
 def kmer_complexity_scan(sequence_arr, kmer_scan, kmer, low_complex_cutoff, allow_n):
@@ -1350,11 +1359,11 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
         if not keep:
             rejected += 1
             continue
-        results.append(b"%b\n%b\n%b\n%b\n" % (header, sequence[left:right], plus_line, quality[left:right]))
+        results.append(b"\n".join((header, sequence[left:right], plus_line, quality[left:right])) + b"\n")
     len_results = len(results)
     results = b"".join(results)
     if gzip_output:
-        results = gzip.compress(results, compresslevel=gzip_level)
+        results = gzip_zlib.compress(results, compresslevel=gzip_level)
     return results, len_results, rejected
 
 def generate_unpaired_tasks(filepaths, chunk_size, parameters):
@@ -1587,7 +1596,7 @@ def trim_reads(records, phred_offset, minimum_length, maximum_length, read_lengt
         seq_out = valid_sequences[i][left:right]
         qual_out = valid_qualities[i][left:right]
         base_id, _ = read_info_from_header(valid_headers[i])
-        survivors[base_id] = b"%b\n%b\n%b\n%b\n" % (valid_headers[i], seq_out, valid_pluses[i], qual_out)
+        survivors[base_id] = b"\n".join((valid_headers[i], seq_out, valid_pluses[i], qual_out)) + b"\n"
 
     return survivors, rejected
 
@@ -1639,9 +1648,9 @@ def process_paired_chunk(chunks, phred_offset, read_length, minimum_length, maxi
     singles_out = b"".join(singles_out)
     
     if gzip_output:
-        paired_out_1 = gzip.compress(paired_out_1, compresslevel=gzip_level)
-        paired_out_2 = gzip.compress(paired_out_2, compresslevel=gzip_level)
-        singles_out = gzip.compress(singles_out, compresslevel=gzip_level)
+        paired_out_1 = gzip_zlib.compress(paired_out_1, compresslevel=gzip_level)
+        paired_out_2 = gzip_zlib.compress(paired_out_2, compresslevel=gzip_level)
+        singles_out = gzip_zlib.compress(singles_out, compresslevel=gzip_level)
     return paired_out_1, paired_out_2, singles_out, num_paired, num_singles, rejected_1 + rejected_2
 
 ##### Input handler functions #####
