@@ -1,11 +1,14 @@
 #Ideas:
     # check barcodes
     # logging
-    # if --gzip-output; compress and write chunks on workers. Later; concatenate chunks. n chunks = n workers, maybe 3x for paired files.
     # double check gzip_isal thing with workers, probably not ok, even with fork, migth be platform dependent, maybe test for workers, than choose gzip vs gzip_isal? Mac vs others?
     # try out python 3.13t for GIL free work
-    # fix bug if botha  fastq and fast.gz of same file are present in -GO mode, no trimming.
-    
+    # fix bug if both a fastq and fast.gz of same file are present in -GO mode, no trimming.
+    # write witb seperate thread
+    # generate chunks with seperate thread
+    # if no trimming flags, active_pipeline will be empty, which will cause an error. might want to skip a lot of stuff, if no trimming flags set.
+    # update validate_fastq???
+    # benchmark to /dev/null
 #!/usr/bin/env python3
 
 ##### Import packages #####
@@ -27,10 +30,8 @@ import numpy as np
 from isal import igzip as gzip_isal
 
 ##### Definition of constant values #####
-VERSION = "0.0.5"
-STRICT_NUCLEOTIDE_REGEX = re.compile(rb'^[ATCG]+$')
-LENIENT_NUCLEOTIDE_REGEX = re.compile(rb'^[ATCGN]+$')
-PHRED_REGEX = re.compile(rb'^[!-~]+$')
+VERSION = "0.0.6"
+PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3", "AGATCGGAAGAGC"), #12x in human genome
     ("TruSeq3_R1", "AGATCGGAAGAGCACACGTCTGAACTCCAGTCA"), 
@@ -45,10 +46,16 @@ DEFAULT_ADAPTERS = [
 ]
 FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "full_auto"}
 FULL_AUTO_OVERRIDES = {
-    "endqual_filter_flag": True,
-    "adapter_trim_flag": True,
+    "endqual_filter_flag": True, #light
+    "slider_filter_flag": False, #remove before submit #HEAVY
+    "kmer_filter_flag": False,#remove before submit #HEAVY
+    "n_trimming_flag": False, #remove before submit #light
+    "poly_filter_flag": False, #remove before submit #light
+    "adapter_trim_flag": True, #HEAVY
+    
     "nucl_filter": True,
     "min_length": 100,
+    "threads": 15,
     "progress": True, #remove before submit
     "gzip": False  #remove before submit
 }
@@ -619,51 +626,33 @@ def detect_phred_offset(filepath, reads_for_phred_offset, phred_offset):
             f"Please specify the Phred offset (33/64) manually using the --phred-offset option."
         )
 
-def validate_fastq(header, sequence, plus, quality, min_raw_read_length, nucleotide_regex, read_length):
+# Build once, at module level
+
+
+def validate_fastq(header, sequence, plus, quality, min_raw_read_length, nucl_filter, read_length):
     """
     Validates that a single FASTQ record is well-formed.
-
-    Checks that the header starts with "@" and has content, the plus-line 
-    starts with "+" (and optionally matches the header description), the 
-    sequence and quality strings are of equal length, meet a minimum length 
-    requirement, and match the expected nucleotide and Phred character sets. 
-    Also enforces an exact expected read length if specified.
-
-    Args:
-        header (str): The FASTQ header line (including leading "@").
-        sequence (str): The nucleotide sequence line.
-        plus (str): The separator line (starting with "+").
-        quality (str): The Phred quality string.
-        min_raw_read_length (int): Minimum acceptable sequence length.
-        nucleotide_regex (re.Pattern): Compiled regex for valid nucleotides.
-        read_length (int | None): Exact expected read length, if enforced.
-
-    Returns:
-        bool: True if the record is valid, False otherwise.
-
-    Raises:
-        ValueError: If a read length mismatch occurs against the expected length,
-            or if the quality string length does not match the sequence length.
     """
-    if header[:1] != b"@":
+    if len(header) <= 1 or header[0] != 64:
         return False
-    if len(header) <= 1 or not header[1:].strip():
-        return False
-    if plus[:1] != b'+':
+    if not plus or plus[0] != 43:
         return False
     if len(plus) > 1 and plus[1:] != header[1:]:
         return False
     seq_len = len(sequence)
     if read_length is not None and seq_len != read_length:
-        raise ValueError(f"FASTQ file contain uneven read lengths. Found {seq_len}, expected {read_length}.")
+        raise ValueError(
+            f"FASTQ file contain uneven read lengths. Found {seq_len}, expected {read_length}.")
     if seq_len < min_raw_read_length or seq_len != len(quality):
         return False
-    if not nucleotide_regex.match(sequence):
+    if nucl_filter:
+        if sequence.translate(None, b"ATCG"):
+            return False
+    else:
+        if sequence.translate(None, b"ATCGN"):
+            return False
+    if quality.translate(None, PHRED_ALLOWED):
         return False
-    if not PHRED_REGEX.match(quality):
-        return False
-    if not len(quality) == seq_len:
-        raise ValueError(f"FASTQ file malformed. Found quality line length of {len(quality)}, expected {read_length}.")
     return True
 
 def load_adapters_from_fasta(fasta_file):
@@ -734,7 +723,7 @@ def chunk_size_setter(chunk_size):
     if chunk_size is not None:
         return chunk_size
     if shutil.which('sinfo') is not None or shutil.which('sbatch') is not None:
-        chunk_size = 30000
+        chunk_size = 30000  #30000 on CPU slurm, 100000 on GPU slurm????
     else:
         chunk_size = 1000
     return chunk_size
@@ -808,6 +797,38 @@ def header_mgi_to_illumina(mgi_header, barcode5, barcode7, instrument, run):
     instrument.encode('ascii'), run.encode('ascii'), strings.group(1), int(strings.group(2)), int(strings.group(5)), int(strings.group(3)), int(strings.group(4)), int(strings.group(6)), barcode5.encode('ascii'), barcode7.encode('ascii'))
     return illumina_header
     
+def build_pipeline(parameters):
+    """Constructs a list of active trimming operations based on configuration flags.
+
+    Filters incoming parameter flags and returns a list of executable lambda functions 
+    representing active trimming strategies. Each function expects `(sequence_arr, quality_arr)` 
+    and returns a tuple of `(left, right)` NumPy boundary arrays.
+
+    Args:
+        parameters (dict): Configuration dictionary containing boolean flags 
+            (e.g., 'endqual_filter_flag', 'adapter_trim_flag') and strategy-specific 
+            trimming arguments.
+
+    Returns:
+        list[callable]: A list of functions matching active modules.
+    """
+    pipeline = []
+    if parameters.get("endqual_filter_flag"):
+        pipeline.append(lambda seq, qual: trim_ends_quality(qual, min_quality_both=parameters["min_quality_both"], endqual_min_start=parameters["endqual_min_start"], endqual_min_end=parameters["endqual_min_end"], endqual_filter_flag=True))
+    if parameters.get("slider_filter_flag"):
+        pipeline.append(lambda seq, qual: sliding_window_quality(qual, slider_quality=parameters["slider_quality"], slider_window=parameters["slider_window"], slider_step=parameters["slider_step"], slider_filter_flag=True))
+    if parameters.get("poly_filter_flag"):
+        pipeline.append(lambda seq, qual: homopolymer_nucleotide_trimming(seq, poly_length_both=parameters["poly_length_both"], poly_length_start=parameters["poly_length_start"], poly_length_end=parameters["poly_length_end"], poly_bases_both=parameters["poly_bases_both"], poly_bases_start=parameters["poly_bases_start"], poly_bases_end=parameters["poly_bases_end"], poly_filter_flag=True))
+    if parameters.get("adapter_trim_flag"):
+        pipeline.append(lambda seq, qual: adapter_trimming(seq, parameters["adapter_sequences"], adapter_trim_flag=True))
+    if parameters.get("cut_flag"):
+        pipeline.append(lambda seq, qual: cut_set_ends(seq, cut_both=parameters["cut_both"], cut_start=parameters["cut_start"], cut_end=parameters["cut_end"], cut_flag=True))
+    if parameters.get("n_trimming_flag"):
+        pipeline.append(lambda seq, qual: n_end_trimming(seq, n_trimming_flag=True))
+    if parameters.get("kmer_filter_flag"):
+        pipeline.append(lambda seq, qual: kmer_complexity_scan(seq, kmer_scan=True, kmer=parameters["kmer_size"], low_complex_cutoff=parameters["kmer_cutoff"], allow_n=parameters["allow_n_kmer"]))
+    return pipeline
+
 ##### Writing files functions #####
 
 def open_fastq_writer(filepath, output_dir, gzip_output):
@@ -1291,7 +1312,7 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
     valid_pluses = []
     valid_qualities = []
     for r in chunk:
-        if validate_fastq(*r, min_raw_read_length = parameters["min_raw_read_length"], nucleotide_regex = parameters["nucleotide_regex"], read_length = read_length):
+        if validate_fastq(*r, min_raw_read_length = parameters["min_raw_read_length"], nucl_filter = parameters["nucl_filter"], read_length = read_length):
             valid_headers.append(r[0])
             valid_sequences.append(r[1])
             valid_pluses.append(r[2])
@@ -1304,23 +1325,16 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
         valid_headers = [header_mgi_to_illumina(header, parameters["mgi_bc5"], parameters["mgi_bc7"], parameters["mgi_instrument"], parameters["mgi_run"]) for header in valid_headers]
     quality_arr = qual_to_bin(quality_list = valid_qualities, phred_offset = phred_offset)
     sequence_arr = seq_to_bin(sequence_list = valid_sequences)
-    left_list = []
-    right_list = []
-    for left, right in [
-        trim_ends_quality(quality_arr, min_quality_both = parameters["min_quality_both"], endqual_min_start = parameters["endqual_min_start"], endqual_min_end = parameters["endqual_min_end"], endqual_filter_flag = parameters["endqual_filter_flag"]),
-        sliding_window_quality(quality_arr, slider_quality = parameters["slider_quality"], slider_window = parameters["slider_window"], slider_step = parameters["slider_step"], slider_filter_flag = parameters["slider_filter_flag"]),
-        homopolymer_nucleotide_trimming(sequence_arr, poly_length_both = parameters["poly_length_both"], poly_length_start = parameters["poly_length_start"], poly_length_end = parameters["poly_length_end"], poly_bases_both = parameters["poly_bases_both"], poly_bases_start = parameters["poly_bases_start"], poly_bases_end = parameters["poly_bases_end"], poly_filter_flag = parameters["poly_filter_flag"]),
-        adapter_trimming(sequence_arr, parameters["adapter_sequences"], adapter_trim_flag=parameters["adapter_trim_flag"]),
-        cut_set_ends(sequence_arr, cut_both = parameters["cut_both"], cut_start = parameters["cut_start"], cut_end = parameters["cut_end"], cut_flag = parameters["cut_flag"]),
-        n_end_trimming(sequence_arr, n_trimming_flag = parameters["n_trimming_flag"]),
-        kmer_complexity_scan(sequence_arr, kmer_scan = parameters["kmer_filter_flag"], kmer = parameters["kmer_size"], low_complex_cutoff = parameters["kmer_cutoff"], allow_n = parameters["allow_n_kmer"])
-        ]:
+    left_list = [np.zeros(sequence_arr.shape[0], dtype=np.int32)]
+    right_list = [np.full(sequence_arr.shape[0], sequence_arr.shape[1], dtype=np.int32)]
+    for step in build_pipeline(parameters):
+        left, right = step(sequence_arr, quality_arr)
         left_list.append(left)
         right_list.append(right)
     lefts = np.maximum.reduce(left_list)
     rights = np.minimum.reduce(right_list)
     if maximum_length == minimum_length == sequence_arr.shape[1]:
-        length_mask = np.ones(len(lefts), dtype=bool)
+        length_mask = np.ones(sequence_arr.shape[0], dtype=bool)
     else:
         lengths_out = rights - lefts
         length_mask = (lengths_out <= maximum_length) & (lengths_out >= minimum_length)
@@ -1328,7 +1342,7 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
         average_quals = average_quality_batch(quality_arr, lefts, rights)
         qual_mask = average_quals >= minimum_average_qual
     else:
-        qual_mask = np.ones(len(lefts), dtype=bool)
+        qual_mask = np.ones(sequence_arr.shape[0], dtype=bool)
     keep_mask = length_mask & qual_mask
     results = []
     for header, sequence, plus_line, quality, left, right, keep in zip(
@@ -1527,7 +1541,7 @@ def trim_reads(records, phred_offset, minimum_length, maximum_length, read_lengt
     valid_qualities = []
     rejected = 0
     for r in records:
-        if validate_fastq(*r,min_raw_read_length = parameters["min_raw_read_length"],nucleotide_regex = parameters["nucleotide_regex"], read_length = read_length):
+        if validate_fastq(*r,min_raw_read_length = parameters["min_raw_read_length"],nucl_filter = parameters["nucl_filter"], read_length = read_length):
             valid_headers.append(r[0])
             valid_sequences.append(r[1])
             valid_pluses.append(r[2])
@@ -1541,31 +1555,28 @@ def trim_reads(records, phred_offset, minimum_length, maximum_length, read_lengt
         valid_headers = [header_mgi_to_illumina(header, parameters["mgi_bc5"], parameters["mgi_bc7"], parameters["mgi_instrument"], parameters["mgi_run"]) for header in valid_headers]
     quality_arr = qual_to_bin(quality_list = valid_qualities, phred_offset = phred_offset)
     sequence_arr = seq_to_bin(sequence_list = valid_sequences)
-    left_list, right_list = [], []
-    for left, right in [
-        trim_ends_quality(quality_arr, min_quality_both = parameters["min_quality_both"], endqual_min_start = parameters["endqual_min_start"], endqual_min_end = parameters["endqual_min_end"], endqual_filter_flag = parameters["endqual_filter_flag"]),
-        sliding_window_quality(quality_arr, slider_quality = parameters["slider_quality"], slider_window = parameters["slider_window"], slider_step = parameters["slider_step"], slider_filter_flag = parameters["slider_filter_flag"]),
-        homopolymer_nucleotide_trimming(sequence_arr, poly_length_both = parameters["poly_length_both"], poly_length_start = parameters["poly_length_start"], poly_length_end = parameters["poly_length_end"], poly_bases_both = parameters["poly_bases_both"], poly_bases_start = parameters["poly_bases_start"], poly_bases_end = parameters["poly_bases_end"], poly_filter_flag = parameters["poly_filter_flag"]),
-        adapter_trimming(sequence_arr, parameters["adapter_sequences"], adapter_trim_flag=parameters["adapter_trim_flag"]),
-        cut_set_ends(sequence_arr, cut_both = parameters["cut_both"], cut_start = parameters["cut_start"], cut_end = parameters["cut_end"], cut_flag = parameters["cut_flag"]),
-        n_end_trimming(sequence_arr, n_trimming_flag = parameters["n_trimming_flag"]),
-        kmer_complexity_scan(sequence_arr, kmer_scan = parameters["kmer_filter_flag"], kmer = parameters["kmer_size"], low_complex_cutoff = parameters["kmer_cutoff"], allow_n = parameters["allow_n_kmer"])
-    ]:
+    left_list = [np.zeros(sequence_arr.shape[0], dtype=np.int32)]
+    right_list = [np.full(sequence_arr.shape[0], sequence_arr.shape[1], dtype=np.int32)]
+    
+    for step in build_pipeline(parameters):
+        left, right = step(sequence_arr, quality_arr)
         left_list.append(left)
         right_list.append(right)
+    
     lefts = np.maximum.reduce(left_list)
     rights = np.minimum.reduce(right_list)
+    
     if maximum_length == minimum_length == sequence_arr.shape[1]:
-        length_mask = np.ones(len(lefts), dtype=bool)
+        length_mask = np.ones(sequence_arr.shape[0], dtype=bool)
     else:
         lengths_out = rights - lefts
         length_mask = (lengths_out <= maximum_length) & (lengths_out >= minimum_length)
+    
     if minimum_average_qual > 0:
         avg_quals = average_quality_batch(quality_arr, lefts, rights)
         qual_mask = avg_quals >= minimum_average_qual
     else:
-        qual_mask = np.ones(len(lefts), dtype=bool)
-    
+        qual_mask = np.ones(sequence_arr.shape[0], dtype=bool) 
     keep_mask = length_mask & qual_mask
     survivors = {}
     for i, keep in enumerate(keep_mask):
@@ -2250,11 +2261,6 @@ def parse_args():
     parameters["threads"] = worker_determination(parameters["threads"])    
     parameters["chunk_size"] = chunk_size_setter(parameters["chunk_size"])
  
-    if parameters["nucl_filter"]:
-        parameters["nucleotide_regex"] = STRICT_NUCLEOTIDE_REGEX
-    else:
-        parameters["nucleotide_regex"] = LENIENT_NUCLEOTIDE_REGEX
-        
     return parameters
     
 ##### Wrap up functions #####
@@ -2356,11 +2362,8 @@ if __name__ == "__main__":
             except RuntimeError:
                 pass
     parameters = parse_args()
-    start_time = time.time() #TIME EXTRA
     created_output_dir = create_folder_structure(parameters["output_dir"])
     used_command = " ".join(map(shlex.quote, [sys.executable] + sys.argv))
     summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], parameters = parameters)
     write_summary_and_statistics(summary_results, parameters, used_command, output_dir = created_output_dir)
-    elapsed = time.time() - start_time  #TIME EXTRA
-    print(f"\nTotal elapsed time: {elapsed:.5f}") #TIME EXTRA
     print_final_message()
