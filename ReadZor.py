@@ -1,15 +1,11 @@
 #Ideas:
     # check barcodes
     # logging
-    # double check gzip_isal thing with workers, probably not ok, even with fork, migth be platform dependent, maybe test for workers, than choose gzip vs gzip_isal? Mac vs others?
     # try out python 3.13t for GIL free work
     # fix bug if both a fastq and fast.gz of same file are present in -GO mode, no trimming.
     # write witb seperate thread
     # generate chunks with seperate thread
-    # if no trimming flags, active_pipeline will be empty, which will cause an error. might want to skip a lot of stuff, if no trimming flags set.
-    # update validate_fastq???
-    # benchmark to /dev/null
-    # take all filter flag in trim functions, no longer needed with active_pipeline building
+    
 #!/usr/bin/env python3
 
 ##### Import packages #####
@@ -31,7 +27,7 @@ from isal import igzip as gzip_isal
 from zlib_ng import gzip_ng as gzip_zlib
 
 ##### Definition of constant values #####
-VERSION = "0.0.7"
+VERSION = "0.0.8"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3", "AGATCGGAAGAGC"), #12x in human genome
@@ -55,8 +51,8 @@ FULL_AUTO_OVERRIDES = {
     "adapter_trim_flag": True, #HEAVY
     
     "nucl_filter": True,
-    "min_length": 100,
-    "threads": 15,
+    "min_length": 100, #remove before submit
+    "threads": 15, #remove before submit
     "progress": True, #remove before submit
     "gzip": False  #remove before submit
 }
@@ -633,6 +629,9 @@ def detect_phred_offset(filepath, reads_for_phred_offset, phred_offset):
 # Build once, at module level
 
 
+NUCL_ATCG = b"ATCG"
+NUCL_ATCGN = b"ATCGN"
+
 def validate_fastq(header, sequence, plus, quality, min_raw_read_length, nucl_filter, read_length):
     """
     Validates that a single FASTQ record is well-formed.
@@ -650,10 +649,10 @@ def validate_fastq(header, sequence, plus, quality, min_raw_read_length, nucl_fi
     if seq_len < min_raw_read_length or seq_len != len(quality):
         return False
     if nucl_filter:
-        if sequence.translate(None, b"ATCG"):
+        if sequence.translate(None, NUCL_ATCG):
             return False
     else:
-        if sequence.translate(None, b"ATCGN"):
+        if sequence.translate(None, NUCL_ATCGN):
             return False
     if quality.translate(None, PHRED_ALLOWED):
         return False
@@ -818,19 +817,19 @@ def build_pipeline(parameters):
     """
     pipeline = []
     if parameters.get("endqual_filter_flag"):
-        pipeline.append(lambda seq, qual: trim_ends_quality(qual, min_quality_both=parameters["min_quality_both"], endqual_min_start=parameters["endqual_min_start"], endqual_min_end=parameters["endqual_min_end"], endqual_filter_flag=True))
+        pipeline.append(lambda seq, qual: trim_ends_quality(qual, min_quality_both=parameters["min_quality_both"], endqual_min_start=parameters["endqual_min_start"], endqual_min_end=parameters["endqual_min_end"]))
     if parameters.get("slider_filter_flag"):
-        pipeline.append(lambda seq, qual: sliding_window_quality(qual, slider_quality=parameters["slider_quality"], slider_window=parameters["slider_window"], slider_step=parameters["slider_step"], slider_filter_flag=True))
+        pipeline.append(lambda seq, qual: sliding_window_quality(qual, slider_quality=parameters["slider_quality"], slider_window=parameters["slider_window"], slider_step=parameters["slider_step"]))
     if parameters.get("poly_filter_flag"):
-        pipeline.append(lambda seq, qual: homopolymer_nucleotide_trimming(seq, poly_length_both=parameters["poly_length_both"], poly_length_start=parameters["poly_length_start"], poly_length_end=parameters["poly_length_end"], poly_bases_both=parameters["poly_bases_both"], poly_bases_start=parameters["poly_bases_start"], poly_bases_end=parameters["poly_bases_end"], poly_filter_flag=True))
+        pipeline.append(lambda seq, qual: homopolymer_nucleotide_trimming(seq, poly_length_both=parameters["poly_length_both"], poly_length_start=parameters["poly_length_start"], poly_length_end=parameters["poly_length_end"], poly_bases_both=parameters["poly_bases_both"], poly_bases_start=parameters["poly_bases_start"], poly_bases_end=parameters["poly_bases_end"]))
     if parameters.get("adapter_trim_flag"):
-        pipeline.append(lambda seq, qual: adapter_trimming(seq, parameters["adapter_sequences"], adapter_trim_flag=True))
+        pipeline.append(lambda seq, qual: adapter_trimming(seq, adapter_sequences = parameters["adapter_sequences"]))
     if parameters.get("cut_flag"):
-        pipeline.append(lambda seq, qual: cut_set_ends(seq, cut_both=parameters["cut_both"], cut_start=parameters["cut_start"], cut_end=parameters["cut_end"], cut_flag=True))
+        pipeline.append(lambda seq, qual: cut_set_ends(seq, cut_both=parameters["cut_both"], cut_start=parameters["cut_start"], cut_end=parameters["cut_end"]))
     if parameters.get("n_trimming_flag"):
-        pipeline.append(lambda seq, qual: n_end_trimming(seq, n_trimming_flag=True))
+        pipeline.append(lambda seq, qual: n_end_trimming(seq))
     if parameters.get("kmer_filter_flag"):
-        pipeline.append(lambda seq, qual: kmer_complexity_scan(seq, kmer_scan=True, kmer=parameters["kmer_size"], low_complex_cutoff=parameters["kmer_cutoff"], allow_n=parameters["allow_n_kmer"]))
+        pipeline.append(lambda seq, qual: kmer_complexity_scan(seq, kmer=parameters["kmer_size"], low_complex_cutoff=parameters["kmer_cutoff"], allow_n=parameters["allow_n_kmer"]))
     return pipeline
 
 ##### Writing files functions #####
@@ -862,7 +861,7 @@ def open_fastq_writer(filepath, output_dir, gzip_output):
     return open(out_filepath, "xb")
 
 ##### Processing reads functions #####
-def trim_ends_quality(quality_arr, min_quality_both, endqual_min_start, endqual_min_end, endqual_filter_flag):
+def trim_ends_quality(quality_arr, min_quality_both, endqual_min_start, endqual_min_end):
     """
     Determines per-read trim boundaries based on quality thresholds at each end.
 
@@ -885,8 +884,6 @@ def trim_ends_quality(quality_arr, min_quality_both, endqual_min_start, endqual_
             boundaries per read.
     """
     n_reads, length = quality_arr.shape
-    if not endqual_filter_flag:
-        return np.zeros(n_reads, dtype=np.int32), np.full(n_reads, length, dtype=np.int32)
     if endqual_min_start is None:
         endqual_min_start = min_quality_both if min_quality_both is not None else 0
     if endqual_min_end is None:
@@ -909,7 +906,7 @@ def trim_ends_quality(quality_arr, min_quality_both, endqual_min_start, endqual_
         end_cutoffs = np.where(end_good_pos, end_cutoffs, 0)
     return start_cutoffs.astype(np.int32), end_cutoffs.astype(np.int32)
         
-def homopolymer_nucleotide_trimming(sequence_arr, poly_length_both, poly_length_start, poly_length_end, poly_bases_both, poly_bases_start, poly_bases_end, poly_filter_flag):
+def homopolymer_nucleotide_trimming(sequence_arr, poly_length_both, poly_length_start, poly_length_end, poly_bases_both, poly_bases_start, poly_bases_end):
     """
     Determines per-read trim boundaries to remove homopolymer runs 
     from the start and/or end of each read independently.
@@ -942,8 +939,6 @@ def homopolymer_nucleotide_trimming(sequence_arr, poly_length_both, poly_length_
             trim boundaries per read.
     """
     n_reads, length = sequence_arr.shape
-    if not poly_filter_flag:
-        return np.zeros(n_reads, dtype=np.int32), np.full(n_reads, length, dtype=np.int32)
     if not poly_bases_start and not poly_bases_end and not poly_bases_both:
         return np.zeros(n_reads, dtype=np.int32), np.full(n_reads, length, dtype=np.int32)
     if poly_length_both == poly_length_start == poly_length_end == 0:
@@ -986,7 +981,7 @@ def homopolymer_nucleotide_trimming(sequence_arr, poly_length_both, poly_length_
     
     return left_cutoffs, right_cutoffs
 
-def n_end_trimming(sequence_arr, n_trimming_flag):
+def n_end_trimming(sequence_arr):
     """
     Removes leading and trailing N-bases from each read.
 
@@ -1008,12 +1003,10 @@ def n_end_trimming(sequence_arr, n_trimming_flag):
             boundaries per read.
     """
     n_reads, sequence_length = sequence_arr.shape
-    if not n_trimming_flag: 
-        return np.zeros(n_reads, dtype=np.int32), np.full(n_reads, sequence_length, dtype=np.int32)
-    lefts, rights = homopolymer_nucleotide_trimming(sequence_arr, poly_length_both = 1, poly_length_start = 0, poly_length_end = 0, poly_bases_both = "N", poly_bases_start = None, poly_bases_end = None, poly_filter_flag = True)
+    lefts, rights = homopolymer_nucleotide_trimming(sequence_arr, poly_length_both = 1, poly_length_start = 0, poly_length_end = 0, poly_bases_both = "N", poly_bases_start = None, poly_bases_end = None)
     return lefts, rights
 
-def cut_set_ends(sequence_arr, cut_both, cut_start, cut_end, cut_flag):
+def cut_set_ends(sequence_arr, cut_both, cut_start, cut_end):
     """
     Produces fixed, user-specified trim boundaries applied uniformly to
     every read (e.g. hard-trimming a known number of adapter/primer bases
@@ -1044,15 +1037,13 @@ def cut_set_ends(sequence_arr, cut_both, cut_start, cut_end, cut_flag):
     """
 
     n_reads, length = sequence_arr.shape
-    if not cut_flag:
-        return np.zeros(n_reads, dtype = np.int32), np.full(n_reads, length, dtype = np.int32)
     cut_start = cut_start if cut_start != 0 else cut_both
     cut_end = length - cut_end if cut_end != 0 else length - cut_both
     if cut_start > cut_end:
         cut_start = cut_end
     return np.full(n_reads, cut_start, dtype=np.int32), np.full(n_reads, cut_end, dtype=np.int32)
 
-def sliding_window_quality(quality_arr, slider_quality, slider_window, slider_step, slider_filter_flag):
+def sliding_window_quality(quality_arr, slider_quality, slider_window, slider_step):
     """
     Determines per-read trim boundaries using a sliding-window quality scan,
     finding the longest (and highest-average-quality, as tiebreaker) stretch
@@ -1080,8 +1071,6 @@ def sliding_window_quality(quality_arr, slider_quality, slider_window, slider_st
             their full length; reads that fail everywhere get a zero-length region.
     """
     n_reads, length = quality_arr.shape
-    if not slider_filter_flag:
-        return np.zeros(n_reads, dtype = np.int32), np.full(n_reads, length, dtype = np.int32)
     if length < slider_window:
         return np.zeros(n_reads, dtype = np.int32), np.full(n_reads, length, dtype = np.int32)
 
@@ -1139,7 +1128,7 @@ def sliding_window_quality(quality_arr, slider_quality, slider_window, slider_st
 
     return left_cutoffs, right_cutoffs
 
-def adapter_trimming(sequence_arr, trim_sequences, adapter_trim_flag):
+def adapter_trimming(sequence_arr, adapter_sequences):
     """
     Determines per-read trim boundaries to remove specific adapter sequences.
     Detects adapter read-through from the end of each read.
@@ -1162,25 +1151,20 @@ def adapter_trimming(sequence_arr, trim_sequences, adapter_trim_flag):
             trim boundaries per read. Left cutoffs are always 0 (3'-end trimming only).
     """
     n_reads, length = sequence_arr.shape
-    if not adapter_trim_flag:
-        return np.zeros(n_reads, dtype = np.int32), np.full(n_reads, length, dtype = np.int32)
     right_cutoffs = np.full(n_reads, length, dtype=np.int32)
-    
-    
-    adapter_byte_strs = list({seq.encode('utf-8') for _, seq in trim_sequences})
     sequence_arr = sequence_arr.astype(np.uint8)
     all_bytes = sequence_arr.tobytes()
     
     for i in range(n_reads):
         row_bytes = all_bytes[i*length:(i+1)*length]
         best = length
-        for adapter_bytes in adapter_byte_strs:
+        for adapter_bytes in adapter_sequences:
             pos = row_bytes.find(adapter_bytes)
             if pos != -1 and pos < best:
                 best = pos
         right_cutoffs[i] = best
 
-    return np.zeros(n_reads, dtype=np.int32), right_cutoffs
+    return np.zeros(n_reads, dtype=np.int8), right_cutoffs
 
 def average_quality_batch(quality_arr, lefts, rights):
     """
@@ -1207,7 +1191,7 @@ def average_quality_batch(quality_arr, lefts, rights):
     avg_qualities = np.divide(sums, counts, out=np.zeros_like(sums, dtype=np.float64), where=counts > 0)
     return avg_qualities
 
-def kmer_complexity_scan(sequence_arr, kmer_scan, kmer, low_complex_cutoff, allow_n):
+def kmer_complexity_scan(sequence_arr, kmer, low_complex_cutoff, allow_n):
     """
     Counts k-mers per read and flags reads falling below the specified complexity
     cutoff for removal.
@@ -1234,9 +1218,6 @@ def kmer_complexity_scan(sequence_arr, kmer_scan, kmer, low_complex_cutoff, allo
         ValueError: If any chosen `kmer` length is greater than the sequence `length`.
     """
     n_reads, length = sequence_arr.shape
-    if not kmer_scan:
-        return np.zeros(n_reads, dtype=np.int32), np.full(n_reads, length, dtype=np.int32)
-
     if isinstance(kmer, str):
         kmer_list = [int(k.strip()) for k in kmer.split(',')]
     elif hasattr(kmer, '__iter__'):
@@ -1334,8 +1315,9 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
         valid_headers = [header_mgi_to_illumina(header, parameters["mgi_bc5"], parameters["mgi_bc7"], parameters["mgi_instrument"], parameters["mgi_run"]) for header in valid_headers]
     quality_arr = qual_to_bin(quality_list = valid_qualities, phred_offset = phred_offset)
     sequence_arr = seq_to_bin(sequence_list = valid_sequences)
-    left_list = [np.zeros(sequence_arr.shape[0], dtype=np.int32)]
-    right_list = [np.full(sequence_arr.shape[0], sequence_arr.shape[1], dtype=np.int32)]
+    n_reads, length = quality_arr.shape
+    left_list = [np.zeros(n_reads, dtype=np.int32)]
+    right_list = [np.full(n_reads, length, dtype=np.int32)]
     for step in build_pipeline(parameters):
         left, right = step(sequence_arr, quality_arr)
         left_list.append(left)
@@ -1343,7 +1325,7 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
     lefts = np.maximum.reduce(left_list)
     rights = np.minimum.reduce(right_list)
     if maximum_length == minimum_length == sequence_arr.shape[1]:
-        length_mask = np.ones(sequence_arr.shape[0], dtype=bool)
+        length_mask = np.ones(n_reads, dtype=bool)
     else:
         lengths_out = rights - lefts
         length_mask = (lengths_out <= maximum_length) & (lengths_out >= minimum_length)
@@ -1351,7 +1333,7 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
         average_quals = average_quality_batch(quality_arr, lefts, rights)
         qual_mask = average_quals >= minimum_average_qual
     else:
-        qual_mask = np.ones(sequence_arr.shape[0], dtype=bool)
+        qual_mask = np.ones(n_reads, dtype=bool)
     keep_mask = length_mask & qual_mask
     results = []
     for header, sequence, plus_line, quality, left, right, keep in zip(
@@ -1629,24 +1611,26 @@ def process_paired_chunk(chunks, phred_offset, read_length, minimum_length, maxi
     chunk1, chunk2 = chunks
     survivors_1, rejected_1 = trim_reads(chunk1, phred_offset, minimum_length, maximum_length, minimum_average_qual = parameters["minimum_average_qual"], read_length = read_length, parameters = parameters)
     survivors_2, rejected_2 = trim_reads(chunk2, phred_offset, minimum_length, maximum_length, minimum_average_qual = parameters["minimum_average_qual"], read_length = read_length, parameters = parameters)
+    remaining_2 = dict(survivors_2)
     paired_out_1 = []
     paired_out_2 = []
-    paired_ids = set()
-    for bid, record in survivors_1.items():
-        if bid in survivors_2:
-            paired_out_1.append(record)
-            paired_out_2.append(survivors_2[bid])
-            paired_ids.add(bid)
     singles_out = []
-    singles_out.extend(v for bid, v in survivors_1.items() if bid not in paired_ids)
-    singles_out.extend(v for bid, v in survivors_2.items() if bid not in paired_ids)
+    for bid, record in survivors_1.items():
+        mate = remaining_2.pop(bid, None)
+        if mate is not None:
+            paired_out_1.append(record)
+            paired_out_2.append(mate)
+        else:
+            singles_out.append(record)
+    singles_out.extend(remaining_2.values())
+
     num_singles = len(singles_out)
     num_paired = len(paired_out_1)
-
+    
     paired_out_1 = b"".join(paired_out_1)
     paired_out_2 = b"".join(paired_out_2)
     singles_out = b"".join(singles_out)
-    
+
     if gzip_output:
         paired_out_1 = gzip_zlib.compress(paired_out_1, compresslevel=gzip_level)
         paired_out_2 = gzip_zlib.compress(paired_out_2, compresslevel=gzip_level)
@@ -2264,9 +2248,13 @@ def parse_args():
  
     if parameters["adapter_trim_flag"] and parameters.get("adapter_fasta"):
         parameters["adapter_sequences"] = DEFAULT_ADAPTERS + load_adapters_from_fasta(parameters["adapter_fasta"])
+        parameters["adapter_sequences"] = list({seq.encode('utf-8') for _, seq in parameters["adapter_sequences"]})
+
     else:
         parameters["adapter_sequences"] = DEFAULT_ADAPTERS
- 
+        parameters["adapter_sequences"] = list({seq.encode('utf-8') for _, seq in DEFAULT_ADAPTERS})
+    
+    
     parameters["threads"] = worker_determination(parameters["threads"])    
     parameters["chunk_size"] = chunk_size_setter(parameters["chunk_size"])
  
