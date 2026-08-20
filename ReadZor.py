@@ -2,9 +2,11 @@
     # check barcodes
     # logging
     # try out python 3.13t for GIL free work
-    # fix bug if both a fastq and fast.gz of same file are present in -GO mode, no trimming.
     # write witb seperate thread
     # generate chunks with seperate thread
+    # shared memory?
+    # validate fastq to main thread?
+    # constants to own file?
     
 #!/usr/bin/env python3
 
@@ -23,11 +25,11 @@ import sys
 import time
 
 import numpy as np
-from isal import igzip as gzip_isal
+#from isal import igzip as gzip_isal
 from zlib_ng import gzip_ng as gzip_zlib
 
 ##### Definition of constant values #####
-VERSION = "0.0.8"
+VERSION = "0.0.9"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3", "AGATCGGAAGAGC"), #12x in human genome
@@ -94,7 +96,7 @@ def estimate_gzip_ratio(filepath, sample_bytes=1 * 1024 * 1024):
     compressed_read = 0
     uncompressed_read = 0
     with open(filepath, 'rb') as raw:
-        decompressor = gzip_isal.GzipFile(fileobj=raw)
+        decompressor = gzip_zlib.GzipFile(fileobj=raw)
         while uncompressed_read < sample_bytes:
             chunk = decompressor.read(1024 * 1024)
             if not chunk:
@@ -458,7 +460,7 @@ def lazy_fastq(filepath):
     if is_gz_file(filepath):
         raw = open(filepath, 'rb', buffering=10 * 1024 * 1024)
         try:
-            fastq_file = gzip_isal.GzipFile(fileobj=raw)
+            fastq_file = gzip_zlib.GzipFile(fileobj=raw)
         except Exception:
             raw.close()
             raise
@@ -476,17 +478,14 @@ def lazy_fastq(filepath):
 def find_paired_files(filepaths):
     """
     Groups a list of FASTQ filepaths into paired-end pairs and leftover unpaired files.
-
     For each file, reads the first line (its header) to determine a
-    "base ID" and read number (e.g., R1/R2) via helper functions, 
-    without parsing the whole file. Files sharing a base ID with valid 
-    mate designations are paired together (ensuring correct R1, R2 order); 
-    leftover files, unmatchable files, or base IDs with more than two files 
+    "base ID" and read number (e.g., R1/R2) via helper functions,
+    without parsing the whole file. Files sharing a base ID with valid
+    mate designations are paired together (ensuring correct R1, R2 order);
+    leftover files, unmatchable files, or base IDs with more than two files
     are returned as unpaired.
-
     Args:
         filepaths (list[str]): Paths to FASTQ files to inspect and pair.
-
     Returns:
         tuple[list[tuple[str, str]], list[str]]:
             - A list of (file_1, file_2) tuples representing matched pairs (ordered R1, R2).
@@ -500,7 +499,7 @@ def find_paired_files(filepaths):
             if is_gz_file(filepath):
                 raw = open(filepath, 'rb', buffering=1024)
                 try:
-                    file = gzip_isal.GzipFile(fileobj=raw)
+                    file = gzip_zlib.GzipFile(fileobj=raw)
                     with file:
                         first_line = file.readline()
                 finally:
@@ -525,10 +524,33 @@ def find_paired_files(filepaths):
             (file_1, read_1), (file_2, read_2) = file_list
             if read_1 == 1 and read_2 == 2:
                 pairs.append((file_1, file_2))
+                used.add(file_1)
+                used.add(file_2)
             elif read_1 == 2 and read_2 == 1:
                 pairs.append((file_2, file_1))
-            used.add(file_1)
-            used.add(file_2)
+                used.add(file_1)
+                used.add(file_2)
+            elif read_1 == read_2:
+                keep_file, drop_file = (
+                    (file_1, file_2)
+                    if filepaths.index(file_1) <= filepaths.index(file_2)
+                    else (file_2, file_1)
+                )
+                print(
+                    f"Warning: Files '{file_1}' and '{file_2}' share base ID "
+                    f"'{base_id}' and read number {read_1}, and appear to be "
+                    f"duplicate copies of the same file. Discarding "
+                    f"'{drop_file}' and keeping '{keep_file}' for unpaired processing.",
+                    file=sys.stderr
+                )
+                used.add(drop_file)
+            else:
+                print(
+                    f"Warning: Files '{file_1}' and '{file_2}' share base ID "
+                    f"'{base_id}' but do not form a valid R1/R2 pair "
+                    f"(read numbers: {read_1}, {read_2}). Leaving both unpaired.",
+                    file=sys.stderr
+                )
         elif len(file_list) > 2:
             print(
                     f"Warning: Found {len(file_list)} files matching base ID '{base_id}' "
