@@ -1,70 +1,82 @@
 # This workflow will upload a Python Package to PyPI when a release is created
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python#publishing-to-package-registries
+# For more information see: 
+# https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python#publishing-to-package-registries
+# https://packaging.python.org/en/latest/guides/publishing-package-distribution-releases-using-github-actions-ci-cd-workflows/
 
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
-
-name: Upload Python Package
+name: Upload Python package to PyPI
 
 on:
-  release:
-    types: [published]
-
-permissions:
-  contents: read
+  push:
+    branches:
+      - main
+    tags:
+      - "v*.*.*" 
+  workflow_dispatch: 
 
 jobs:
-  release-build:
+  build:
+    name: Build distribution
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v7
         with:
           python-version: "3.x"
 
       - name: Build release distributions
         run: |
-          # NOTE: put your own distribution build steps here.
-          python -m pip install build
+          python -m pip install build --user
           python -m build
 
-      - name: Upload distributions
+      - name: Store the distribution packages
         uses: actions/upload-artifact@v4
         with:
-          name: release-dists
+          name: python-package-distributions
           path: dist/
 
-  pypi-publish:
-    runs-on: ubuntu-latest
+  publish-to-pypi:
+    name: Publish Python distribution to PyPI
+    # Publishes when pushing a tag or manually triggering on tag/release branch
+    if: startsWith(github.ref, 'refs/tags/')
     needs:
-      - release-build
-    permissions:
-      # IMPORTANT: this permission is mandatory for trusted publishing
-      id-token: write
-
-    # Dedicated environments with protections for publishing are strongly recommended.
-    # For more information, see: https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment#deployment-protection-rules
+      - build
+    runs-on: ubuntu-latest
     environment:
       name: pypi
-      # OPTIONAL: uncomment and update to include your PyPI project URL in the deployment status:
-      # url: https://pypi.org/p/YOURPROJECT
-      #
-      # ALTERNATIVE: if your GitHub Release name is the PyPI project version string
-      # ALTERNATIVE: exactly, uncomment the following line instead:
-      # url: https://pypi.org/project/YOURPROJECT/${{ github.event.release.name }}
-
+      url: https://pypi.org/p/Readzor
+    permissions:
+      id-token: write
     steps:
-      - name: Retrieve release distributions
-        uses: actions/download-artifact@v4
+      - name: Download all the dists
+        uses: actions/download-artifact@v8
         with:
-          name: release-dists
+          name: python-package-distributions
           path: dist/
+      - name: Publish distribution to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
 
-      - name: Publish release distributions to PyPI
+  publish-to-testpypi:
+    name: Publish Python distribution to TestPyPI
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+    needs:
+      - build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/Readzor
+    permissions:
+      id-token: write
+    steps:
+      - name: Download all the dists
+        uses: actions/download-artifact@v8
+        with:
+          name: python-package-distributions
+          path: dist/
+      - name: Publish distribution to TestPyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: dist/
+          repository-url: https://test.pypi.org/legacy/
