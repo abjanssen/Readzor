@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "Readzor"
 description = "A Python3 program for fully automatic trimming and quality control of short read sequences."
 readme = "README.md"
-requires-python = ">=3.6"
+requires-python = ">=3.14.7"
 license = { file = "LICENSE" }
 keywords = ["short read sequencing", "illumina", "quality control", "read trimming", "adapter trimming", "readzor"]
 authors = [{ name = "Axel B. Janssen", email = "janssen.axel@gmail.com" }]
@@ -23,7 +23,7 @@ classifiers = [
 ]
 
 dependencies = [
-  "numpy==1.26.4",
+  "numpy==2.5.2",
   "isal==1.8.0"
 ]
 

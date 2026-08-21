@@ -40,7 +40,9 @@ FULL_AUTO_OVERRIDES = {
     "n_trimming_flag": False, #light
     "poly_filter_flag": False, #light
     "adapter_trim_flag": True, #heavy
-    "nucl_filter": True
+    "nucl_filter": True,
+    "gzip": True,
+    "progress": True
 }
 
 ##### Progress tracker #####
