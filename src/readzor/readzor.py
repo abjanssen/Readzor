@@ -1,13 +1,3 @@
-#Ideas:
-    # check barcodes
-    # logging
-    # try out python 3.13t for GIL free work
-    # write witb seperate thread
-    # generate chunks with seperate thread
-    # shared memory?
-    # validate fastq to main thread?
-    # constants to own file?
-    
 #!/usr/bin/env python3
 
 ##### Import packages #####
@@ -46,17 +36,12 @@ DEFAULT_ADAPTERS = [
 FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "full_auto"}
 FULL_AUTO_OVERRIDES = {
     "endqual_filter_flag": True, #light
-    "slider_filter_flag": False, #remove before submit #HEAVY
-    "kmer_filter_flag": False,#remove before submit #HEAVY
-    "n_trimming_flag": False, #remove before submit #light
-    "poly_filter_flag": False, #remove before submit #light
-    "adapter_trim_flag": True, #HEAVY
-    
-    "nucl_filter": True,
-    "min_length": 100, #remove before submit
-    "threads": 15, #remove before submit
-    "progress": True, #remove before submit
-    "gzip": False  #remove before submit
+    "slider_filter_flag": False, ##heavy
+    "kmer_filter_flag": False, #heavy
+    "n_trimming_flag": False, #light
+    "poly_filter_flag": False, #light
+    "adapter_trim_flag": True, #heavy
+    "nucl_filter": True
 }
 
 ##### Progress tracker #####
