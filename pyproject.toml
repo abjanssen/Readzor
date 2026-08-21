@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "Readzor"
+version = {attr = "readzor.readzor.VERSION"}
+description = "A Python3 program for fully automatic trimming and quality control of short read sequences."
+readme = "README.md"
+requires-python = ">=3.6"
+license = { file = "LICENSE" }
+keywords = ["short read sequencing", "illumina", "quality control", "read trimming", "adapter trimming", "readzor"]
+authors = [{ name = "Axel B. Janssen", email = "janssen.axel@gmail.com" }]
+maintainers = [{ name = "Axel B. Janssen", email = "janssen.axel@gmail.com" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Topic :: Software Development :: Build Tools",
+  "License :: GPLv3 License",
+  "Programming Language :: Python :: 3",
+]
+
+dependencies = ["numpy>=1.26.4",
+                "isal=1.8.0",
+                "zlib-ng=1.0.0"]
+
+[project.urls]
+"GitHub" = "https://github.com/abjanssen/readzor"
+
+[project.scripts]
+readzor = "readzor:main"
+Readzor = "readzor:main"
