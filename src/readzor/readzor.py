@@ -15,11 +15,10 @@ import sys
 import time
 
 import numpy as np
-#from isal import igzip as gzip_isal
-from zlib_ng import gzip_ng as gzip_zlib
+from isal import igzip as gzip_isal
 
 ##### Definition of constant values #####
-VERSION = "0.0.9"
+VERSION = "0.0.10"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3", "AGATCGGAAGAGC"), #12x in human genome
@@ -69,7 +68,7 @@ def estimate_bytes_per_read(filepath):
         return header_bytes + seq_bytes + plus_bytes + qual_bytes
     raise ValueError(f"No FASTQ records found in '{filepath}'; cannot estimate bytes per read.")
 
-def estimate_gzip_ratio(filepath, sample_bytes=1 * 1024 * 1024):
+def estimate_gzip_ratio(filepath, sample_bytes=10 * 1024 * 1024):
     """
     Estimate a gzip file's compression ratio (uncompressed / compressed) by
     decompressing a leading sample, rather than the whole file.
@@ -81,7 +80,7 @@ def estimate_gzip_ratio(filepath, sample_bytes=1 * 1024 * 1024):
     compressed_read = 0
     uncompressed_read = 0
     with open(filepath, 'rb') as raw:
-        decompressor = gzip_zlib.GzipFile(fileobj=raw)
+        decompressor = gzip_isal.GzipFile(fileobj=raw)
         while uncompressed_read < sample_bytes:
             chunk = decompressor.read(1024 * 1024)
             if not chunk:
@@ -431,35 +430,59 @@ def is_gz_file(filepath):
 def lazy_fastq(filepath):
     """
     Lazily yield FASTQ records one at a time without loading the entire file.
-    
-    Detects gzip compression via magic bytes (independent of file extension),
-    uses a 10 MB read buffer for efficient I/O, and yields each 4-line FASTQ
-    record as (header, sequence, plus, quality) tuples with line endings stripped.
+
+    Detects gzip compression via magic bytes (independent of file extension).
+    Gzip files are read via isal in large chunks with manual line-stitching
+    across chunk boundaries (fastest path for isal's decompression throughput).
+    Plain-text files are read via Python's line iterator with a 10 MB read
+    buffer (fastest path for uncompressed I/O). Yields each 4-line FASTQ
+    record as (header, sequence, plus, quality) tuples with line endings
+    stripped.
 
     Args:
         filepath (str): Path to the FASTQ file (.fastq, .fq, or gzip-compressed).
-
     Yields:
         tuple[str, str, str, str]: (header, sequence, plus, quality) for each read.
     """
+    buffer_size = 10 * 1024 * 1024
     if is_gz_file(filepath):
-        raw = open(filepath, 'rb', buffering=10 * 1024 * 1024)
-        try:
-            fastq_file = gzip_zlib.GzipFile(fileobj=raw)
-        except Exception:
-            raw.close()
-            raise
+        fastq_file = gzip_isal.open(filepath, 'rb')
+        with fastq_file:
+            leftover = b""
+            while True:
+                chunk = fastq_file.read(buffer_size)
+                if not chunk:
+                    if leftover:
+                        lines = leftover.rstrip(b"\r\n").split(b"\n")
+                        usable = len(lines) - (len(lines) % 4)
+                        for i in range(0, usable, 4):
+                            yield lines[i], lines[i+1], lines[i+2], lines[i+3]
+                    break
+                data = leftover + chunk
+                last_newline = data.rfind(b"\n")
+                if last_newline == -1:
+                    leftover = data
+                    continue
+                lines = data[:last_newline].split(b"\n")
+                usable = len(lines) - (len(lines) % 4)
+                for i in range(0, usable, 4):
+                    yield lines[i], lines[i+1], lines[i+2], lines[i+3]
+                leftover_lines = lines[usable:]
+                if leftover_lines:
+                    leftover = b"\n".join(leftover_lines) + b"\n" + data[last_newline + 1:]
+                else:
+                    leftover = data[last_newline + 1:]
     else:
-        fastq_file = open(filepath, 'rb', buffering=10 * 1024 * 1024)
-    with fastq_file:
-        lines = iter(fastq_file)
-        for header in lines:
-            header = header.strip()
-            sequence = next(lines).strip()
-            plus = next(lines).strip()
-            quality = next(lines).strip()
-            yield header, sequence, plus, quality
-
+        fastq_file = open(filepath, 'rb', buffering=buffer_size)
+        with fastq_file:
+            lines = iter(fastq_file)
+            for header in lines:
+                header = header.strip()
+                sequence = next(lines).strip()
+                plus = next(lines).strip()
+                quality = next(lines).strip()
+                yield header, sequence, plus, quality
+                
 def find_paired_files(filepaths):
     """
     Groups a list of FASTQ filepaths into paired-end pairs and leftover unpaired files.
@@ -484,7 +507,7 @@ def find_paired_files(filepaths):
             if is_gz_file(filepath):
                 raw = open(filepath, 'rb', buffering=1024)
                 try:
-                    file = gzip_zlib.GzipFile(fileobj=raw)
+                    file = gzip_isal.GzipFile(fileobj=raw)
                     with file:
                         first_line = file.readline()
                 finally:
@@ -1352,7 +1375,10 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
     len_results = len(results)
     results = b"".join(results)
     if gzip_output:
-        results = gzip_zlib.compress(results, compresslevel=gzip_level)
+        try:
+            results = gzip_isal.compress(results, compresslevel=gzip_level)
+        except Exception as e:
+            raise RuntimeError(f"Compression failed inside worker: {str(e)}") from None
     return results, len_results, rejected
 
 def generate_unpaired_tasks(filepaths, chunk_size, parameters):
@@ -1639,9 +1665,13 @@ def process_paired_chunk(chunks, phred_offset, read_length, minimum_length, maxi
     singles_out = b"".join(singles_out)
 
     if gzip_output:
-        paired_out_1 = gzip_zlib.compress(paired_out_1, compresslevel=gzip_level)
-        paired_out_2 = gzip_zlib.compress(paired_out_2, compresslevel=gzip_level)
-        singles_out = gzip_zlib.compress(singles_out, compresslevel=gzip_level)
+            isal_level = min(max(gzip_level, 0), 3)
+            try:
+                paired_out_1 = gzip_isal.compress(paired_out_1, compresslevel=isal_level)
+                paired_out_2 = gzip_isal.compress(paired_out_2, compresslevel=isal_level)
+                singles_out = gzip_isal.compress(singles_out, compresslevel=isal_level)
+            except Exception as e:
+                raise RuntimeError(f"Compression failed inside worker: {str(e)}") from None
     return paired_out_1, paired_out_2, singles_out, num_paired, num_singles, rejected_1 + rejected_2
 
 ##### Input handler functions #####
@@ -1964,8 +1994,8 @@ def parse_args():
         help="[FLAG] Compress filtered FASTQ files in gzip format. Default: off."
     )
     output_group.add_argument(
-        "--gzip-level", type=int, default = 4, metavar = "", choices=range(1, 10),
-        help="Set gzip compression level. Higher compression decreases processing speed. Possible levels: 1-9. Default: 4."
+        "--gzip-level", type=int, default = 2, metavar = "", choices=range(0, 3),
+        help="Set gzip compression level. Higher compression decreases processing speed. Possible levels: 0-3. Default: 2."
     )
  
     general_quality_group = parser.add_argument_group("General output filter options")

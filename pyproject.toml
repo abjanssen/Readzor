@@ -24,8 +24,7 @@ classifiers = [
 
 dependencies = [
   "numpy==1.26.4",
-  "isal==1.8.0",
-  "zlib-ng==1.0.0"
+  "isal==1.8.0"
 ]
 
 [tool.setuptools.dynamic]
