@@ -114,7 +114,7 @@ python readzor.py --version
 All modules are off by default. To use a module, specify a module flag. Further specifications with module settings possible.
 
 ### General settings:
-`--help/-h` [FLAG]: Show this help message and exit. Combine with --full-auto/-GO for more information on fully automatic mode.\
+`--help/-h` [FLAG]: Show this help message and exit. Combine with --full-auto/-GO for more information on fully automatic mode. Combine with --adapter-trim-flag/-af for more information on built-in adapter sequences.\
 `--version/-v` [FLAG]: Show ReadZor version and exit.\
 `--full-auto, -GO` [FLAG]: Run Readzor in fully automatic mode. Combine with --help/-h for more information on fully automatic mode.\
 `--progress` [FLAG]: Show a live progress bar and estimated time remaining during processing, based on estimated read counts. Default: off.
@@ -173,7 +173,7 @@ Illumina NovaSeq, NextSeq, and MiniSeq use a two-color chemistry, in which guani
 
 ### Adapter trimming
 Trim reads for Illumina adapter sequences. Standard sequences included are TruSeq3 universal and index adapters, and Nextera adapters. Only perfectly matching sequences are trimmed. Independent of quality.\
-`--adapter-trim-flag, -af`: [FLAG] Turn on adapter trimming module. Default: off.\
+`--adapter-trim-flag, -af`: [FLAG] Turn on adapter trimming module. Default: off. Combine with --help/-h for more information on built-in adapter sequences.\
 `--adapter-fasta-add, -ad`: FASTA file with adapter sequences to trim for, in addition to predefined sequences.\
 `--adapter-fasta-excl, -ax`: Fasta file with adapter sequences to trim for, excluding predefined and additional sequences specified.
     

@@ -15,7 +15,7 @@ import sys
 import time
 
 import numpy as np
-from isal import igzip as gzip_isal
+from isal import igzip as gzip
 
 ##### Definition of constant values #####
 VERSION = "0.0.10"
@@ -33,6 +33,7 @@ DEFAULT_ADAPTERS = [
     ("TruSeq_small_RNA","TGGAATTCTCGGGTGCCAAGG")
 ]
 FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "full_auto"}
+FIELD_SEP = b"\x1f"
 FULL_AUTO_OVERRIDES = {
     "endqual_filter_flag": True, #light
     "slider_filter_flag": False, ##heavy
@@ -41,7 +42,7 @@ FULL_AUTO_OVERRIDES = {
     "poly_filter_flag": False, #light
     "adapter_trim_flag": True, #heavy
     "nucl_filter": True,
-    "gzip": False,
+    "gzip": True,
     "progress": True
 }
 
@@ -62,7 +63,8 @@ def estimate_bytes_per_read(filepath):
     Raises:
         ValueError: If the file contains no readable FASTQ records.
     """
-    for header, sequence, plus, quality in lazy_fastq(filepath):
+    for record in lazy_fastq(filepath):
+        header, sequence, plus, quality = record.split(FIELD_SEP)
         header_bytes = len(header) + 1
         seq_bytes = len(sequence) + 1 
         plus_bytes = len(plus) + 1
@@ -82,7 +84,6 @@ def estimate_gzip_ratio(filepath, sample_bytes=10 * 1024 * 1024):
     compressed_read = 0
     uncompressed_read = 0
     with open(filepath, 'rb') as raw:
-        decompressor = gzip_isal.GzipFile(fileobj=raw)
         while uncompressed_read < sample_bytes:
             chunk = decompressor.read(1024 * 1024)
             if not chunk:
@@ -383,7 +384,8 @@ def query_read_length(filepath):
         int | None: The sequence length of the first read, or None if the file
         is empty or contains no valid records.
     """
-    for _, sequence, _, _ in lazy_fastq(filepath):
+    for record in lazy_fastq(filepath):
+        _, sequence, _, _ = record.split(FIELD_SEP)
         return len(sequence)
     return None
 
@@ -448,7 +450,7 @@ def lazy_fastq(filepath):
     """
     buffer_size = 10 * 1024 * 1024
     if is_gz_file(filepath):
-        fastq_file = gzip_isal.open(filepath, 'rb')
+        fastq_file = gzip.open(filepath, 'rb')
         with fastq_file:
             leftover = b""
             while True:
@@ -458,7 +460,7 @@ def lazy_fastq(filepath):
                         lines = leftover.rstrip(b"\r\n").split(b"\n")
                         usable = len(lines) - (len(lines) % 4)
                         for i in range(0, usable, 4):
-                            yield lines[i], lines[i+1], lines[i+2], lines[i+3]
+                            yield FIELD_SEP.join((lines[i], lines[i+1], lines[i+2], lines[i+3]))
                     break
                 data = leftover + chunk
                 last_newline = data.rfind(b"\n")
@@ -468,7 +470,7 @@ def lazy_fastq(filepath):
                 lines = data[:last_newline].split(b"\n")
                 usable = len(lines) - (len(lines) % 4)
                 for i in range(0, usable, 4):
-                    yield lines[i], lines[i+1], lines[i+2], lines[i+3]
+                    yield FIELD_SEP.join((lines[i], lines[i+1], lines[i+2], lines[i+3]))
                 leftover_lines = lines[usable:]
                 if leftover_lines:
                     leftover = b"\n".join(leftover_lines) + b"\n" + data[last_newline + 1:]
@@ -483,7 +485,7 @@ def lazy_fastq(filepath):
                 sequence = next(lines).strip()
                 plus = next(lines).strip()
                 quality = next(lines).strip()
-                yield header, sequence, plus, quality
+                yield FIELD_SEP.join((header, sequence, plus, quality))
                 
 def find_paired_files(filepaths):
     """
@@ -509,7 +511,7 @@ def find_paired_files(filepaths):
             if is_gz_file(filepath):
                 raw = open(filepath, 'rb', buffering=1024)
                 try:
-                    file = gzip_isal.GzipFile(fileobj=raw)
+                    file = gzip.GzipFile(fileobj=raw)
                     with file:
                         first_line = file.readline()
                 finally:
@@ -635,9 +637,10 @@ def detect_phred_offset(filepath, reads_for_phred_offset, phred_offset):
     count = 0
     reader = lazy_fastq(filepath)
     try:
-        for _, _, _, quality in reader:
+        for record in reader:
             if count >= reads_for_phred_offset:
                 break
+            _, _, _, quality = record.split(FIELD_SEP)
             q_bytes = np.frombuffer(quality, dtype=np.uint8)
             min_ascii = min(min_ascii, q_bytes.min())
             max_ascii = max(max_ascii, q_bytes.max())
@@ -1334,11 +1337,12 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
     valid_pluses = []
     valid_qualities = []
     for r in chunk:
-        if validate_fastq(*r, min_raw_read_length = parameters["min_raw_read_length"], nucl_filter = parameters["nucl_filter"], read_length = read_length):
-            valid_headers.append(r[0])
-            valid_sequences.append(r[1])
-            valid_pluses.append(r[2])
-            valid_qualities.append(r[3])
+        header, sequence, plus, quality = r.split(FIELD_SEP)
+        if validate_fastq(header, sequence, plus, quality, min_raw_read_length = parameters["min_raw_read_length"], nucl_filter = parameters["nucl_filter"], read_length = read_length):
+            valid_headers.append(header)
+            valid_sequences.append(sequence)
+            valid_pluses.append(plus)
+            valid_qualities.append(quality)
     rejected = len(chunk) - len(valid_headers)
     if not valid_headers:
         return [], 0, rejected
@@ -1378,7 +1382,7 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
     results = b"".join(results)
     if gzip_output:
         try:
-            results = gzip_isal.compress(results, compresslevel=gzip_level)
+            results = gzip.compress(results, compresslevel=gzip_level)
         except Exception as e:
             raise RuntimeError(f"Compression failed inside worker: {str(e)}") from None
     return results, len_results, rejected
@@ -1567,11 +1571,12 @@ def trim_reads(records, phred_offset, minimum_length, maximum_length, read_lengt
     valid_qualities = []
     rejected = 0
     for r in records:
-        if validate_fastq(*r,min_raw_read_length = parameters["min_raw_read_length"],nucl_filter = parameters["nucl_filter"], read_length = read_length):
-            valid_headers.append(r[0])
-            valid_sequences.append(r[1])
-            valid_pluses.append(r[2])
-            valid_qualities.append(r[3])
+        header, sequence, plus, quality = r.split(FIELD_SEP)
+        if validate_fastq(header, sequence, plus, quality, min_raw_read_length = parameters["min_raw_read_length"],nucl_filter = parameters["nucl_filter"], read_length = read_length):
+            valid_headers.append(header)
+            valid_sequences.append(sequence)
+            valid_pluses.append(plus)
+            valid_qualities.append(quality)
         else:
             rejected += 1
     if not valid_headers:
@@ -1669,9 +1674,9 @@ def process_paired_chunk(chunks, phred_offset, read_length, minimum_length, maxi
     if gzip_output:
             isal_level = min(max(gzip_level, 0), 3)
             try:
-                paired_out_1 = gzip_isal.compress(paired_out_1, compresslevel=isal_level)
-                paired_out_2 = gzip_isal.compress(paired_out_2, compresslevel=isal_level)
-                singles_out = gzip_isal.compress(singles_out, compresslevel=isal_level)
+                paired_out_1 = gzip.compress(paired_out_1, compresslevel=isal_level)
+                paired_out_2 = gzip.compress(paired_out_2, compresslevel=isal_level)
+                singles_out = gzip.compress(singles_out, compresslevel=isal_level)
             except Exception as e:
                 raise RuntimeError(f"Compression failed inside worker: {str(e)}") from None
     return paired_out_1, paired_out_2, singles_out, num_paired, num_singles, rejected_1 + rejected_2
@@ -1852,6 +1857,17 @@ class CleanHelpFormatter(argparse.HelpFormatter):
         help_text = re.sub(r"\n\n(?=  -)", "\n", help_text)
         return help_text
     
+def print_adapters():
+    """
+    Prints the name and sequence of every built-in adapter available for
+    --adapter-trim, for the user to query before choosing one.
+    """
+    print("\nBuilt-in adapter sequences (use with --adapter-trim/-at <name>):\n")
+    name_width = max(len(name) for name, _ in DEFAULT_ADAPTERS) + 2
+    for name, sequence in DEFAULT_ADAPTERS:
+        print(f"    {name:<{name_width}} {sequence}")
+    print()
+
 def print_full_auto_help(parser):
     """
     Prints the effective settings --full-auto/-GO applies, grouped by the
@@ -1960,6 +1976,10 @@ def parse_args():
         help="[FLAG] Show Readzor version and exit."
     )
     general_group.add_argument(
+        "--list-adapters", "-LA", action = "store_true", default = False,
+        help="[FLAG] Show all built-in adapter sequences and exit."
+    )
+    general_group.add_argument(
         "--full-auto", "-GO", action = "store_true", default = False,
         help="[FLAG] Run Readzor in fully automatic mode. Combine with --help/-h for more information on fully automatic mode."
     )
@@ -1996,8 +2016,8 @@ def parse_args():
         help="[FLAG] Compress filtered FASTQ files in gzip format. Default: off."
     )
     output_group.add_argument(
-        "--gzip-level", type=int, default = 2, metavar = "", choices=range(0, 3),
-        help="Set gzip compression level. Higher compression decreases processing speed. Possible levels: 0-3. Default: 2."
+        "--gzip-level", type=int, default = 1, metavar = "", choices=range(0, 3),
+        help="Set gzip compression level. Higher compression decreases processing speed. Possible levels: 0-3. Default: 1."
     )
  
     general_quality_group = parser.add_argument_group("General output filter options")
@@ -2204,6 +2224,10 @@ def parse_args():
  
     if args.version:
         print(f"Readzor version: {VERSION}")
+        sys.exit()
+
+    if args.list_adapters:
+        print_adapters()
         sys.exit()
  
     if args.full_auto:
