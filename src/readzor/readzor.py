@@ -2121,8 +2121,12 @@ def parse_args():
         help='[FLAG] Turn on adapter trimming module. Default: off.'
     )
     adapter_trimming.add_argument(
-        "--adapter-fasta", "-ad", type = str, default = None, metavar="",
-        help="Fasta file with additional adapter sequences to trim for."
+        "--adapter-fasta-add", "-ad", type = str, default = None, metavar="",
+        help="Fasta file with adapter sequences to trim for, in addition to predefined sequences."
+    )
+    adapter_trimming.add_argument(
+        "--adapter-fasta-excl", "-ax", type = str, default = None, metavar="",
+        help="Fasta file with adapter sequences to trim for, excluding predefined and additional sequences specified"
     )
  
     low_complexity_group = parser.add_argument_group("Low complexity filtering",
@@ -2255,7 +2259,8 @@ def parse_args():
     parameters["min_raw_read_length"] = args.min_raw_read_length
     parameters["reads_for_phred_offset"] = args.reads_for_phred_offset
     parameters["adapter_trim_flag"] = args.adapter_trim_flag
-    parameters["adapter_fasta"] = args.adapter_fasta
+    parameters["adapter_fasta_add"] = args.adapter_fasta_add
+    parameters["adapter_fasta_excl"] = args.adapter_fasta_excl
     parameters["nucl_filter"] = args.nucl_filter
     parameters["phred_offset"] = args.phred_offset
     parameters["threads"] = args.threads
@@ -2285,14 +2290,15 @@ def parse_args():
     if parameters["nucl_filter"]:
         parameters["n_trimming_flag"] = False
  
-    if parameters["adapter_trim_flag"] and parameters.get("adapter_fasta"):
-        parameters["adapter_sequences"] = DEFAULT_ADAPTERS + load_adapters_from_fasta(parameters["adapter_fasta"])
+    if parameters["adapter_trim_flag"] and parameters.get("adapter_fasta_add") and not parameters.get("adapter_fasta_excl"):
+        parameters["adapter_sequences"] = DEFAULT_ADAPTERS + load_adapters_from_fasta(parameters["adapter_fasta_add"])
         parameters["adapter_sequences"] = list({seq.encode('utf-8') for _, seq in parameters["adapter_sequences"]})
-
+    if parameters["adapter_trim_flag"] and parameters.get("adapter_fasta_excl"):
+        parameters["adapter_sequences"] = load_adapters_from_fasta(parameters["adapter_fasta_excl"])
+        parameters["adapter_sequences"] = list({seq.encode('utf-8') for _, seq in parameters["adapter_sequences"]})
     else:
         parameters["adapter_sequences"] = DEFAULT_ADAPTERS
         parameters["adapter_sequences"] = list({seq.encode('utf-8') for _, seq in DEFAULT_ADAPTERS})
-    
     
     parameters["threads"] = worker_determination(parameters["threads"])    
     parameters["chunk_size"] = chunk_size_setter(parameters["chunk_size"])
