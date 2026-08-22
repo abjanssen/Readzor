@@ -41,7 +41,7 @@ FULL_AUTO_OVERRIDES = {
     "poly_filter_flag": False, #light
     "adapter_trim_flag": True, #heavy
     "nucl_filter": True,
-    "gzip": True,
+    "gzip": False,
     "progress": True
 }
 
@@ -257,7 +257,7 @@ def create_folder_structure(output_dir):
     """
     Create a timestamped results folder inside a specified output directory.
     
-    Generates a new subfolder named "ReadZor_results_<YYYY-MM-DD_HH-MM-SS>"
+    Generates a new subfolder named "Readzor_results_<YYYY-MM-DD_HH-MM-SS>"
     based on the current date and time. This ensures each run's outputs are
     isolated and prevents accidental overwrites of results from previous runs.
 
@@ -272,7 +272,7 @@ def create_folder_structure(output_dir):
         OSError: If the folder cannot be created due to permission issues or
             invalid path.
     """
-    created_output_dir = os.path.join(output_dir, "ReadZor_results_" + datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+    created_output_dir = os.path.join(output_dir, "Readzor_results_" + datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
     os.makedirs(created_output_dir, exist_ok=True)
     return created_output_dir
 
@@ -1861,7 +1861,7 @@ def print_full_auto_help(parser):
     print(
         "\n"
         "When --full-auto/-GO is specified, only input parameters --input-files/-i, --input-paired/-ip, and --input-unpaired/-iu are respected."
-        "\nIf none of these are provided, ReadZor will auto-detect FASTQ files in the current working directory."
+        "\nIf none of these are provided, Readzor will auto-detect FASTQ files in the current working directory."
         "\nAll other user-provided parameters are ignored."
         "\n"
         "\nIn full automatic mode, the default settings are used, with the following specific changes:"
@@ -1886,7 +1886,7 @@ def print_full_auto_help(parser):
 
 def parse_args():
     """
-    Parses ReadZor's command-line arguments into a resolved parameters dict.
+    Parses Readzor's command-line arguments into a resolved parameters dict.
     
     Supports three main input modes: fully automatic operation (--full-auto,
     which autodetects files and ignores all other options), a flat list of
@@ -1942,7 +1942,7 @@ def parse_args():
     """
     parser = argparse.ArgumentParser(
         prog="readzor",
-        description="ReadZor: a modular FASTQ quality trimming pipeline.\n\n"
+        description="Readzor: a modular FASTQ quality trimming pipeline.\n\n"
                      "All modules are off by default. To use a module, specify a "
                      "module flag. Further specifications with module settings possible.",
         formatter_class=CleanHelpFormatter,
@@ -1957,11 +1957,11 @@ def parse_args():
     )
     general_group.add_argument(
         "--version", "-v", action = "store_true", default = False,
-        help="[FLAG] Show ReadZor version and exit."
+        help="[FLAG] Show Readzor version and exit."
     )
     general_group.add_argument(
         "--full-auto", "-GO", action = "store_true", default = False,
-        help="[FLAG] Run ReadZor in fully automatic mode. Combine with --help/-h for more information on fully automatic mode."
+        help="[FLAG] Run Readzor in fully automatic mode. Combine with --help/-h for more information on fully automatic mode."
     )
     general_group.add_argument(
     "--progress", action="store_true", default=False,
@@ -2163,7 +2163,7 @@ def parse_args():
     )    
  
     advanced_group = parser.add_argument_group("Advanced options",
-                                               "Further options that can be specified to alter the behaviour of ReadZor.")
+                                               "Further options that can be specified to alter the behaviour of Readzor.")
     advanced_group.add_argument(
         "--threads", "-t", type = int, default = None, metavar="",
         help="Number of threads to use (defaults: platform-dependent through auto-detection: detection of assigned CPUs on Slurm-managed systems, all-1 otherwise. Fallback: 1."
@@ -2199,7 +2199,7 @@ def parse_args():
         sys.exit()
  
     if args.version:
-        print(f"ReadZor version: {VERSION}")
+        print(f"Readzor version: {VERSION}")
         sys.exit()
  
     if args.full_auto:
@@ -2357,7 +2357,7 @@ def write_summary_and_statistics(summary_results, parameters, used_command, outp
 
 def print_final_message():
     """
-    Prints ReadZor's completion message, including a citation request and
+    Prints Readzor's completion message, including a citation request and
     a randomly selected sign-off phrase. Called at the end of a successful run.
 
     Returns:
@@ -2365,25 +2365,25 @@ def print_final_message():
     """
     sign_off_messages = [
     "Please come again!",
-    "Thanks for trimming with ReadZor!",
+    "Thanks for trimming with Readzor!",
     "May your reads be long and your adapters be gone!",
     "Until next time, happy analyzing!",
     "See you soon!",
-    "Thanks for using ReadZor!",
+    "Thanks for using Readzor!",
     "Happy analyzing!",
     "Good luck with your data!",
     "Base-ically, we're done here. See you!",
-    "ReadZor, signing off!"
+    "Readzor, signing off!"
     ]
     print("Analysis successfully completed!")
-    print("\nIf you find ReadZor useful, please consider citing:")
-    print("\nAxel B. Janssen \n2026 \nReadZor: A modular and user-friendly Swiss-army knife approach to short-read sequencing preprocessing.")
+    print("\nIf you find Readzor useful, please consider citing:")
+    print("\nAxel B. Janssen \n2026 \nReadzor: A modular and user-friendly Swiss-army knife approach to short-read sequencing preprocessing.")
     print(f"\n{random.choice(sign_off_messages)}\n")
 
 ##### Main #####
 if __name__ == "__main__":
     """
-    Main execution block for ReadZor.
+    Main execution block for Readzor.
 
     Initializes command-line argument parsing and parameter configuration, creates the output
     directory structure, handles input stream processing and multithreaded trimming
