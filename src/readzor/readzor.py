@@ -36,14 +36,15 @@ DEFAULT_ADAPTERS = [
 FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "full_auto"}
 FIELD_SEP = b"\x1f"
 FULL_AUTO_OVERRIDES = {
-    "endqual_filter_flag": True, #light
-    "slider_filter_flag": False, ##heavy
+    "endqual_filter_flag": False, #light
+    "slider_filter_flag": True, ##heavy
     "kmer_filter_flag": False, #heavy
     "n_trimming_flag": False, #light
     "poly_filter_flag": False, #light
-    "adapter_trim_flag": True, #heavy
+    "adapter_trim_flag": False, #heavy
     "nucl_filter": True,
     "gzip": True,
+    "threads": 15,
     "progress": True
 }
 
@@ -786,11 +787,26 @@ def header_mgi_to_illumina(mgi_header, barcode5, barcode7, instrument, run):
         ValueError: If the header doesn't match the expected MGI format.
     """
     mgi_header = mgi_header.lstrip(b"@").strip()
+
+    if re.search(rb"^[\w-]+:\d+:[\w-]+:\d+:\d+:\d+:\d+\s+[12]:[YN]:\d+:", mgi_header):
+        return b"@" + mgi_header
+
     strings = re.search(rb"^(\w+)L(\d+)C(\d+)R(\d{3})(\d+)\/([12])", mgi_header)
     if strings is None:
         raise ValueError(f"Header does not match expected MGI format: {mgi_header!r}")
+        
     illumina_header = b"@%b:%b:%b:%d:%d:%d:%d %d:N:0:%b+%b" % (
-    instrument.encode('ascii'), run.encode('ascii'), strings.group(1), int(strings.group(2)), int(strings.group(5)), int(strings.group(3)), int(strings.group(4)), int(strings.group(6)), barcode5.encode('ascii'), barcode7.encode('ascii'))
+        instrument.encode('ascii'), 
+        run.encode('ascii'), 
+        strings.group(1), 
+        int(strings.group(2)), 
+        int(strings.group(5)), 
+        int(strings.group(3)), 
+        int(strings.group(4)), 
+        int(strings.group(6)), 
+        barcode5.encode('ascii'), 
+        barcode7.encode('ascii')
+    )
     return illumina_header
     
 def build_pipeline(parameters):
@@ -890,9 +906,9 @@ def trim_ends_quality(quality_arr, min_quality_both, endqual_min_start, endqual_
         start_good_pos = None 
     if start_good_pos is not None:
         start_cutoffs = np.where(start_good_pos, start_cutoffs, 0)
-    if endqual_min_end != endqual_min_start:
-        qual_mask = quality_arr >= endqual_min_end
-    end_cutoffs = length - qual_mask[:, ::-1].argmax(axis=1)
+    quality_arr_rev = quality_arr[:, ::-1]
+    qual_mask = quality_arr_rev >= endqual_min_end
+    end_cutoffs = length - qual_mask.argmax(axis=1)
     zero_end_rows = end_cutoffs == length
     if zero_end_rows.any():
         end_good_pos = qual_mask[:, -1] | ~zero_end_rows
@@ -955,16 +971,17 @@ def homopolymer_nucleotide_trimming(sequence_arr, poly_length_both, poly_length_
     left_cutoffs = np.zeros(n_reads, dtype=np.int32)
     
     for base in start_bases:
-            base_code = ord(base)
-            non_base_mask = sequence_arr != base_code
-            padded_mask = np.column_stack([non_base_mask, np.ones(n_reads, dtype=bool)])
-            first_non_pos = padded_mask.argmax(axis=1)
-            trim_amount = np.where(first_non_pos >= poly_length_start, first_non_pos, 0)
-            left_cutoffs = np.maximum(left_cutoffs, trim_amount)
+        base_code = ord(base)
+        non_base_mask = sequence_arr != base_code
+        padded_mask = np.column_stack([non_base_mask, np.ones(n_reads, dtype=bool)])
+        first_non_pos = padded_mask.argmax(axis=1)
+        trim_amount = np.where(first_non_pos >= poly_length_start, first_non_pos, 0)
+        left_cutoffs = np.maximum(left_cutoffs, trim_amount)
     
-    for base in end_bases:
+    if end_bases:
+        rev_seq = np.ascontiguousarray(sequence_arr[:, ::-1])
+        for base in end_bases:
             base_code = ord(base)
-            rev_seq = sequence_arr[:, ::-1]
             non_base_mask = rev_seq != base_code
             padded_mask = np.column_stack([non_base_mask, np.ones(n_reads, dtype=bool)])
             first_non_pos = padded_mask.argmax(axis=1)
@@ -1072,9 +1089,9 @@ def sliding_window_quality(quality_arr, slider_quality, slider_window, slider_st
 
     window_starts = np.arange(0, length - slider_window + 1, slider_step)
     window_sums = cumsum[:, window_starts + slider_window] - cumsum[:, window_starts]
-    window_means = window_sums / slider_window
-    failed_mask = window_means <= slider_quality
-
+    
+    failed_mask = window_sums <= (slider_quality * slider_window)
+    
     bad_positions = np.zeros((n_reads, length), dtype=bool)
     for j, start in enumerate(window_starts):
         rows_failed = failed_mask[:, j]
