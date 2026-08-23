@@ -18,6 +18,7 @@ import numpy as np
 from isal import igzip as gzip
 
 ##### Definition of constant values #####
+WORKER_PARAMETERS = None
 VERSION = "0.0.10"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
@@ -84,6 +85,7 @@ def estimate_gzip_ratio(filepath, sample_bytes=10 * 1024 * 1024):
     compressed_read = 0
     uncompressed_read = 0
     with open(filepath, 'rb') as raw:
+        decompressor = gzip.GzipFile(fileobj=raw)
         while uncompressed_read < sample_bytes:
             chunk = decompressor.read(1024 * 1024)
             if not chunk:
@@ -277,19 +279,14 @@ def create_folder_structure(output_dir):
     os.makedirs(created_output_dir, exist_ok=True)
     return created_output_dir
 
-def worker_determination(threads):
+def worker_determination(threads=None):
     """
     Determine the number of worker processes for parallel task execution.
     
-    The worker count is calculated based on the execution environment (Slurm vs.
-    local) and whether the user provided an explicit thread request:
-    
-    - **On a Slurm-managed cluster** (SLURM_CPUS_PER_TASK detected):
-        - If `threads` is an int: returns `threads * 5`.
-        - Otherwise: returns `SLURM_CPUS_PER_TASK * 5`.
-    - **On a local/non-Slurm system**:
-        - If `threads` is an int: returns `threads` as-is.
-        - Otherwise: returns `(available CPUs - 1)`, minimum of 1.
+    The worker count is calculated in the following order of precedence:
+    1. **Explicit Request**: If `threads` is a valid integer, it is used.
+    2. **Slurm Environment**: If `SLURM_CPUS_PER_TASK` is set and valid, it is used.
+    3. **Local Default**: Uses (available CPUs - 1).
     
     All return values are clamped to a minimum of 1 worker.
 
@@ -299,31 +296,16 @@ def worker_determination(threads):
 
     Returns:
         int: The number of worker processes to spawn, always >= 1.
-    
-    Notes:
-        - On Slurm systems, the 10x multiplier allows for efficient handling of
-          I/O-bound operations alongside CPU-bound work.
-        - Boolean values are explicitly excluded from int detection to prevent
-          True/False being treated as 1/0.
-        - If `os.cpu_count()` returns None, defaults to 1 CPU.
     """
+    if isinstance(threads, int) and not isinstance(threads, bool):
+        return max(1, threads)
     slurm_cpus = os.environ.get('SLURM_CPUS_PER_TASK')
-    threads_is_int = isinstance(threads, int) and not isinstance(threads, bool)
     if slurm_cpus is not None:
-        if threads_is_int:
-            return max(1, threads * 5)
-        else:
-            try:
-                return max(1, int(slurm_cpus) * 5)
-            except ValueError:
-                available_cpu = os.cpu_count() or 1
-                return max(1, available_cpu - 1)
-    else:
-        if threads_is_int:
-            return max(1, threads)
-        else:
-            available_cpu = os.cpu_count() or 1
-            return max(1, available_cpu - 1)
+        try:
+            return max(1, int(slurm_cpus))
+        except ValueError:
+            pass
+    return max(1, (os.cpu_count() or 1) - 1)
 
 def common_name_parts(filenames):
     """
@@ -459,8 +441,9 @@ def lazy_fastq(filepath):
                     if leftover:
                         lines = leftover.rstrip(b"\r\n").split(b"\n")
                         usable = len(lines) - (len(lines) % 4)
-                        for i in range(0, usable, 4):
-                            yield FIELD_SEP.join((lines[i], lines[i+1], lines[i+2], lines[i+3]))
+                        it = iter(lines[:usable])
+                        for group in zip(it, it, it, it):
+                            yield FIELD_SEP.join(group)
                     break
                 data = leftover + chunk
                 last_newline = data.rfind(b"\n")
@@ -469,8 +452,9 @@ def lazy_fastq(filepath):
                     continue
                 lines = data[:last_newline].split(b"\n")
                 usable = len(lines) - (len(lines) % 4)
-                for i in range(0, usable, 4):
-                    yield FIELD_SEP.join((lines[i], lines[i+1], lines[i+2], lines[i+3]))
+                it = iter(lines[:usable])
+                for group in zip(it, it, it, it):
+                    yield FIELD_SEP.join(group)
                 leftover_lines = lines[usable:]
                 if leftover_lines:
                     leftover = b"\n".join(leftover_lines) + b"\n" + data[last_newline + 1:]
@@ -739,32 +723,6 @@ def load_adapters_from_fasta(fasta_file):
             result.append((name, joined_sequence))
             header = sequence
         return result
-
-def chunk_size_setter(chunk_size):
-    """
-    Resolves the chunk size to use for parallel processing.
-
-    If a chunk size is explicitly given, it's returned unchanged.
-    Otherwise, detects whether Slurm tools are available on the system
-    (via `sinfo`/`sbatch` on PATH) and picks a larger default chunk size
-    for Slurm-managed (typically higher-resource) systems, or a smaller
-    default otherwise.
-
-    Args:
-        chunk_size (int | None): User-specified chunk size. Defaults to
-            None (auto-detect).
-
-    Returns:
-        int: The resolved chunk size — 30000 on Slurm systems, 1000
-            otherwise, unless overridden.
-    """
-    if chunk_size is not None:
-        return chunk_size
-    if shutil.which('sinfo') is not None or shutil.which('sbatch') is not None:
-        chunk_size = 30000  #30000 on CPU slurm, 100000 on GPU slurm????
-    else:
-        chunk_size = 1000
-    return chunk_size
 
 def qual_to_bin(quality_list, phred_offset):
     """
@@ -1426,8 +1384,7 @@ def generate_unpaired_tasks(filepaths, chunk_size, parameters):
                 "phred_offset": phred_offset,
                 "read_length": read_length,
                 "minimum_length": minimum_len,
-                "maximum_length": maximum_len,
-                "parameters": parameters
+                "maximum_length": maximum_len
             }
 
 def process_unpaired_task_flat(task, parameters):
@@ -1537,8 +1494,7 @@ def generate_paired_tasks(files, chunk_size, parameters):
                 "minimum_length": minimum_length,
                 "maximum_length": maximum_length,
                 "gzip_output": parameters["gzip_output"], 
-                "gzip_level": parameters["gzip_level"], 
-                "parameters": parameters
+                "gzip_level": parameters["gzip_level"]
             }
 
 def trim_reads(records, phred_offset, minimum_length, maximum_length, read_length, minimum_average_qual, parameters):
@@ -1682,6 +1638,19 @@ def process_paired_chunk(chunks, phred_offset, read_length, minimum_length, maxi
     return paired_out_1, paired_out_2, singles_out, num_paired, num_singles, rejected_1 + rejected_2
 
 ##### Input handler functions #####
+def worker_initilizer(parameters):
+    """
+    Pool initializer: runs once per worker process at startup, storing
+    `parameters` in a worker-global so it doesn't need to be pickled and
+    sent again with every individual task.
+
+    Args:
+        parameters (dict): Configuration parameters, pickled and sent to
+            each worker exactly once when the pool spins it up.
+    """
+    global WORKER_PARAMETERS
+    WORKER_PARAMETERS = parameters
+
 def unified_worker(task):
     """
     Routes a processing task to the appropriate handler based on its type.
@@ -1701,7 +1670,7 @@ def unified_worker(task):
         ValueError: If the task type is unknown or missing.
     """
     task_type = task.get("type")
-    parameters = task.get("parameters")
+    parameters = WORKER_PARAMETERS
 
     if task_type == "paired":
         return process_paired_task_flat(task, parameters=parameters)
@@ -1766,7 +1735,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
         yield from generate_unpaired_tasks(filepaths=unpaired, chunk_size=chunk_size, parameters=parameters)
         yield from generate_paired_tasks(files=paired, chunk_size=chunk_size, parameters=parameters)
     try:
-        with mp.Pool(threads) as pool:
+        with mp.Pool(threads, initializer=worker_initilizer, initargs=(parameters,)) as pool:
             for result in pool.imap_unordered(unified_worker, unified_chunk_streamer(), chunksize=1):
                 if result[0] == "unpaired":  # Unpaired result: (type, filepath, chunk_results, kept, rejected)
                     _, filepath, chunk_results, kept, rejected = result
@@ -2202,7 +2171,7 @@ def parse_args():
     )
     advanced_group.add_argument(
         "--chunk-size", type=int, default = 1000, metavar="",
-        help="Number of reads per chunk sent to each worker (default: platform-dependent: 20.000 for Slurm-managed systems, 1000 otherwise)."
+        help="Number of reads per chunk sent to each worker. Default: 1000."
     )
     advanced_group.add_argument(
         "--phred-offset", type = int, default = None, metavar="",
@@ -2325,7 +2294,6 @@ def parse_args():
         parameters["adapter_sequences"] = list({seq.encode('utf-8') for _, seq in DEFAULT_ADAPTERS})
     
     parameters["threads"] = worker_determination(parameters["threads"])    
-    parameters["chunk_size"] = chunk_size_setter(parameters["chunk_size"])
  
     return parameters
     

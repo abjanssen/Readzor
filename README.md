@@ -196,7 +196,7 @@ Further options that can be specified to alter the behavior of ReadZor.\
 `--threads, -t`: Number of threads to use. Default: platform-dependent through auto-detection (assigned CPUs on Slurm-managed systems, all-1 otherwise. Fallback: 1).\
 `--min-raw-read-length`: Minimum length a raw (untrimmed) read must have to be considered valid. Default: 0.\
 `--reads-for-phred-offset`: Number of reads to sample per file for detection of Phred quality encoding offset. Default: 500.\
-`--chunk-size`: Number of reads per chunk sent to each worker. Default: platform-dependent (20,000 for Slurm-managed systems, 1000 otherwise).\
+`--chunk-size`: Number of reads per chunk sent to each worker. Default: 1000.\
 `--phred-offset`: Define Phred offset for all FASTQ files. Default: off (auto-detection per file).
 
 ## Software version
