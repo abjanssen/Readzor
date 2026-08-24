@@ -36,14 +36,14 @@ DEFAULT_ADAPTERS = [
 FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "full_auto"}
 FIELD_SEP = b"\x1f"
 FULL_AUTO_OVERRIDES = {
-    "endqual_filter_flag": False, #light
-    "slider_filter_flag": True, ##heavy
-    "kmer_filter_flag": False, #heavy
+    "endqual_filter_flag": True, #light
+    "slider_filter_flag": False, #heavy
+    "kmer_filter_flag": False, #light
     "n_trimming_flag": False, #light
     "poly_filter_flag": False, #light
-    "adapter_trim_flag": False, #heavy
+    "adapter_trim_flag": True, #heavy
     "nucl_filter": True,
-    "gzip": True,
+    "gzip": False,
     "threads": 15,
     "progress": True
 }
@@ -1236,46 +1236,43 @@ def kmer_complexity_scan(sequence_arr, kmer, low_complex_cutoff, allow_n):
         kmer_list = [int(kmer)]
 
     global_passed = np.ones(n_reads, dtype=bool)
+    mapping = np.zeros(256, dtype=np.int8)
+    if allow_n:
+        mapping[ord('A')] = 0
+        mapping[ord('C')] = 1
+        mapping[ord('G')] = 2
+        mapping[ord('T')] = 3
+        mapping[ord('N')] = 4
+        bits_per_base = 3
+    else:
+        mapping[ord('A')] = 0
+        mapping[ord('C')] = 1
+        mapping[ord('G')] = 2
+        mapping[ord('T')] = 3
+        bits_per_base = 2
+    int_matrix_full = mapping[sequence_arr]
+
     for k in kmer_list:
+        if not np.any(global_passed):
+            break
         if k > length:
             raise ValueError(f"k-mer length {k} is greater than sequence length {length}")
-        mapping = np.zeros(256, dtype=np.int8)
-        if allow_n:
-            mapping[ord('A')] = 0
-            mapping[ord('C')] = 1
-            mapping[ord('G')] = 2
-            mapping[ord('T')] = 3
-            mapping[ord('N')] = 4
-            bits_per_base = 3
-            max_val = 1 << (3 * k)
-        else:
-            mapping[ord('A')] = 0
-            mapping[ord('C')] = 1
-            mapping[ord('G')] = 2
-            mapping[ord('T')] = 3
-            bits_per_base = 2
-            max_val = 1 << (2 * k)
-        int_matrix = mapping[sequence_arr]
         max_kmers = length - k + 1
         kmer_ints = np.zeros((n_reads, max_kmers), dtype=np.int64)
         for i in range(k):
-            kmer_ints = (kmer_ints << bits_per_base) | int_matrix[:, i:i+max_kmers]
+            kmer_ints = (kmer_ints << bits_per_base) | int_matrix_full[:, i:i+max_kmers]
 
-        if max_val <= 4096:
-            per_read_counts = np.zeros((n_reads, max_val), dtype=np.int64)
-            for i in range(n_reads):
-                per_read_counts[i] = np.bincount(kmer_ints[i], minlength=max_val)
-                unique_count = np.count_nonzero(per_read_counts[i])
-                if (unique_count / max_kmers) < (low_complex_cutoff/100):
-                    global_passed[i] = False
-        else:
-            for i in range(n_reads):
-                unique_count = np.unique(kmer_ints[i]).size
-                if (unique_count / max_kmers) < (low_complex_cutoff/100):
-                    global_passed[i] = False
+        sorted_kmers = np.sort(kmer_ints, axis=1)
+        is_new = np.empty_like(sorted_kmers, dtype=bool)
+        is_new[:, 0] = True
+        np.not_equal(sorted_kmers[:, 1:], sorted_kmers[:, :-1], out=is_new[:, 1:])
+        unique_counts = is_new.sum(axis=1)
+
+        ratio = unique_counts / max_kmers
+        global_passed &= (ratio >= (low_complex_cutoff / 100))
 
     second_array = np.where(global_passed, length, 0).astype(np.int16)
-    return np.zeros(n_reads, dtype=np.int16), second_array
+    return np.zeros(n_reads, dtype=np.int8), second_array
 
 ##### Unpaired reads workflow functions #####
 def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, minimum_average_qual, read_length, gzip_output, gzip_level, parameters):
@@ -2300,15 +2297,16 @@ def parse_args():
     if parameters["nucl_filter"]:
         parameters["n_trimming_flag"] = False
  
-    if parameters["adapter_trim_flag"] and parameters.get("adapter_fasta_add") and not parameters.get("adapter_fasta_excl"):
-        parameters["adapter_sequences"] = DEFAULT_ADAPTERS + load_adapters_from_fasta(parameters["adapter_fasta_add"])
-        parameters["adapter_sequences"] = list({seq.encode('utf-8') for _, seq in parameters["adapter_sequences"]})
-    if parameters["adapter_trim_flag"] and parameters.get("adapter_fasta_excl"):
-        parameters["adapter_sequences"] = load_adapters_from_fasta(parameters["adapter_fasta_excl"])
-        parameters["adapter_sequences"] = list({seq.encode('utf-8') for _, seq in parameters["adapter_sequences"]})
+    if parameters.get("adapter_trim_flag"):
+        if parameters.get("adapter_fasta_excl"):
+            raw_adapters = load_adapters_from_fasta(parameters["adapter_fasta_excl"])
+        elif parameters.get("adapter_fasta_add"):
+            raw_adapters = DEFAULT_ADAPTERS + load_adapters_from_fasta(parameters["adapter_fasta_add"])
+        else:
+            raw_adapters = DEFAULT_ADAPTERS
+        parameters["adapter_sequences"] = list({seq.encode('utf-8') for _, seq in raw_adapters})
     else:
-        parameters["adapter_sequences"] = DEFAULT_ADAPTERS
-        parameters["adapter_sequences"] = list({seq.encode('utf-8') for _, seq in DEFAULT_ADAPTERS})
+        parameters["adapter_sequences"] = []
     
     parameters["threads"] = worker_determination(parameters["threads"])    
  
