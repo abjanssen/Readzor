@@ -889,7 +889,7 @@ def trim_ends_quality(quality_arr, min_quality_both, endqual_min_start, endqual_
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: A tuple of `(start_cutoffs, end_cutoffs)` 
-            arrays of shape `(n_reads,)` and dtype `int32`, giving the left and right trim 
+            arrays of shape `(n_reads,)` and dtype `int16`, giving the left and right trim 
             boundaries per read.
     """
     n_reads, length = quality_arr.shape
@@ -913,7 +913,7 @@ def trim_ends_quality(quality_arr, min_quality_both, endqual_min_start, endqual_
     if zero_end_rows.any():
         end_good_pos = qual_mask[:, -1] | ~zero_end_rows
         end_cutoffs = np.where(end_good_pos, end_cutoffs, 0)
-    return start_cutoffs.astype(np.int32), end_cutoffs.astype(np.int32)
+    return start_cutoffs.astype(np.int16), end_cutoffs.astype(np.int16)
         
 def homopolymer_nucleotide_trimming(sequence_arr, poly_length_both, poly_length_start, poly_length_end, poly_bases_both, poly_bases_start, poly_bases_end):
     """
@@ -944,14 +944,14 @@ def homopolymer_nucleotide_trimming(sequence_arr, poly_length_both, poly_length_
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
-            each of shape (n_reads,) and dtype int32, giving the left and right 
+            each of shape (n_reads,) and dtype int16, giving the left and right 
             trim boundaries per read.
     """
     n_reads, length = sequence_arr.shape
     if not poly_bases_start and not poly_bases_end and not poly_bases_both:
-        return np.zeros(n_reads, dtype=np.int32), np.full(n_reads, length, dtype=np.int32)
+        return np.zeros(n_reads, dtype=np.int16), np.full(n_reads, length, dtype=np.int16)
     if poly_length_both == poly_length_start == poly_length_end == 0:
-        return np.zeros(n_reads, dtype=np.int32), np.full(n_reads, length, dtype=np.int32)
+        return np.zeros(n_reads, dtype=np.int16), np.full(n_reads, length, dtype=np.int16)
     
     start_bases = []
     end_bases = []
@@ -967,8 +967,8 @@ def homopolymer_nucleotide_trimming(sequence_arr, poly_length_both, poly_length_
     poly_length_start = poly_length_start if poly_length_start != 0 else poly_length_both
     poly_length_end = poly_length_end if poly_length_end != 0 else poly_length_both
     
-    right_cutoffs = np.full(n_reads, length, dtype=np.int32)
-    left_cutoffs = np.zeros(n_reads, dtype=np.int32)
+    right_cutoffs = np.full(n_reads, length, dtype=np.int16)
+    left_cutoffs = np.zeros(n_reads, dtype=np.int16)
     
     for base in start_bases:
         base_code = ord(base)
@@ -1051,7 +1051,7 @@ def cut_set_ends(sequence_arr, cut_both, cut_start, cut_end):
     cut_end = length - cut_end if cut_end != 0 else length - cut_both
     if cut_start > cut_end:
         cut_start = cut_end
-    return np.full(n_reads, cut_start, dtype=np.int32), np.full(n_reads, cut_end, dtype=np.int32)
+    return np.full(n_reads, cut_start, dtype=np.int16), np.full(n_reads, cut_end, dtype=np.int16)
 
 def sliding_window_quality(quality_arr, slider_quality, slider_window, slider_step):
     """
@@ -1076,13 +1076,13 @@ def sliding_window_quality(quality_arr, slider_quality, slider_window, slider_st
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
-            each of shape (n_reads,) and dtype int32, giving the best surviving 
+            each of shape (n_reads,) and dtype int16, giving the best surviving 
             [left, right) region per read. Reads with no failing windows keep
             their full length; reads that fail everywhere get a zero-length region.
     """
     n_reads, length = quality_arr.shape
     if length < slider_window:
-        return np.zeros(n_reads, dtype = np.int32), np.full(n_reads, length, dtype = np.int32)
+        return np.zeros(n_reads, dtype = np.int16), np.full(n_reads, length, dtype = np.int16)
 
     cumsum = np.cumsum(quality_arr, axis=1, dtype=np.int32)
     cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int32), cumsum], axis=1)
@@ -1101,8 +1101,8 @@ def sliding_window_quality(quality_arr, slider_quality, slider_window, slider_st
     no_bad = ~bad_positions.any(axis=1)
     all_bad = bad_positions.all(axis=1)
 
-    left_cutoffs = np.zeros(n_reads, dtype=np.int32)
-    right_cutoffs = np.zeros(n_reads, dtype=np.int32)
+    left_cutoffs = np.zeros(n_reads, dtype=np.int16)
+    right_cutoffs = np.zeros(n_reads, dtype=np.int16)
     right_cutoffs[no_bad] = length
 
     needs_stretch_search = ~no_bad & ~all_bad
@@ -1161,7 +1161,7 @@ def adapter_trimming(sequence_arr, adapter_sequences):
             trim boundaries per read. Left cutoffs are always 0 (3'-end trimming only).
     """
     n_reads, length = sequence_arr.shape
-    right_cutoffs = np.full(n_reads, length, dtype=np.int32)
+    right_cutoffs = np.full(n_reads, length, dtype=np.int16)
     sequence_arr = sequence_arr.astype(np.uint8)
     all_bytes = sequence_arr.tobytes()
     
@@ -1274,8 +1274,8 @@ def kmer_complexity_scan(sequence_arr, kmer, low_complex_cutoff, allow_n):
                 if (unique_count / max_kmers) < (low_complex_cutoff/100):
                     global_passed[i] = False
 
-    second_array = np.where(global_passed, length, 0).astype(np.int32)
-    return np.zeros(n_reads, dtype=np.int32), second_array
+    second_array = np.where(global_passed, length, 0).astype(np.int16)
+    return np.zeros(n_reads, dtype=np.int16), second_array
 
 ##### Unpaired reads workflow functions #####
 def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, minimum_average_qual, read_length, gzip_output, gzip_level, parameters):
@@ -1327,8 +1327,8 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
     quality_arr = qual_to_bin(quality_list = valid_qualities, phred_offset = phred_offset)
     sequence_arr = seq_to_bin(sequence_list = valid_sequences)
     n_reads, length = quality_arr.shape
-    left_list = [np.zeros(n_reads, dtype=np.int32)]
-    right_list = [np.full(n_reads, length, dtype=np.int32)]
+    left_list = [np.zeros(n_reads, dtype=np.int16)]
+    right_list = [np.full(n_reads, length, dtype=np.int16)]
     for step in build_pipeline(parameters):
         left, right = step(sequence_arr, quality_arr)
         left_list.append(left)
@@ -1559,8 +1559,8 @@ def trim_reads(records, phred_offset, minimum_length, maximum_length, read_lengt
         valid_headers = [header_mgi_to_illumina(header, parameters["mgi_bc5"], parameters["mgi_bc7"], parameters["mgi_instrument"], parameters["mgi_run"]) for header in valid_headers]
     quality_arr = qual_to_bin(quality_list = valid_qualities, phred_offset = phred_offset)
     sequence_arr = seq_to_bin(sequence_list = valid_sequences)
-    left_list = [np.zeros(sequence_arr.shape[0], dtype=np.int32)]
-    right_list = [np.full(sequence_arr.shape[0], sequence_arr.shape[1], dtype=np.int32)]
+    left_list = [np.zeros(sequence_arr.shape[0], dtype=np.int16)]
+    right_list = [np.full(sequence_arr.shape[0], sequence_arr.shape[1], dtype=np.int16)]
     
     for step in build_pipeline(parameters):
         left, right = step(sequence_arr, quality_arr)
