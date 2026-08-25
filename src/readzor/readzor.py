@@ -2394,7 +2394,7 @@ def print_final_message():
     print(f"\n{random.choice(sign_off_messages)}\n")
 
 ##### Main #####
-if __name__ == "__main__":
+def main():
     """
     Main execution block for Readzor.
 
@@ -2416,3 +2416,8 @@ if __name__ == "__main__":
     summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], parameters = parameters)
     write_summary_and_statistics(summary_results, parameters, used_command, output_dir = created_output_dir)
     print_final_message()
+    
+if __name__ == "__main__":
+    main()
+    
+    
