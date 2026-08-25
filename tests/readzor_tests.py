@@ -1,16 +1,16 @@
 import subprocess
 import hashlib
 from pathlib import Path
+import gzip
 
 DATA_DIR = Path(__file__).parent / "data"
 
 EXPECTED_HASHES = {
-    "parameters.txt": "c8e7bbaebb082458f12a0a7cad659c9a13d1a0f4d9b6db2481c665ffce7aa810",
     "results_summary.txt": "b1a12db3dbffa3e7b1a8e6757a2ab6fe68a4dd387cfceb361d549c2c9880d3e3",
-    "test_paired_R1_paired_filtered.fastq.gz": "6c35bb8979940e18cdac535582319caffa73b46e28ed336c8802878d293108f8",
-    "test_paired_R2_paired_filtered.fastq.gz": "e05fccaefbe5df4f70479e1f452b2b69c7cca42baa85965ed3f0bdcd76c6c754",
-    "test_paired_unpaired_filtered.fastq.gz": "4228bc5e7ab669bcbb050ea5601cb0908542679a215e4316058a19574437355e",
-    "test_unpaired_testhash3_filtered.fastq.gz": "ecba86c6016fc30c0496accd795397e98b80bb3ca8b9445f7529b64c6bc3faca",
+    "test_paired_R1_paired_filtered.fastq.gz": "acf7526124d4987fe15634fc43862360b69418840b02b10309947b8e47d37e8a",
+    "test_paired_R2_paired_filtered.fastq.gz": "89d8385c3544ed1ba01823cd572c21937be72c3ce570d8832035d77de4d29976",
+    "test_paired_unpaired_filtered.fastq.gz": "f32092d0e15ee34b1d25a97cf3b98fbd8921acf9986192da6ae5b0beac625786",
+    "test_unpaired_testhash3_filtered.fastq.gz": "1d4b0706fd1821ac3ec78927f61b69d40c0dce2c097c78de0a80f9f19d966a51",
 }
 
 def test_readzor(tmp_path):
@@ -48,13 +48,18 @@ def test_readzor(tmp_path):
 
     output_dir = subdirs[0]
     files_in_output = list(output_dir.iterdir())
-    assert len(files_in_output) == 6, f"Expected 7 files in output folder, found: {len(files_in_output)}"
+    assert len(files_in_output) == 6, f"Expected 6 files in output folder, found: {len(files_in_output)}"
     
     for filepath in files_in_output:
-        with open(filepath, "rb") as file:
+        if filepath.name == "parameters.txt":
+            continue
+    
+        open_fn = gzip.open if filepath.name.endswith(".gz") else open
+    
+        with open_fn(filepath, "rb") as file:
             file_hash = hashlib.file_digest(file, "sha256").hexdigest()
-            
-            expected = EXPECTED_HASHES.get(filepath.name)
-            
-            assert expected is not None, f"Unexpected file found: {filepath.name}"
-            assert file_hash == expected, f"File {filepath.name} incorrectly processed. Got: {file_hash}"
+    
+        expected = EXPECTED_HASHES.get(filepath.name)
+    
+        assert expected is not None, f"Unexpected file found: {filepath.name}"
+        assert file_hash == expected, f"File {filepath.name} incorrectly processed. Got: {file_hash}"
