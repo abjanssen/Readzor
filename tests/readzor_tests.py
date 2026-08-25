@@ -5,13 +5,12 @@ from pathlib import Path
 DATA_DIR = Path(__file__).parent / "data"
 
 EXPECTED_HASHES = {
-    "output_file_1.txt": "your_sha256_hash_here",
-    "output_file_2.txt": "another_sha256_hash_here",
-    "output_file_3.txt": "another_sha256_hash_here",
-    "output_file_4.txt": "another_sha256_hash_here",
-    "output_file_5.txt": "another_sha256_hash_here",
-    "output_file_6.txt": "another_sha256_hash_here",
-    "output_file_7.txt": "another_sha256_hash_here"
+    "parameters.txt": "c8e7bbaebb082458f12a0a7cad659c9a13d1a0f4d9b6db2481c665ffce7aa810",
+    "results_summary.txt": "b1a12db3dbffa3e7b1a8e6757a2ab6fe68a4dd387cfceb361d549c2c9880d3e3",
+    "test_paired_R1_paired_filtered.fastq.gz": "6c35bb8979940e18cdac535582319caffa73b46e28ed336c8802878d293108f8",
+    "test_paired_R2_paired_filtered.fastq.gz": "e05fccaefbe5df4f70479e1f452b2b69c7cca42baa85965ed3f0bdcd76c6c754",
+    "test_paired_unpaired_filtered.fastq.gz": "4228bc5e7ab669bcbb050ea5601cb0908542679a215e4316058a19574437355e",
+    "test_unpaired_testhash3_filtered.fastq.gz": "ecba86c6016fc30c0496accd795397e98b80bb3ca8b9445f7529b64c6bc3faca",
 }
 
 def test_readzor(tmp_path):
@@ -30,7 +29,12 @@ def test_readzor(tmp_path):
     assert len(input_files) > 0, f"No FASTQ files found in {DATA_DIR}"
 
     result = subprocess.run(
-        ["readzor", "--input-files", *input_files, "--gzip", "--nucl-filter","--cut-flag","--endqual-filter-flag", "--n-end-trimming-flag","--slider-filter-flag","--poly-filter-flag", "--adapter-trim-flag", "--kmer-filter-flag", "--mgi-convert-flag"],
+        ["readzor", "--input-files", *input_files, 
+         "--gzip", "--nucl-filter",
+         "--cut-flag","--endqual-filter-flag", 
+         "--n-end-trimming-flag","--slider-filter-flag",
+         "--poly-filter-flag", "--adapter-trim-flag", 
+         "--kmer-filter-flag"],
         cwd=tmp_path,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

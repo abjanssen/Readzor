@@ -43,7 +43,7 @@ FULL_AUTO_OVERRIDES = {
     "poly_filter_flag": False, #light
     "adapter_trim_flag": True, #heavy
     "nucl_filter": True,
-    "gzip": False,
+    "gzip": True,
     "threads": 15,
     "progress": True
 }
