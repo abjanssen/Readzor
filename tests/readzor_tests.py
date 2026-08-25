@@ -29,11 +29,11 @@ def test_readzor(tmp_path):
     assert len(input_files) > 0, f"No FASTQ files found in {DATA_DIR}"
 
     result = subprocess.run(
-        ["readzor", "--input-files", *input_files, 
+        ["readzor", "--input-files", *input_files,
          "--gzip", "--nucl-filter",
-         "--cut-flag","--endqual-filter-flag", 
-         "--n-end-trimming-flag","--slider-filter-flag",
-         "--poly-filter-flag", "--adapter-trim-flag", 
+         "--cut-flag", "--endqual-filter-flag",
+         "--n-trimming-flag", "--slider-filter-flag",
+         "--poly-filter-flag", "--adapter-trim-flag",
          "--kmer-filter-flag"],
         cwd=tmp_path,
         stdout=subprocess.PIPE,
