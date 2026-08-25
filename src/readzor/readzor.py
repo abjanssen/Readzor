@@ -15,11 +15,11 @@ import sys
 import time
 
 import numpy as np
-#from isal import igzip as gzip_isal
-from zlib_ng import gzip_ng as gzip_zlib
+from isal import igzip as gzip
 
 ##### Definition of constant values #####
-VERSION = "0.0.9"
+WORKER_PARAMETERS = None
+VERSION = "0.0.10"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3", "AGATCGGAAGAGC"), #12x in human genome
@@ -34,14 +34,18 @@ DEFAULT_ADAPTERS = [
     ("TruSeq_small_RNA","TGGAATTCTCGGGTGCCAAGG")
 ]
 FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "full_auto"}
+FIELD_SEP = b"\x1f"
 FULL_AUTO_OVERRIDES = {
     "endqual_filter_flag": True, #light
-    "slider_filter_flag": False, ##heavy
-    "kmer_filter_flag": False, #heavy
+    "slider_filter_flag": False, #heavy
+    "kmer_filter_flag": False, #light
     "n_trimming_flag": False, #light
     "poly_filter_flag": False, #light
     "adapter_trim_flag": True, #heavy
-    "nucl_filter": True
+    "nucl_filter": True,
+    "gzip": True,
+    "threads": 15,
+    "progress": True
 }
 
 ##### Progress tracker #####
@@ -61,7 +65,8 @@ def estimate_bytes_per_read(filepath):
     Raises:
         ValueError: If the file contains no readable FASTQ records.
     """
-    for header, sequence, plus, quality in lazy_fastq(filepath):
+    for record in lazy_fastq(filepath):
+        header, sequence, plus, quality = record.split(FIELD_SEP)
         header_bytes = len(header) + 1
         seq_bytes = len(sequence) + 1 
         plus_bytes = len(plus) + 1
@@ -69,7 +74,7 @@ def estimate_bytes_per_read(filepath):
         return header_bytes + seq_bytes + plus_bytes + qual_bytes
     raise ValueError(f"No FASTQ records found in '{filepath}'; cannot estimate bytes per read.")
 
-def estimate_gzip_ratio(filepath, sample_bytes=1 * 1024 * 1024):
+def estimate_gzip_ratio(filepath, sample_bytes=10 * 1024 * 1024):
     """
     Estimate a gzip file's compression ratio (uncompressed / compressed) by
     decompressing a leading sample, rather than the whole file.
@@ -81,7 +86,7 @@ def estimate_gzip_ratio(filepath, sample_bytes=1 * 1024 * 1024):
     compressed_read = 0
     uncompressed_read = 0
     with open(filepath, 'rb') as raw:
-        decompressor = gzip_zlib.GzipFile(fileobj=raw)
+        decompressor = gzip.GzipFile(fileobj=raw)
         while uncompressed_read < sample_bytes:
             chunk = decompressor.read(1024 * 1024)
             if not chunk:
@@ -256,7 +261,7 @@ def create_folder_structure(output_dir):
     """
     Create a timestamped results folder inside a specified output directory.
     
-    Generates a new subfolder named "ReadZor_results_<YYYY-MM-DD_HH-MM-SS>"
+    Generates a new subfolder named "Readzor_results_<YYYY-MM-DD_HH-MM-SS>"
     based on the current date and time. This ensures each run's outputs are
     isolated and prevents accidental overwrites of results from previous runs.
 
@@ -271,23 +276,18 @@ def create_folder_structure(output_dir):
         OSError: If the folder cannot be created due to permission issues or
             invalid path.
     """
-    created_output_dir = os.path.join(output_dir, "ReadZor_results_" + datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+    created_output_dir = os.path.join(output_dir, "Readzor_results_" + datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
     os.makedirs(created_output_dir, exist_ok=True)
     return created_output_dir
 
-def worker_determination(threads):
+def worker_determination(threads=None):
     """
     Determine the number of worker processes for parallel task execution.
     
-    The worker count is calculated based on the execution environment (Slurm vs.
-    local) and whether the user provided an explicit thread request:
-    
-    - **On a Slurm-managed cluster** (SLURM_CPUS_PER_TASK detected):
-        - If `threads` is an int: returns `threads * 5`.
-        - Otherwise: returns `SLURM_CPUS_PER_TASK * 5`.
-    - **On a local/non-Slurm system**:
-        - If `threads` is an int: returns `threads` as-is.
-        - Otherwise: returns `(available CPUs - 1)`, minimum of 1.
+    The worker count is calculated in the following order of precedence:
+    1. **Explicit Request**: If `threads` is a valid integer, it is used.
+    2. **Slurm Environment**: If `SLURM_CPUS_PER_TASK` is set and valid, it is used.
+    3. **Local Default**: Uses (available CPUs - 1).
     
     All return values are clamped to a minimum of 1 worker.
 
@@ -297,31 +297,16 @@ def worker_determination(threads):
 
     Returns:
         int: The number of worker processes to spawn, always >= 1.
-    
-    Notes:
-        - On Slurm systems, the 10x multiplier allows for efficient handling of
-          I/O-bound operations alongside CPU-bound work.
-        - Boolean values are explicitly excluded from int detection to prevent
-          True/False being treated as 1/0.
-        - If `os.cpu_count()` returns None, defaults to 1 CPU.
     """
+    if isinstance(threads, int) and not isinstance(threads, bool):
+        return max(1, threads)
     slurm_cpus = os.environ.get('SLURM_CPUS_PER_TASK')
-    threads_is_int = isinstance(threads, int) and not isinstance(threads, bool)
     if slurm_cpus is not None:
-        if threads_is_int:
-            return max(1, threads * 5)
-        else:
-            try:
-                return max(1, int(slurm_cpus) * 5)
-            except ValueError:
-                available_cpu = os.cpu_count() or 1
-                return max(1, available_cpu - 1)
-    else:
-        if threads_is_int:
-            return max(1, threads)
-        else:
-            available_cpu = os.cpu_count() or 1
-            return max(1, available_cpu - 1)
+        try:
+            return max(1, int(slurm_cpus))
+        except ValueError:
+            pass
+    return max(1, (os.cpu_count() or 1) - 1)
 
 def common_name_parts(filenames):
     """
@@ -382,7 +367,8 @@ def query_read_length(filepath):
         int | None: The sequence length of the first read, or None if the file
         is empty or contains no valid records.
     """
-    for _, sequence, _, _ in lazy_fastq(filepath):
+    for record in lazy_fastq(filepath):
+        _, sequence, _, _ = record.split(FIELD_SEP)
         return len(sequence)
     return None
 
@@ -431,35 +417,61 @@ def is_gz_file(filepath):
 def lazy_fastq(filepath):
     """
     Lazily yield FASTQ records one at a time without loading the entire file.
-    
-    Detects gzip compression via magic bytes (independent of file extension),
-    uses a 10 MB read buffer for efficient I/O, and yields each 4-line FASTQ
-    record as (header, sequence, plus, quality) tuples with line endings stripped.
+
+    Detects gzip compression via magic bytes (independent of file extension).
+    Gzip files are read via isal in large chunks with manual line-stitching
+    across chunk boundaries (fastest path for isal's decompression throughput).
+    Plain-text files are read via Python's line iterator with a 10 MB read
+    buffer (fastest path for uncompressed I/O). Yields each 4-line FASTQ
+    record as (header, sequence, plus, quality) tuples with line endings
+    stripped.
 
     Args:
         filepath (str): Path to the FASTQ file (.fastq, .fq, or gzip-compressed).
-
     Yields:
         tuple[str, str, str, str]: (header, sequence, plus, quality) for each read.
     """
+    buffer_size = 10 * 1024 * 1024
     if is_gz_file(filepath):
-        raw = open(filepath, 'rb', buffering=10 * 1024 * 1024)
-        try:
-            fastq_file = gzip_zlib.GzipFile(fileobj=raw)
-        except Exception:
-            raw.close()
-            raise
+        fastq_file = gzip.open(filepath, 'rb')
+        with fastq_file:
+            leftover = b""
+            while True:
+                chunk = fastq_file.read(buffer_size)
+                if not chunk:
+                    if leftover:
+                        lines = leftover.rstrip(b"\r\n").split(b"\n")
+                        usable = len(lines) - (len(lines) % 4)
+                        it = iter(lines[:usable])
+                        for group in zip(it, it, it, it):
+                            yield FIELD_SEP.join(group)
+                    break
+                data = leftover + chunk
+                last_newline = data.rfind(b"\n")
+                if last_newline == -1:
+                    leftover = data
+                    continue
+                lines = data[:last_newline].split(b"\n")
+                usable = len(lines) - (len(lines) % 4)
+                it = iter(lines[:usable])
+                for group in zip(it, it, it, it):
+                    yield FIELD_SEP.join(group)
+                leftover_lines = lines[usable:]
+                if leftover_lines:
+                    leftover = b"\n".join(leftover_lines) + b"\n" + data[last_newline + 1:]
+                else:
+                    leftover = data[last_newline + 1:]
     else:
-        fastq_file = open(filepath, 'rb', buffering=10 * 1024 * 1024)
-    with fastq_file:
-        lines = iter(fastq_file)
-        for header in lines:
-            header = header.strip()
-            sequence = next(lines).strip()
-            plus = next(lines).strip()
-            quality = next(lines).strip()
-            yield header, sequence, plus, quality
-
+        fastq_file = open(filepath, 'rb', buffering=buffer_size)
+        with fastq_file:
+            lines = iter(fastq_file)
+            for header in lines:
+                header = header.strip()
+                sequence = next(lines).strip()
+                plus = next(lines).strip()
+                quality = next(lines).strip()
+                yield FIELD_SEP.join((header, sequence, plus, quality))
+                
 def find_paired_files(filepaths):
     """
     Groups a list of FASTQ filepaths into paired-end pairs and leftover unpaired files.
@@ -484,7 +496,7 @@ def find_paired_files(filepaths):
             if is_gz_file(filepath):
                 raw = open(filepath, 'rb', buffering=1024)
                 try:
-                    file = gzip_zlib.GzipFile(fileobj=raw)
+                    file = gzip.GzipFile(fileobj=raw)
                     with file:
                         first_line = file.readline()
                 finally:
@@ -610,9 +622,10 @@ def detect_phred_offset(filepath, reads_for_phred_offset, phred_offset):
     count = 0
     reader = lazy_fastq(filepath)
     try:
-        for _, _, _, quality in reader:
+        for record in reader:
             if count >= reads_for_phred_offset:
                 break
+            _, _, _, quality = record.split(FIELD_SEP)
             q_bytes = np.frombuffer(quality, dtype=np.uint8)
             min_ascii = min(min_ascii, q_bytes.min())
             max_ascii = max(max_ascii, q_bytes.max())
@@ -712,32 +725,6 @@ def load_adapters_from_fasta(fasta_file):
             header = sequence
         return result
 
-def chunk_size_setter(chunk_size):
-    """
-    Resolves the chunk size to use for parallel processing.
-
-    If a chunk size is explicitly given, it's returned unchanged.
-    Otherwise, detects whether Slurm tools are available on the system
-    (via `sinfo`/`sbatch` on PATH) and picks a larger default chunk size
-    for Slurm-managed (typically higher-resource) systems, or a smaller
-    default otherwise.
-
-    Args:
-        chunk_size (int | None): User-specified chunk size. Defaults to
-            None (auto-detect).
-
-    Returns:
-        int: The resolved chunk size — 30000 on Slurm systems, 1000
-            otherwise, unless overridden.
-    """
-    if chunk_size is not None:
-        return chunk_size
-    if shutil.which('sinfo') is not None or shutil.which('sbatch') is not None:
-        chunk_size = 30000  #30000 on CPU slurm, 100000 on GPU slurm????
-    else:
-        chunk_size = 1000
-    return chunk_size
-
 def qual_to_bin(quality_list, phred_offset):
     """
     Converts a list of Phred quality strings into a 2D numeric numpy array.
@@ -800,11 +787,26 @@ def header_mgi_to_illumina(mgi_header, barcode5, barcode7, instrument, run):
         ValueError: If the header doesn't match the expected MGI format.
     """
     mgi_header = mgi_header.lstrip(b"@").strip()
+
+    if re.search(rb"^[\w-]+:\d+:[\w-]+:\d+:\d+:\d+:\d+\s+[12]:[YN]:\d+:", mgi_header):
+        return b"@" + mgi_header
+
     strings = re.search(rb"^(\w+)L(\d+)C(\d+)R(\d{3})(\d+)\/([12])", mgi_header)
     if strings is None:
         raise ValueError(f"Header does not match expected MGI format: {mgi_header!r}")
+        
     illumina_header = b"@%b:%b:%b:%d:%d:%d:%d %d:N:0:%b+%b" % (
-    instrument.encode('ascii'), run.encode('ascii'), strings.group(1), int(strings.group(2)), int(strings.group(5)), int(strings.group(3)), int(strings.group(4)), int(strings.group(6)), barcode5.encode('ascii'), barcode7.encode('ascii'))
+        instrument.encode('ascii'), 
+        run.encode('ascii'), 
+        strings.group(1), 
+        int(strings.group(2)), 
+        int(strings.group(5)), 
+        int(strings.group(3)), 
+        int(strings.group(4)), 
+        int(strings.group(6)), 
+        barcode5.encode('ascii'), 
+        barcode7.encode('ascii')
+    )
     return illumina_header
     
 def build_pipeline(parameters):
@@ -887,7 +889,7 @@ def trim_ends_quality(quality_arr, min_quality_both, endqual_min_start, endqual_
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: A tuple of `(start_cutoffs, end_cutoffs)` 
-            arrays of shape `(n_reads,)` and dtype `int32`, giving the left and right trim 
+            arrays of shape `(n_reads,)` and dtype `int16`, giving the left and right trim 
             boundaries per read.
     """
     n_reads, length = quality_arr.shape
@@ -904,14 +906,14 @@ def trim_ends_quality(quality_arr, min_quality_both, endqual_min_start, endqual_
         start_good_pos = None 
     if start_good_pos is not None:
         start_cutoffs = np.where(start_good_pos, start_cutoffs, 0)
-    if endqual_min_end != endqual_min_start:
-        qual_mask = quality_arr >= endqual_min_end
-    end_cutoffs = length - qual_mask[:, ::-1].argmax(axis=1)
+    quality_arr_rev = quality_arr[:, ::-1]
+    qual_mask = quality_arr_rev >= endqual_min_end
+    end_cutoffs = length - qual_mask.argmax(axis=1)
     zero_end_rows = end_cutoffs == length
     if zero_end_rows.any():
         end_good_pos = qual_mask[:, -1] | ~zero_end_rows
         end_cutoffs = np.where(end_good_pos, end_cutoffs, 0)
-    return start_cutoffs.astype(np.int32), end_cutoffs.astype(np.int32)
+    return start_cutoffs.astype(np.int16), end_cutoffs.astype(np.int16)
         
 def homopolymer_nucleotide_trimming(sequence_arr, poly_length_both, poly_length_start, poly_length_end, poly_bases_both, poly_bases_start, poly_bases_end):
     """
@@ -942,14 +944,14 @@ def homopolymer_nucleotide_trimming(sequence_arr, poly_length_both, poly_length_
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
-            each of shape (n_reads,) and dtype int32, giving the left and right 
+            each of shape (n_reads,) and dtype int16, giving the left and right 
             trim boundaries per read.
     """
     n_reads, length = sequence_arr.shape
     if not poly_bases_start and not poly_bases_end and not poly_bases_both:
-        return np.zeros(n_reads, dtype=np.int32), np.full(n_reads, length, dtype=np.int32)
+        return np.zeros(n_reads, dtype=np.int16), np.full(n_reads, length, dtype=np.int16)
     if poly_length_both == poly_length_start == poly_length_end == 0:
-        return np.zeros(n_reads, dtype=np.int32), np.full(n_reads, length, dtype=np.int32)
+        return np.zeros(n_reads, dtype=np.int16), np.full(n_reads, length, dtype=np.int16)
     
     start_bases = []
     end_bases = []
@@ -965,20 +967,21 @@ def homopolymer_nucleotide_trimming(sequence_arr, poly_length_both, poly_length_
     poly_length_start = poly_length_start if poly_length_start != 0 else poly_length_both
     poly_length_end = poly_length_end if poly_length_end != 0 else poly_length_both
     
-    right_cutoffs = np.full(n_reads, length, dtype=np.int32)
-    left_cutoffs = np.zeros(n_reads, dtype=np.int32)
+    right_cutoffs = np.full(n_reads, length, dtype=np.int16)
+    left_cutoffs = np.zeros(n_reads, dtype=np.int16)
     
     for base in start_bases:
-            base_code = ord(base)
-            non_base_mask = sequence_arr != base_code
-            padded_mask = np.column_stack([non_base_mask, np.ones(n_reads, dtype=bool)])
-            first_non_pos = padded_mask.argmax(axis=1)
-            trim_amount = np.where(first_non_pos >= poly_length_start, first_non_pos, 0)
-            left_cutoffs = np.maximum(left_cutoffs, trim_amount)
+        base_code = ord(base)
+        non_base_mask = sequence_arr != base_code
+        padded_mask = np.column_stack([non_base_mask, np.ones(n_reads, dtype=bool)])
+        first_non_pos = padded_mask.argmax(axis=1)
+        trim_amount = np.where(first_non_pos >= poly_length_start, first_non_pos, 0)
+        left_cutoffs = np.maximum(left_cutoffs, trim_amount)
     
-    for base in end_bases:
+    if end_bases:
+        rev_seq = np.ascontiguousarray(sequence_arr[:, ::-1])
+        for base in end_bases:
             base_code = ord(base)
-            rev_seq = sequence_arr[:, ::-1]
             non_base_mask = rev_seq != base_code
             padded_mask = np.column_stack([non_base_mask, np.ones(n_reads, dtype=bool)])
             first_non_pos = padded_mask.argmax(axis=1)
@@ -1048,7 +1051,7 @@ def cut_set_ends(sequence_arr, cut_both, cut_start, cut_end):
     cut_end = length - cut_end if cut_end != 0 else length - cut_both
     if cut_start > cut_end:
         cut_start = cut_end
-    return np.full(n_reads, cut_start, dtype=np.int32), np.full(n_reads, cut_end, dtype=np.int32)
+    return np.full(n_reads, cut_start, dtype=np.int16), np.full(n_reads, cut_end, dtype=np.int16)
 
 def sliding_window_quality(quality_arr, slider_quality, slider_window, slider_step):
     """
@@ -1073,22 +1076,22 @@ def sliding_window_quality(quality_arr, slider_quality, slider_window, slider_st
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
-            each of shape (n_reads,) and dtype int32, giving the best surviving 
+            each of shape (n_reads,) and dtype int16, giving the best surviving 
             [left, right) region per read. Reads with no failing windows keep
             their full length; reads that fail everywhere get a zero-length region.
     """
     n_reads, length = quality_arr.shape
     if length < slider_window:
-        return np.zeros(n_reads, dtype = np.int32), np.full(n_reads, length, dtype = np.int32)
+        return np.zeros(n_reads, dtype = np.int16), np.full(n_reads, length, dtype = np.int16)
 
     cumsum = np.cumsum(quality_arr, axis=1, dtype=np.int32)
     cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int32), cumsum], axis=1)
 
     window_starts = np.arange(0, length - slider_window + 1, slider_step)
     window_sums = cumsum[:, window_starts + slider_window] - cumsum[:, window_starts]
-    window_means = window_sums / slider_window
-    failed_mask = window_means <= slider_quality
-
+    
+    failed_mask = window_sums <= (slider_quality * slider_window)
+    
     bad_positions = np.zeros((n_reads, length), dtype=bool)
     for j, start in enumerate(window_starts):
         rows_failed = failed_mask[:, j]
@@ -1098,8 +1101,8 @@ def sliding_window_quality(quality_arr, slider_quality, slider_window, slider_st
     no_bad = ~bad_positions.any(axis=1)
     all_bad = bad_positions.all(axis=1)
 
-    left_cutoffs = np.zeros(n_reads, dtype=np.int32)
-    right_cutoffs = np.zeros(n_reads, dtype=np.int32)
+    left_cutoffs = np.zeros(n_reads, dtype=np.int16)
+    right_cutoffs = np.zeros(n_reads, dtype=np.int16)
     right_cutoffs[no_bad] = length
 
     needs_stretch_search = ~no_bad & ~all_bad
@@ -1158,7 +1161,7 @@ def adapter_trimming(sequence_arr, adapter_sequences):
             trim boundaries per read. Left cutoffs are always 0 (3'-end trimming only).
     """
     n_reads, length = sequence_arr.shape
-    right_cutoffs = np.full(n_reads, length, dtype=np.int32)
+    right_cutoffs = np.full(n_reads, length, dtype=np.int16)
     sequence_arr = sequence_arr.astype(np.uint8)
     all_bytes = sequence_arr.tobytes()
     
@@ -1233,46 +1236,43 @@ def kmer_complexity_scan(sequence_arr, kmer, low_complex_cutoff, allow_n):
         kmer_list = [int(kmer)]
 
     global_passed = np.ones(n_reads, dtype=bool)
+    mapping = np.zeros(256, dtype=np.int8)
+    if allow_n:
+        mapping[ord('A')] = 0
+        mapping[ord('C')] = 1
+        mapping[ord('G')] = 2
+        mapping[ord('T')] = 3
+        mapping[ord('N')] = 4
+        bits_per_base = 3
+    else:
+        mapping[ord('A')] = 0
+        mapping[ord('C')] = 1
+        mapping[ord('G')] = 2
+        mapping[ord('T')] = 3
+        bits_per_base = 2
+    int_matrix_full = mapping[sequence_arr]
+
     for k in kmer_list:
+        if not np.any(global_passed):
+            break
         if k > length:
             raise ValueError(f"k-mer length {k} is greater than sequence length {length}")
-        mapping = np.zeros(256, dtype=np.int8)
-        if allow_n:
-            mapping[ord('A')] = 0
-            mapping[ord('C')] = 1
-            mapping[ord('G')] = 2
-            mapping[ord('T')] = 3
-            mapping[ord('N')] = 4
-            bits_per_base = 3
-            max_val = 1 << (3 * k)
-        else:
-            mapping[ord('A')] = 0
-            mapping[ord('C')] = 1
-            mapping[ord('G')] = 2
-            mapping[ord('T')] = 3
-            bits_per_base = 2
-            max_val = 1 << (2 * k)
-        int_matrix = mapping[sequence_arr]
         max_kmers = length - k + 1
         kmer_ints = np.zeros((n_reads, max_kmers), dtype=np.int64)
         for i in range(k):
-            kmer_ints = (kmer_ints << bits_per_base) | int_matrix[:, i:i+max_kmers]
+            kmer_ints = (kmer_ints << bits_per_base) | int_matrix_full[:, i:i+max_kmers]
 
-        if max_val <= 4096:
-            per_read_counts = np.zeros((n_reads, max_val), dtype=np.int64)
-            for i in range(n_reads):
-                per_read_counts[i] = np.bincount(kmer_ints[i], minlength=max_val)
-                unique_count = np.count_nonzero(per_read_counts[i])
-                if (unique_count / max_kmers) < (low_complex_cutoff/100):
-                    global_passed[i] = False
-        else:
-            for i in range(n_reads):
-                unique_count = np.unique(kmer_ints[i]).size
-                if (unique_count / max_kmers) < (low_complex_cutoff/100):
-                    global_passed[i] = False
+        sorted_kmers = np.sort(kmer_ints, axis=1)
+        is_new = np.empty_like(sorted_kmers, dtype=bool)
+        is_new[:, 0] = True
+        np.not_equal(sorted_kmers[:, 1:], sorted_kmers[:, :-1], out=is_new[:, 1:])
+        unique_counts = is_new.sum(axis=1)
 
-    second_array = np.where(global_passed, length, 0).astype(np.int32)
-    return np.zeros(n_reads, dtype=np.int32), second_array
+        ratio = unique_counts / max_kmers
+        global_passed &= (ratio >= (low_complex_cutoff / 100))
+
+    second_array = np.where(global_passed, length, 0).astype(np.int16)
+    return np.zeros(n_reads, dtype=np.int8), second_array
 
 ##### Unpaired reads workflow functions #####
 def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, minimum_average_qual, read_length, gzip_output, gzip_level, parameters):
@@ -1309,11 +1309,12 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
     valid_pluses = []
     valid_qualities = []
     for r in chunk:
-        if validate_fastq(*r, min_raw_read_length = parameters["min_raw_read_length"], nucl_filter = parameters["nucl_filter"], read_length = read_length):
-            valid_headers.append(r[0])
-            valid_sequences.append(r[1])
-            valid_pluses.append(r[2])
-            valid_qualities.append(r[3])
+        header, sequence, plus, quality = r.split(FIELD_SEP)
+        if validate_fastq(header, sequence, plus, quality, min_raw_read_length = parameters["min_raw_read_length"], nucl_filter = parameters["nucl_filter"], read_length = read_length):
+            valid_headers.append(header)
+            valid_sequences.append(sequence)
+            valid_pluses.append(plus)
+            valid_qualities.append(quality)
     rejected = len(chunk) - len(valid_headers)
     if not valid_headers:
         return [], 0, rejected
@@ -1323,8 +1324,8 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
     quality_arr = qual_to_bin(quality_list = valid_qualities, phred_offset = phred_offset)
     sequence_arr = seq_to_bin(sequence_list = valid_sequences)
     n_reads, length = quality_arr.shape
-    left_list = [np.zeros(n_reads, dtype=np.int32)]
-    right_list = [np.full(n_reads, length, dtype=np.int32)]
+    left_list = [np.zeros(n_reads, dtype=np.int16)]
+    right_list = [np.full(n_reads, length, dtype=np.int16)]
     for step in build_pipeline(parameters):
         left, right = step(sequence_arr, quality_arr)
         left_list.append(left)
@@ -1352,7 +1353,10 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
     len_results = len(results)
     results = b"".join(results)
     if gzip_output:
-        results = gzip_zlib.compress(results, compresslevel=gzip_level)
+        try:
+            results = gzip.compress(results, compresslevel=gzip_level)
+        except Exception as e:
+            raise RuntimeError(f"Compression failed inside worker: {str(e)}") from None
     return results, len_results, rejected
 
 def generate_unpaired_tasks(filepaths, chunk_size, parameters):
@@ -1394,8 +1398,7 @@ def generate_unpaired_tasks(filepaths, chunk_size, parameters):
                 "phred_offset": phred_offset,
                 "read_length": read_length,
                 "minimum_length": minimum_len,
-                "maximum_length": maximum_len,
-                "parameters": parameters
+                "maximum_length": maximum_len
             }
 
 def process_unpaired_task_flat(task, parameters):
@@ -1505,8 +1508,7 @@ def generate_paired_tasks(files, chunk_size, parameters):
                 "minimum_length": minimum_length,
                 "maximum_length": maximum_length,
                 "gzip_output": parameters["gzip_output"], 
-                "gzip_level": parameters["gzip_level"], 
-                "parameters": parameters
+                "gzip_level": parameters["gzip_level"]
             }
 
 def trim_reads(records, phred_offset, minimum_length, maximum_length, read_length, minimum_average_qual, parameters):
@@ -1539,11 +1541,12 @@ def trim_reads(records, phred_offset, minimum_length, maximum_length, read_lengt
     valid_qualities = []
     rejected = 0
     for r in records:
-        if validate_fastq(*r,min_raw_read_length = parameters["min_raw_read_length"],nucl_filter = parameters["nucl_filter"], read_length = read_length):
-            valid_headers.append(r[0])
-            valid_sequences.append(r[1])
-            valid_pluses.append(r[2])
-            valid_qualities.append(r[3])
+        header, sequence, plus, quality = r.split(FIELD_SEP)
+        if validate_fastq(header, sequence, plus, quality, min_raw_read_length = parameters["min_raw_read_length"],nucl_filter = parameters["nucl_filter"], read_length = read_length):
+            valid_headers.append(header)
+            valid_sequences.append(sequence)
+            valid_pluses.append(plus)
+            valid_qualities.append(quality)
         else:
             rejected += 1
     if not valid_headers:
@@ -1553,8 +1556,8 @@ def trim_reads(records, phred_offset, minimum_length, maximum_length, read_lengt
         valid_headers = [header_mgi_to_illumina(header, parameters["mgi_bc5"], parameters["mgi_bc7"], parameters["mgi_instrument"], parameters["mgi_run"]) for header in valid_headers]
     quality_arr = qual_to_bin(quality_list = valid_qualities, phred_offset = phred_offset)
     sequence_arr = seq_to_bin(sequence_list = valid_sequences)
-    left_list = [np.zeros(sequence_arr.shape[0], dtype=np.int32)]
-    right_list = [np.full(sequence_arr.shape[0], sequence_arr.shape[1], dtype=np.int32)]
+    left_list = [np.zeros(sequence_arr.shape[0], dtype=np.int16)]
+    right_list = [np.full(sequence_arr.shape[0], sequence_arr.shape[1], dtype=np.int16)]
     
     for step in build_pipeline(parameters):
         left, right = step(sequence_arr, quality_arr)
@@ -1639,12 +1642,29 @@ def process_paired_chunk(chunks, phred_offset, read_length, minimum_length, maxi
     singles_out = b"".join(singles_out)
 
     if gzip_output:
-        paired_out_1 = gzip_zlib.compress(paired_out_1, compresslevel=gzip_level)
-        paired_out_2 = gzip_zlib.compress(paired_out_2, compresslevel=gzip_level)
-        singles_out = gzip_zlib.compress(singles_out, compresslevel=gzip_level)
+            isal_level = min(max(gzip_level, 0), 3)
+            try:
+                paired_out_1 = gzip.compress(paired_out_1, compresslevel=isal_level)
+                paired_out_2 = gzip.compress(paired_out_2, compresslevel=isal_level)
+                singles_out = gzip.compress(singles_out, compresslevel=isal_level)
+            except Exception as e:
+                raise RuntimeError(f"Compression failed inside worker: {str(e)}") from None
     return paired_out_1, paired_out_2, singles_out, num_paired, num_singles, rejected_1 + rejected_2
 
 ##### Input handler functions #####
+def worker_initilizer(parameters):
+    """
+    Pool initializer: runs once per worker process at startup, storing
+    `parameters` in a worker-global so it doesn't need to be pickled and
+    sent again with every individual task.
+
+    Args:
+        parameters (dict): Configuration parameters, pickled and sent to
+            each worker exactly once when the pool spins it up.
+    """
+    global WORKER_PARAMETERS
+    WORKER_PARAMETERS = parameters
+
 def unified_worker(task):
     """
     Routes a processing task to the appropriate handler based on its type.
@@ -1664,7 +1684,7 @@ def unified_worker(task):
         ValueError: If the task type is unknown or missing.
     """
     task_type = task.get("type")
-    parameters = task.get("parameters")
+    parameters = WORKER_PARAMETERS
 
     if task_type == "paired":
         return process_paired_task_flat(task, parameters=parameters)
@@ -1729,7 +1749,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
         yield from generate_unpaired_tasks(filepaths=unpaired, chunk_size=chunk_size, parameters=parameters)
         yield from generate_paired_tasks(files=paired, chunk_size=chunk_size, parameters=parameters)
     try:
-        with mp.Pool(threads) as pool:
+        with mp.Pool(threads, initializer=worker_initilizer, initargs=(parameters,)) as pool:
             for result in pool.imap_unordered(unified_worker, unified_chunk_streamer(), chunksize=1):
                 if result[0] == "unpaired":  # Unpaired result: (type, filepath, chunk_results, kept, rejected)
                     _, filepath, chunk_results, kept, rejected = result
@@ -1820,6 +1840,17 @@ class CleanHelpFormatter(argparse.HelpFormatter):
         help_text = re.sub(r"\n\n(?=  -)", "\n", help_text)
         return help_text
     
+def print_adapters():
+    """
+    Prints the name and sequence of every built-in adapter available for
+    --adapter-trim, for the user to query before choosing one.
+    """
+    print("\nBuilt-in adapter sequences (use with --adapter-trim/-at <name>):\n")
+    name_width = max(len(name) for name, _ in DEFAULT_ADAPTERS) + 2
+    for name, sequence in DEFAULT_ADAPTERS:
+        print(f"    {name:<{name_width}} {sequence}")
+    print()
+
 def print_full_auto_help(parser):
     """
     Prints the effective settings --full-auto/-GO applies, grouped by the
@@ -1829,7 +1860,7 @@ def print_full_auto_help(parser):
     print(
         "\n"
         "When --full-auto/-GO is specified, only input parameters --input-files/-i, --input-paired/-ip, and --input-unpaired/-iu are respected."
-        "\nIf none of these are provided, ReadZor will auto-detect FASTQ files in the current working directory."
+        "\nIf none of these are provided, Readzor will auto-detect FASTQ files in the current working directory."
         "\nAll other user-provided parameters are ignored."
         "\n"
         "\nIn full automatic mode, the default settings are used, with the following specific changes:"
@@ -1854,7 +1885,7 @@ def print_full_auto_help(parser):
 
 def parse_args():
     """
-    Parses ReadZor's command-line arguments into a resolved parameters dict.
+    Parses Readzor's command-line arguments into a resolved parameters dict.
     
     Supports three main input modes: fully automatic operation (--full-auto,
     which autodetects files and ignores all other options), a flat list of
@@ -1910,7 +1941,7 @@ def parse_args():
     """
     parser = argparse.ArgumentParser(
         prog="readzor",
-        description="ReadZor: a modular FASTQ quality trimming pipeline.\n\n"
+        description="Readzor: a modular FASTQ quality trimming pipeline.\n\n"
                      "All modules are off by default. To use a module, specify a "
                      "module flag. Further specifications with module settings possible.",
         formatter_class=CleanHelpFormatter,
@@ -1925,11 +1956,15 @@ def parse_args():
     )
     general_group.add_argument(
         "--version", "-v", action = "store_true", default = False,
-        help="[FLAG] Show ReadZor version and exit."
+        help="[FLAG] Show Readzor version and exit."
+    )
+    general_group.add_argument(
+        "--list-adapters", "-LA", action = "store_true", default = False,
+        help="[FLAG] Show all built-in adapter sequences and exit."
     )
     general_group.add_argument(
         "--full-auto", "-GO", action = "store_true", default = False,
-        help="[FLAG] Run ReadZor in fully automatic mode. Combine with --help/-h for more information on fully automatic mode."
+        help="[FLAG] Run Readzor in fully automatic mode. Combine with --help/-h for more information on fully automatic mode."
     )
     general_group.add_argument(
     "--progress", action="store_true", default=False,
@@ -1964,8 +1999,8 @@ def parse_args():
         help="[FLAG] Compress filtered FASTQ files in gzip format. Default: off."
     )
     output_group.add_argument(
-        "--gzip-level", type=int, default = 4, metavar = "", choices=range(1, 10),
-        help="Set gzip compression level. Higher compression decreases processing speed. Possible levels: 1-9. Default: 4."
+        "--gzip-level", type=int, default = 1, metavar = "", choices=range(0, 3),
+        help="Set gzip compression level. Higher compression decreases processing speed. Possible levels: 0-3. Default: 1."
     )
  
     general_quality_group = parser.add_argument_group("General output filter options")
@@ -2089,8 +2124,12 @@ def parse_args():
         help='[FLAG] Turn on adapter trimming module. Default: off.'
     )
     adapter_trimming.add_argument(
-        "--adapter-fasta", "-ad", type = str, default = None, metavar="",
-        help="Fasta file with additional adapter sequences to trim for."
+        "--adapter-fasta-add", "-ad", type = str, default = None, metavar="",
+        help="Fasta file with adapter sequences to trim for, in addition to predefined sequences."
+    )
+    adapter_trimming.add_argument(
+        "--adapter-fasta-excl", "-ax", type = str, default = None, metavar="",
+        help="Fasta file with adapter sequences to trim for, excluding predefined and additional sequences specified"
     )
  
     low_complexity_group = parser.add_argument_group("Low complexity filtering",
@@ -2131,7 +2170,7 @@ def parse_args():
     )    
  
     advanced_group = parser.add_argument_group("Advanced options",
-                                               "Further options that can be specified to alter the behaviour of ReadZor.")
+                                               "Further options that can be specified to alter the behaviour of Readzor.")
     advanced_group.add_argument(
         "--threads", "-t", type = int, default = None, metavar="",
         help="Number of threads to use (defaults: platform-dependent through auto-detection: detection of assigned CPUs on Slurm-managed systems, all-1 otherwise. Fallback: 1."
@@ -2146,7 +2185,7 @@ def parse_args():
     )
     advanced_group.add_argument(
         "--chunk-size", type=int, default = 1000, metavar="",
-        help="Number of reads per chunk sent to each worker (default: platform-dependent: 20.000 for Slurm-managed systems, 1000 otherwise)."
+        help="Number of reads per chunk sent to each worker. Default: 1000."
     )
     advanced_group.add_argument(
         "--phred-offset", type = int, default = None, metavar="",
@@ -2167,7 +2206,11 @@ def parse_args():
         sys.exit()
  
     if args.version:
-        print(f"ReadZor version: {VERSION}")
+        print(f"Readzor version: {VERSION}")
+        sys.exit()
+
+    if args.list_adapters:
+        print_adapters()
         sys.exit()
  
     if args.full_auto:
@@ -2223,7 +2266,8 @@ def parse_args():
     parameters["min_raw_read_length"] = args.min_raw_read_length
     parameters["reads_for_phred_offset"] = args.reads_for_phred_offset
     parameters["adapter_trim_flag"] = args.adapter_trim_flag
-    parameters["adapter_fasta"] = args.adapter_fasta
+    parameters["adapter_fasta_add"] = args.adapter_fasta_add
+    parameters["adapter_fasta_excl"] = args.adapter_fasta_excl
     parameters["nucl_filter"] = args.nucl_filter
     parameters["phred_offset"] = args.phred_offset
     parameters["threads"] = args.threads
@@ -2253,17 +2297,18 @@ def parse_args():
     if parameters["nucl_filter"]:
         parameters["n_trimming_flag"] = False
  
-    if parameters["adapter_trim_flag"] and parameters.get("adapter_fasta"):
-        parameters["adapter_sequences"] = DEFAULT_ADAPTERS + load_adapters_from_fasta(parameters["adapter_fasta"])
-        parameters["adapter_sequences"] = list({seq.encode('utf-8') for _, seq in parameters["adapter_sequences"]})
-
+    if parameters.get("adapter_trim_flag"):
+        if parameters.get("adapter_fasta_excl"):
+            raw_adapters = load_adapters_from_fasta(parameters["adapter_fasta_excl"])
+        elif parameters.get("adapter_fasta_add"):
+            raw_adapters = DEFAULT_ADAPTERS + load_adapters_from_fasta(parameters["adapter_fasta_add"])
+        else:
+            raw_adapters = DEFAULT_ADAPTERS
+        parameters["adapter_sequences"] = list({seq.encode('utf-8') for _, seq in raw_adapters})
     else:
-        parameters["adapter_sequences"] = DEFAULT_ADAPTERS
-        parameters["adapter_sequences"] = list({seq.encode('utf-8') for _, seq in DEFAULT_ADAPTERS})
-    
+        parameters["adapter_sequences"] = []
     
     parameters["threads"] = worker_determination(parameters["threads"])    
-    parameters["chunk_size"] = chunk_size_setter(parameters["chunk_size"])
  
     return parameters
     
@@ -2325,7 +2370,7 @@ def write_summary_and_statistics(summary_results, parameters, used_command, outp
 
 def print_final_message():
     """
-    Prints ReadZor's completion message, including a citation request and
+    Prints Readzor's completion message, including a citation request and
     a randomly selected sign-off phrase. Called at the end of a successful run.
 
     Returns:
@@ -2333,25 +2378,25 @@ def print_final_message():
     """
     sign_off_messages = [
     "Please come again!",
-    "Thanks for trimming with ReadZor!",
+    "Thanks for trimming with Readzor!",
     "May your reads be long and your adapters be gone!",
     "Until next time, happy analyzing!",
     "See you soon!",
-    "Thanks for using ReadZor!",
+    "Thanks for using Readzor!",
     "Happy analyzing!",
     "Good luck with your data!",
     "Base-ically, we're done here. See you!",
-    "ReadZor, signing off!"
+    "Readzor, signing off!"
     ]
     print("Analysis successfully completed!")
-    print("\nIf you find ReadZor useful, please consider citing:")
-    print("\nAxel B. Janssen \n2026 \nReadZor: A modular and user-friendly Swiss-army knife approach to short-read sequencing preprocessing.")
+    print("\nIf you find Readzor useful, please consider citing:")
+    print("\nAxel B. Janssen \n2026 \nReadzor: A modular and user-friendly Swiss-army knife approach to short-read sequencing preprocessing.")
     print(f"\n{random.choice(sign_off_messages)}\n")
 
 ##### Main #####
-if __name__ == "__main__":
+def main():
     """
-    Main execution block for ReadZor.
+    Main execution block for Readzor.
 
     Initializes command-line argument parsing and parameter configuration, creates the output
     directory structure, handles input stream processing and multithreaded trimming
@@ -2371,3 +2416,8 @@ if __name__ == "__main__":
     summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], parameters = parameters)
     write_summary_and_statistics(summary_results, parameters, used_command, output_dir = created_output_dir)
     print_final_message()
+    
+if __name__ == "__main__":
+    main()
+    
+    
