@@ -3,6 +3,9 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 ![Yes, it's in Python'](https://img.shields.io/badge/Language-Python3-steelblue.svg)
 [![PyPI Downloads](https://img.shields.io/pypi/dm/readzor)](https://pypi.org/project/Readzor/)
+[![Bioconda Downloads](https://img.shields.io/conda/dn/bioconda/readzor)](https://bioconda.github.io/recipes/prokka/README.html)
+![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/abjanssen/readzor/total)(https://github.com/abjanssen/readzor)
+
 
 # Welcome to ReadZor 
 
