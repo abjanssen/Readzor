@@ -41,11 +41,26 @@ FULL_AUTO_OVERRIDES = {
     "adapter_trim_flag": True, #heavy
     "nucl_filter": True,
     "gzip": True,
-    "progress": True
+    "progress": True,
+    "verbose": True
 }
+NUCL_ATCG = b"ATCG"
+NUCL_ATCGN = b"ATCGN"
 
 ##### Logging #####
 logger = logging.getLogger("readzor")
+_active_progress_tracker = None
+
+class ProgressAwareStreamHandler(logging.StreamHandler):
+    """
+    A StreamHandler that clears any in-progress progress-bar line before
+    emitting a log record, so the two don't get interleaved on the same
+    terminal line.
+    """
+    def emit(self, record):
+        if _active_progress_tracker is not None:
+            _active_progress_tracker.clear_line()
+        super().emit(record)
 
 def setup_logging(output_dir=None, verbose = False):
     """
@@ -74,7 +89,7 @@ def setup_logging(output_dir=None, verbose = False):
 
     console_level = logging.DEBUG if verbose else (logging.CRITICAL + 1)
     if not logger.handlers:
-        console = logging.StreamHandler(sys.stderr)
+        console = ProgressAwareStreamHandler(sys.stderr)
         console.setLevel(console_level)
         console.setFormatter(formatter)
         console.name = "console"
@@ -93,7 +108,7 @@ def setup_logging(output_dir=None, verbose = False):
         logger.addHandler(file_handler)
         logger.info("Readzor %s starting.", VERSION)
         used_command = " ".join(map(shlex.quote, [sys.executable] + sys.argv))
-        logger.info("Command detected: %s", used_command)
+        logger.info("Command used: %s", used_command)
         logger.warning("--full-auto/-GO specified; ignoring all other input parameters (except input file parameters).")
         logger.info("Output directory created at %s", output_dir)
         logger.info("Log file initialized at %s", log_path)
@@ -166,7 +181,6 @@ def count_reads_estimated(filepath, default_gzip_ratio=4):
         estimated_uncompressed_size = file_size * ratio
     else:
         estimated_uncompressed_size = file_size
-
     return max(1, round(estimated_uncompressed_size / bytes_per_read))
 
 class ProgressTracker:
@@ -237,6 +251,16 @@ class ProgressTracker:
             line = f"\r{stats.strip()}"
         line = line[: term_width - 1].ljust(term_width - 1)
         sys.stderr.write(line)
+        sys.stderr.flush()
+
+    def clear_line(self):
+        """
+        Blank out the current progress-bar line so other output (e.g. log
+        messages) can be written to stderr without visually clashing with
+        the bar. The bar redraws itself on the next call to `update()`.
+        """
+        term_width = shutil.get_terminal_size(fallback=(80, 24)).columns
+        sys.stderr.write("\r" + " " * (term_width - 1) + "\r")
         sys.stderr.flush()
 
     def close(self):
@@ -588,6 +612,8 @@ def find_paired_files(filepaths):
                 dropped.add(filepath)
     unpaired = [f for f in base_ids if f not in dropped]
     logger.info("Matched %s pair(s), %s file(s) left unpaired.", len(pairs), len(unpaired))
+    logger.info("Paired files:\n%s", "\n".join(f"  {os.path.basename(f1)} + {os.path.basename(f2)}" for f1, f2 in pairs))
+    logger.info("Unpaired files:\n%s", "\n".join(f"  {os.path.basename(f)}" for f in unpaired))
     return pairs, unpaired
 
 def read_info_from_header(header):
@@ -679,13 +705,7 @@ def detect_phred_offset(filepath, reads_for_phred_offset, phred_offset):
             f"Please specify the Phred offset (33/64) manually using the --phred-offset option."
         )
 
-# Build once, at module level
-
-
-NUCL_ATCG = b"ATCG"
-NUCL_ATCGN = b"ATCGN"
-
-def validate_fastq(header, sequence, plus, quality, min_raw_read_length, nucl_filter, read_length):
+def validate_fastq(header, sequence, plus, quality, nucl_filter, read_length):
     """
     Validates that a single FASTQ record is well-formed.
     """
@@ -699,7 +719,7 @@ def validate_fastq(header, sequence, plus, quality, min_raw_read_length, nucl_fi
     if read_length is not None and seq_len != read_length:
         raise ValueError(
             f"FASTQ file contain uneven read lengths. Found {seq_len}, expected {read_length}.")
-    if seq_len < min_raw_read_length or seq_len != len(quality):
+    if seq_len != len(quality):
         return False
     if nucl_filter:
         if sequence.translate(None, NUCL_ATCG):
@@ -1301,8 +1321,8 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
         maximum_length (int): Maximum acceptable read length after trimming.
         minimum_average_qual (float): Minimum acceptable mean quality after trimming.
         read_length (int): Expected original read length (for validation).
-        gzip_output (bool): If True, compresses output records with gzip.
-        gzip_level (int): Gzip compression level (1-9).
+        gzip_output (bool): If True, compresses output records with Isal gzip.
+        gzip_level (int): Isal gzip compression level (0-3).
         parameters (dict): Dictionary of configuration parameters.
 
     Returns:
@@ -1317,7 +1337,7 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
     valid_qualities = []
     for r in chunk:
         header, sequence, plus, quality = r.split(FIELD_SEP)
-        if validate_fastq(header, sequence, plus, quality, min_raw_read_length = parameters["min_raw_read_length"], nucl_filter = parameters["nucl_filter"], read_length = read_length):
+        if validate_fastq(header, sequence, plus, quality, nucl_filter = parameters["nucl_filter"], read_length = read_length):
             valid_headers.append(header)
             valid_sequences.append(sequence)
             valid_pluses.append(plus)
@@ -1381,22 +1401,27 @@ def generate_unpaired_tasks(filepaths, chunk_size, parameters):
             and precomputed metadata.
     """
     for filepath in filepaths:
+        logger.info("%s: Started processing.", os.path.basename(filepath))
         phred_offset = detect_phred_offset(
             filepath=filepath,
             reads_for_phred_offset=parameters["reads_for_phred_offset"],
             phred_offset=parameters["phred_offset"]
         )
         read_length = query_read_length(filepath)
+        logger.info("%s: Phred offset of %s detected.", os.path.basename(filepath), phred_offset)
+        logger.info("%s: read length of %s detected.", os.path.basename(filepath), read_length)
+        logger.info("%s: (Estimated) read count: %s.", os.path.basename(filepath), _estimated_read_counts.get(filepath, "unknown"))
         minimum_len = parameters["minimum_length"]
         maximum_len = parameters["maximum_length"]
-        if minimum_len is None:
-            minimum_len = int(read_length // 3)
         if maximum_len is None:
             maximum_len = read_length
         reads_iter = lazy_fastq(filepath)
+        chunk_number = 0
         while True:
+            chunk_number += 1
             chunk = list(itertools.islice(reads_iter, chunk_size))
             if not chunk:
+                logger.info("%s: finished processing.", os.path.basename(filepath))
                 break
             yield {
                 "type": "unpaired",
@@ -1475,10 +1500,17 @@ def generate_paired_tasks(files, chunk_size, parameters):
     """
     for pair in files:
         file1, file2 = pair
+        logger.info("%s and %s: Started processing.", os.path.basename(file1), os.path.basename(file2))
         phred_offset_1 = detect_phred_offset(filepath = file1, reads_for_phred_offset = parameters["reads_for_phred_offset"], phred_offset = parameters["phred_offset"])
         read_length_1 = query_read_length(file1)
         phred_offset_2 = detect_phred_offset(filepath = file2, reads_for_phred_offset = parameters["reads_for_phred_offset"], phred_offset = parameters["phred_offset"])
         read_length_2 = query_read_length(file2)
+        logger.info("%s: Phred offset of %s detected.", os.path.basename(file1), phred_offset_1)
+        logger.info("%s: Phred offset of %s detected.", os.path.basename(file2), phred_offset_2)
+        logger.info("%s: read length of %s detected.", os.path.basename(file1), read_length_1)
+        logger.info("%s: read length of %s detected.", os.path.basename(file2), read_length_2)
+        logger.info("%s: (Estimated) read count: %s.", os.path.basename(file1), _estimated_read_counts.get(file1, "unknown"))
+        logger.info("%s: (Estimated) read count: %s.", os.path.basename(file2), _estimated_read_counts.get(file2, "unknown"))
         if read_length_1 != read_length_2 or phred_offset_1 != phred_offset_2:
             logger.error(
                 "Paired files '%s' and '%s' must match in read length and Phred offset. "
@@ -1488,16 +1520,17 @@ def generate_paired_tasks(files, chunk_size, parameters):
             continue
         minimum_length = parameters["minimum_length"]
         maximum_length = parameters["maximum_length"]
-        if minimum_length is None:
-            minimum_length = read_length_1 // 3
         if maximum_length is None:
             maximum_length = read_length_1
         reads_iter_1 = lazy_fastq(file1)
         reads_iter_2 = lazy_fastq(file2)
+        chunk_number = 0 
         while True:
+            chunk_number += 1
             chunk1 = list(itertools.islice(reads_iter_1, chunk_size))
             chunk2 = list(itertools.islice(reads_iter_2, chunk_size))
             if not chunk1 and not chunk2:
+                logger.info("%s and %s: finished processing.", os.path.basename(file1), os.path.basename(file2))
                 return
             if len(chunk1) != len(chunk2):
                 raise ValueError(
@@ -1549,7 +1582,7 @@ def trim_reads(records, phred_offset, minimum_length, maximum_length, read_lengt
     rejected = 0
     for r in records:
         header, sequence, plus, quality = r.split(FIELD_SEP)
-        if validate_fastq(header, sequence, plus, quality, min_raw_read_length = parameters["min_raw_read_length"],nucl_filter = parameters["nucl_filter"], read_length = read_length):
+        if validate_fastq(header, sequence, plus, quality, nucl_filter = parameters["nucl_filter"], read_length = read_length):
             valid_headers.append(header)
             valid_sequences.append(sequence)
             valid_pluses.append(plus)
@@ -1607,8 +1640,8 @@ def process_paired_chunk(chunks, phred_offset, read_length, minimum_length, maxi
         read_length (int): Expected original read length (for validation).
         minimum_length (int): Minimum acceptable read length after trimming.
         maximum_length (int): Maximum acceptable read length after trimming.
-        gzip_output (bool): If True, compresses output records with gzip.
-        gzip_level (int): Gzip compression level (1-9).
+        gzip_output (bool): If True, compresses output records with Isal gzip.
+        gzip_level (int): Isal gzip compression level (0-3).
         parameters (dict): Dictionary of configuration parameters.
 
     Returns:
@@ -1713,18 +1746,24 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
     auto_paired, auto_unpaired = find_paired_files(unspecified_files)
     unpaired = auto_unpaired + (unpaired_files or [])
     paired = auto_paired + (paired_files or [])
+    global _estimated_read_counts
+    _estimated_read_counts = {}
+    for file in unpaired:
+        _estimated_read_counts[file] = count_reads_estimated(file)
+    for f1, f2 in paired:
+        _estimated_read_counts[f1] = count_reads_estimated(f1)
+        _estimated_read_counts[f2] = count_reads_estimated(f2)
     if show_progress:
-        total_reads = 0
-        for file in unpaired:
-            total_reads += count_reads_estimated(file)
-        for f1, f2 in paired:
-            total_reads += count_reads_estimated(f1) + count_reads_estimated(f2)
+        total_reads = sum(_estimated_read_counts.values())
         tracker = ProgressTracker(total_reads)
     else:
         class _NullTracker:
             def update(self, n): pass
             def close(self): pass
+            def clear_line(self): pass
         tracker = _NullTracker()
+    global _active_progress_tracker
+    _active_progress_tracker = tracker
     file_stats = {}
     file_writing_handles = {}
     for file in unpaired:
@@ -1751,8 +1790,12 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
                 gzip_output=parameters["gzip_output"]
                 )
     def unified_chunk_streamer():
+        logger.info("Started processing unpaired files.")
         yield from generate_unpaired_tasks(filepaths=unpaired, chunk_size=chunk_size, parameters=parameters)
+        logger.info("Finished processing unpaired files.")
+        logger.info("Started processing paired files.")
         yield from generate_paired_tasks(files=paired, chunk_size=chunk_size, parameters=parameters)
+        logger.info("Started processing paired files.")
     try:
         with mp.Pool(threads, initializer=worker_initilizer, initargs=(parameters,)) as pool:
             for result in pool.imap_unordered(unified_worker, unified_chunk_streamer(), chunksize=1):
@@ -1780,6 +1823,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
                     tracker.update(num_paired * 2 + num_singles + rejected)
     finally:
         tracker.close()
+        _active_progress_tracker = None
         for handle in file_writing_handles.values():
                 if not handle.closed:
                     handle.close()
@@ -1921,12 +1965,10 @@ def parse_args():
               (e.g. poly-G trimming). Defaults to "G".
             - poly_length_start (int): Minimum homopolymer run length of poly_bases
               required to trigger trimming. Defaults to 10.
-            - min_raw_read_length (int): Minimum length a raw (untrimmed) read
-              must have to be considered valid. Defaults to 0.
             - reads_for_phred_offset (int): Number of reads to sample when
               auto-detecting the Phred quality encoding offset. Defaults to 1000.
             - gzip_output (bool): Whether to gzip-compress the output file(s).
-            - gzip_level (int): Gzip compression level (1-9). Defaults to 6.
+            - gzip_level (int): Isal gzip compression level (0-3). Defaults to 1.
             - threads (int or None): Requested CPU count.
             - chunk_size (int or None): Requested chunk size.
             - output_dir (str): Resolved output directory (defaults to the
@@ -1973,7 +2015,7 @@ def parse_args():
     )
     general_group.add_argument(
     "--verbose", action="store_true", default=False,
-    help="[FLAG] Verbose output, in addition to logging to logfile. Default: off."
+    help="[FLAG] Write verbose output to terminal, in addition to the log file. Default: off."
     )
 
     input_group = parser.add_argument_group(
@@ -2005,7 +2047,7 @@ def parse_args():
     )
     output_group.add_argument(
         "--gzip-level", type=int, default = 1, metavar = "", choices=range(0, 3),
-        help="Set gzip compression level. Higher compression decreases processing speed. Possible levels: 0-3. Default: 1."
+        help="Set gzip compression level. Higher compression decreases processing speed. Possible values: 0-3. Default: 1."
     )
 
     general_quality_group = parser.add_argument_group("General output filter options")
@@ -2015,7 +2057,7 @@ def parse_args():
     )
     general_quality_group.add_argument(
         "--min-length", type=int, default = 0, metavar = "", 
-        help="Minimum length of output read. Default: 0."
+        help="Minimum length of output read. Note: raw read lengths may be n+1, for example: a 150 bp will probably have yielded 151 bp reads. Default: 0."
     )
     general_quality_group.add_argument(
         "--max-length", type = int, default = None, metavar = "", 
@@ -2181,20 +2223,16 @@ def parse_args():
         help="Number of threads to use (defaults: platform-dependent through auto-detection: detection of assigned CPUs on Slurm-managed systems, all-1 otherwise. Fallback: 1."
     )
     advanced_group.add_argument(
-        "--min-raw-read-length", type = int, default = 0, metavar="",
-        help="Minimum length a raw (untrimmed) read must have to be considered valid. Default: 0."
-    )
-    advanced_group.add_argument(
         "--reads-for-phred-offset", type = int, default = 500, metavar="",
         help="Number of reads to sample per file for detection of Phred quality encoding offset. Default: 500."
     )
     advanced_group.add_argument(
         "--chunk-size", type=int, default = 1000, metavar="",
-        help="Number of reads per chunk sent to each worker. Default: 1000."
+        help="Number of reads per chunk sent to each worker thread. Note: empirically set at 1000, changing can alter processing speed. Default: 1000."
     )
     advanced_group.add_argument(
-        "--phred-offset", type = int, default = None, metavar="",
-        help="Define phred offset for all FASTQ files. Default: off (auto-detection per file)."
+        "--phred-offset", type = int, choices=[33, 64], default = None, metavar="",
+        help="Define phred offset for all FASTQ files. When set, per-file auto-detection will not be performed. Possible values: 33, 64. Default: off (auto-detection per file)."
     )
 
     if len(sys.argv) == 1:
@@ -2267,7 +2305,6 @@ def parse_args():
     parameters["slider_quality"] = args.slider_quality
     parameters["gzip_output"] = args.gzip
     parameters["gzip_level"] = args.gzip_level
-    parameters["min_raw_read_length"] = args.min_raw_read_length
     parameters["reads_for_phred_offset"] = args.reads_for_phred_offset
     parameters["adapter_trim_flag"] = args.adapter_trim_flag
     parameters["adapter_fasta_add"] = args.adapter_fasta_add
@@ -2371,6 +2408,31 @@ def write_summary_and_statistics(summary_results, parameters, used_command, outp
         f.write("\n")
         f.write(f"Entered command: {used_command}")
 
+def log_parameters(parameters):
+    """
+    Log all run parameters to the logger, one per line, tagged [PARAMETER]
+    so they're easy to grep out of the log file. Replaces the old standalone
+    parameters.txt dump.
+ 
+    Args:
+        parameters (dict): Dictionary of parameter names and their values.
+ 
+    Returns:
+        None
+    """
+    
+    def _format_value(value):
+        if isinstance(value, bytes):
+            return value.decode('utf-8', errors='replace')
+        if isinstance(value, (list, tuple, set)):
+            return ", ".join(_format_value(v) for v in value)
+        return str(value)
+
+    logger.info("--- Start of run parameters ---")
+    for key, value in sorted(parameters.items()):
+        logger.info("[PARAMETER] %s: %s", key, _format_value(value))
+    logger.info("---- End of run parameters ----")\
+        
 def print_final_message():
     """
     Prints Readzor's completion message, including a citation request and
@@ -2416,6 +2478,7 @@ def main():
     used_command = " ".join(map(shlex.quote, [sys.executable] + sys.argv))
     created_output_dir = create_folder_structure(parameters["output_dir"])
     setup_logging(output_dir = created_output_dir, verbose = parameters["verbose"])
+    log_parameters(parameters)
     summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], parameters = parameters)
     write_summary_and_statistics(summary_results, parameters, used_command, output_dir = created_output_dir)
     logger.info("Analysis successfully completed!")

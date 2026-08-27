@@ -1,11 +1,9 @@
-
 [![GitHub release](https://img.shields.io/github/v/release/abjanssen/Readzor)](https://github.com/abjanssen/Readzor/releases)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 ![Yes, it's in Python'](https://img.shields.io/badge/Language-Python3-steelblue.svg)
 [![PyPI Downloads](https://img.shields.io/pypi/dm/Readzor)](https://pypi.org/project/Readzor/)
 [![Bioconda Downloads](https://img.shields.io/conda/dn/bioconda/Readzor)](https://bioconda.github.io/recipes/prokka/README.html)
 ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/abjanssen/Readzor/total)(https://github.com/abjanssen/Readzor)
-
 
 # Welcome to Readzor 
 
@@ -43,24 +41,41 @@ Equipped with a number of other features, like built-in validation and seamless 
 *   Real-time record validation: Readzor detects malformed or corrupted FASTQ records on the fly, ensuring high-quality output.
 *   Gzip compression: Compress your output files and control the compression depth  to optimize storage size.
 
+## Input data requirements
+*  Due to the pipeline design of Readzor, it is **<ins>required</ins>** that all (paired) reads in a file are the same length. If different length reads are found, Readzor will quit and throw an error. Independent FASTQ files may have different read lengths.\
+*  It is **<ins>not</ins>** required that all files are either gzipped or normal text, different file types will be handled dynamically.\
+*  For auto-detection of FASTQ files, the files should either in either fastq/fq (when in text) or gzip/gz (when gzipped).
+
 ## Installation and testing
 Installation of Readzor is made easy through pip and conda, but you can also clone this repository:
+
+### Bioconda
+```bash
+conda search readzor
+readzor --version
+```
+
+### Docker
+```bash
+docker pull ghcr.io/abjanssen/readzor:latest
+docker run --rm ghcr.io/abjanssen/readzor:latest --version
+```
+
+### Github 
+```bash
+git clone https://github.com/abjanssen/Readzor.git
+pip install numpy==2.5.2
+pip install isal==1.8.0
+cd Readzor/src/readzor
+chmod u+x readzor.py
+python readzor.py --version
+```
 
 ### Pip
 ```python
 pip install Readzor
 import Readzor
 print(Readzor.VERSION)
-```
-
-### Repository cloning
-```bash
-git clone https://github.com/abjanssen/Readzor.git
-pip install numpy
-pip install isal
-cd Readzor/src/reazor
-chmod u+x Readzor.py
-python Readzor.py --version
 ```
 
 ## Using Readzor 
@@ -122,7 +137,7 @@ All modules are off by default. To use a module, specify a module flag. Further 
 `--full-auto, -GO` [FLAG]: Run Readzor in fully automatic mode. Combine with --help/-h for more information on fully automatic mode.\
 `--progress` [FLAG]: Show a live progress bar and estimated time remaining during processing, based on estimated read counts. Default: off.\
 `--list-adapters` [FLAG]: Show all built-in adapter sequences and exit.\
-`--verbose` [FLAG] Verbose output, in addition to logging to logfile. Default: off.
+`--verbose` [FLAG] Write verbose output to terminal, in addition to the log file. Default: off.
     
 ### Input options
 Specify input FASTQ files using any combination of --input-files, --input-paired, and --input-unpaired. Lists with any combination of regular (fastq/fq) and gzipped (fastq.gz/fq.gz) files accepted.\
@@ -133,7 +148,7 @@ Specify input FASTQ files using any combination of --input-files, --input-paired
 ### Output options
 `--output, -o`: Path to directory in which the timestamped results folder will be created. Default: current working directory.\
 `--gzip` [FLAG]: Compress filtered FASTQ files in gzip format using isal. Default: off.\
-`--gzip-level`: Set gzip compression level. Higher compression decreases processing speed. Possible levels: 0-3. Default: 1.
+`--gzip-level`: Set gzip compression level. Higher compression decreases processing speed. Possible values: 0-3. Default: 1.
              
 ### General quality filters
 `--min-average-qual <int>`: Minimum average quality of output read. Default: 0.\
@@ -199,10 +214,9 @@ Convert read header from MGI (BGI) format to Illumina format. Original header wi
 ### Advanced options
 Further options that can be specified to alter the behavior of Readzor.\
 `--threads, -t`: Number of threads to use. Default: platform-dependent through auto-detection (assigned CPUs on Slurm-managed systems, all-1 otherwise. Fallback: 1).\
-`--min-raw-read-length`: Minimum length a raw (untrimmed) read must have to be considered valid. Default: 0.\
 `--reads-for-phred-offset`: Number of reads to sample per file for detection of Phred quality encoding offset. Default: 500.\
-`--chunk-size`: Number of reads per chunk sent to each worker. Default: 1000.\
-`--phred-offset`: Define Phred offset for all FASTQ files. Default: off (auto-detection per file).
+`--chunk-size`: Number of reads per chunk sent to each worker thread. Note: empirically set at 1000, changing can alter processing speed. Default: 1000.\
+`--phred-offset`: Define phred offset for all FASTQ files. When set, per-file auto-detection will not be performed. Possible values: 33, 64. Default: off (auto-detection per file).
 
 ## Software version
 Although Readzor probably works on older versions of its dependencies, it has been developed adn test for best performance using the following versions:
