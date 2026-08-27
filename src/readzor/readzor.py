@@ -85,7 +85,7 @@ def setup_logging(output_dir=None, verbose = False):
                 handler.setLevel(console_level)
 
     if output_dir is not None and not any(getattr(h, "name", None) == "file" for h in logger.handlers):
-        log_path = os.path.join(output_dir, "readzor_log.txt")
+        log_path = os.path.join(output_dir, "Readzor_log.txt")
         file_handler = logging.FileHandler(log_path)
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(formatter)
