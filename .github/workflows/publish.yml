@@ -188,16 +188,18 @@ jobs:
 
   create-release:
     name: Create GitHub Release
-    needs: [check-version, publish-to-pypi]
-    if: github.ref == 'refs/heads/main'
+    needs: [build-package, publish-to-pypi]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ needs.check-version.outputs.version }}
+          VERSION: ${{ needs.build-package.outputs.version }}
         run: |
           gh release create "$VERSION" \
             --title "Release $VERSION" \
