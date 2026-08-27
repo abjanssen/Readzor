@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.14.7-slim
 ARG VERSION=latest
 LABEL maintainer="Axel B. Janssen" \
       version="${VERSION}" \
