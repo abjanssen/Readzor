@@ -20,7 +20,7 @@ from isal import igzip as gzip
 
 ##### Definition of constant values #####
 WORKER_PARAMETERS = None
-VERSION = "0.1.3"
+VERSION = "0.1.4"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3", "AGATCGGAAGAGC"), #12x in human genome
@@ -41,6 +41,7 @@ FULL_AUTO_OVERRIDES = {
     "adapter_trim_flag": True, #heavy
     "nucl_filter": True,
     "gzip": True,
+    "progress": True
 }
 
 ##### Logging #####
@@ -84,7 +85,7 @@ def setup_logging(output_dir=None, verbose = False):
                 handler.setLevel(console_level)
 
     if output_dir is not None and not any(getattr(h, "name", None) == "file" for h in logger.handlers):
-        log_path = os.path.join(output_dir, "readzor.log")
+        log_path = os.path.join(output_dir, "Readzor_log.txt")
         file_handler = logging.FileHandler(log_path)
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(formatter)
