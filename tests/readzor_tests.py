@@ -53,6 +53,8 @@ def test_readzor(tmp_path):
     for filepath in files_in_output:
         if filepath.name == "parameters.txt":
             continue
+        if filepath.name == "Readzor_log.txt":
+            continue
     
         open_fn = gzip.open if filepath.name.endswith(".gz") else open
     
