@@ -5,6 +5,7 @@ import argparse
 from collections import defaultdict
 import datetime
 import itertools
+import logging
 import multiprocessing as mp
 import os
 import random
@@ -19,7 +20,7 @@ from isal import igzip as gzip
 
 ##### Definition of constant values #####
 WORKER_PARAMETERS = None
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3", "AGATCGGAAGAGC"), #12x in human genome
@@ -36,12 +37,66 @@ DEFAULT_ADAPTERS = [
 FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "full_auto"}
 FIELD_SEP = b"\x1f"
 FULL_AUTO_OVERRIDES = {
-    "endqual_filter_flag": True,
-    "adapter_trim_flag": True,
+    "endqual_filter_flag": True, #light
+    "adapter_trim_flag": True, #heavy
     "nucl_filter": True,
-    "gzip": True
+    "gzip": True,
 }
 
+##### Logging #####
+logger = logging.getLogger("readzor")
+
+def setup_logging(output_dir=None, verbose = False):
+    """
+    Configure Readzor's logger.
+
+    Called from parse_args() twice — once with no arguments, before parsing,
+    to attach a console handler so any parser.error()/early messages are
+    visible; and again immediately after args are parsed, to apply the
+    user's --verbose choice to that same console handler. Called a third
+    time from main() once the timestamped output directory exists, to attach
+    a file handler so the full run is captured on disk
+    (Readzor_results_.../readzor.log) regardless of console verbosity.
+
+    Args:
+        output_dir (str | None): Timestamped results directory to write
+            readzor.log into. If None, only the console handler is
+            (re)configured.
+        verbose (bool): If True, console output includes DEBUG-level
+            messages. The log file always captures DEBUG and above.
+    """
+    logger.setLevel(logging.DEBUG)
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+
+    console_level = logging.DEBUG if verbose else (logging.CRITICAL + 1)
+    if not logger.handlers:
+        console = logging.StreamHandler(sys.stderr)
+        console.setLevel(console_level)
+        console.setFormatter(formatter)
+        console.name = "console"
+        logger.addHandler(console)
+    else:
+        for handler in logger.handlers:
+            if getattr(handler, "name", None) == "console":
+                handler.setLevel(console_level)
+
+    if output_dir is not None and not any(getattr(h, "name", None) == "file" for h in logger.handlers):
+        log_path = os.path.join(output_dir, "readzor.log")
+        file_handler = logging.FileHandler(log_path)
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(formatter)
+        file_handler.name = "file"
+        logger.addHandler(file_handler)
+        logger.info("Readzor %s starting.", VERSION)
+        used_command = " ".join(map(shlex.quote, [sys.executable] + sys.argv))
+        logger.info("Command detected: %s", used_command)
+        logger.warning("--full-auto/-GO specified; ignoring all other input parameters (except input file parameters).")
+        logger.info("Output directory created at %s", output_dir)
+        logger.info("Log file initialized at %s", log_path)
+        
 ##### Progress tracker #####
 def estimate_bytes_per_read(filepath):
     """
@@ -464,6 +519,7 @@ def find_paired_files(filepaths):
     base_ids = {}
     if filepaths is None:
         filepaths = []
+    logger.info("Inspecting %s candidate file(s) for file pairing.", len(filepaths))
     for filepath in filepaths:
         try:
             if is_gz_file(filepath):
@@ -477,10 +533,12 @@ def find_paired_files(filepaths):
             else:
                 with open(filepath, 'rb', buffering=1024) as file:
                     first_line = file.readline()
-        except (IOError, OSError):
+        except (IOError, OSError) as e:
+            logger.warning("Could not read '%s', skipping: %s", filepath, e)
             continue
         header = first_line.strip().lstrip(b'@')
         if not header:
+            logger.warning("File '%s' has an empty or missing header, skipping.", filepath)
             continue
         base_id, read_num = read_info_from_header(header)
         base_ids[filepath] = (base_id, read_num)
@@ -493,41 +551,42 @@ def find_paired_files(filepaths):
         if len(file_list) == 2:
             (file_1, read_1), (file_2, read_2) = file_list
             if read_1 == 1 and read_2 == 2:
+                logger.info("Paired '%s' (R1) with '%s' (R2).", os.path.basename(file_1), os.path.basename(file_2))
                 pairs.append((file_1, file_2))
                 dropped.add(file_1)
                 dropped.add(file_2)
             elif read_1 == 2 and read_2 == 1:
+                logger.info("Paired '%s' (R1) with '%s' (R2).", os.path.basename(file_1), os.path.basename(file_2))
                 pairs.append((file_2, file_1))
                 dropped.add(file_1)
                 dropped.add(file_2)
             elif read_1 == read_2:
-                print(
-                    f"Warning: Files '{file_1}' and '{file_2}' share base ID "
-                    f"'{base_id}' and read number {read_1}, and appear to be "
-                    f"duplicate copies of the same file. Dropping both "
-                    f"'{file_1}' and '{file_2}'.",
-                    file=sys.stderr
+                logger.warning(
+                    "Files '%s' and '%s' share base ID '%s' and read number %s, "
+                    "and appear to be duplicate copies of the same file. "
+                    "Dropping both '%s' and '%s'.",
+                    file_1, file_2, base_id, read_1, file_1, file_2
                 )
                 dropped.add(file_1)
                 dropped.add(file_2)
             else:
-                print(
-                    f"Warning: Files '{file_1}' and '{file_2}' share base ID "
-                    f"'{base_id}' but do not form a valid R1/R2 pair "
-                    f"(read numbers: {read_1}, {read_2}). Dropping both.",
-                    file=sys.stderr
+                logger.warning(
+                    "Files '%s' and '%s' share base ID '%s' but do not form a "
+                    "valid R1/R2 pair (read numbers: %s, %s). Dropping both.",
+                    file_1, file_2, base_id, read_1, read_2
                 )
                 dropped.add(file_1)
                 dropped.add(file_2)
         elif len(file_list) > 2:
-            print(
-                    f"Warning: Found {len(file_list)} files matching base ID '{base_id}' "
-                    f"(expected max 2 for paired-end data). Dropping all of these files.",
-                    file=sys.stderr
-                )
+            logger.warning(
+                "Found %s files matching base ID '%s' (expected max 2 for "
+                "paired-end data). Dropping all of these files.",
+                len(file_list), base_id
+            )
             for filepath, _ in file_list:
                 dropped.add(filepath)
     unpaired = [f for f in base_ids if f not in dropped]
+    logger.info("Matched %s pair(s), %s file(s) left unpaired.", len(pairs), len(unpaired))
     return pairs, unpaired
 
 def read_info_from_header(header):
@@ -1420,10 +1479,10 @@ def generate_paired_tasks(files, chunk_size, parameters):
         phred_offset_2 = detect_phred_offset(filepath = file2, reads_for_phred_offset = parameters["reads_for_phred_offset"], phred_offset = parameters["phred_offset"])
         read_length_2 = query_read_length(file2)
         if read_length_1 != read_length_2 or phred_offset_1 != phred_offset_2:
-            print(
-                f"Paired files must match in read length, read count, and Phred offset. "
-                f"offsets ({phred_offset_1}, {phred_offset_2})."
-                f"read lengths ({read_length_1}, {read_length_2})."
+            logger.error(
+                "Paired files '%s' and '%s' must match in read length and Phred offset. "
+                "offsets (%s, %s). read lengths (%s, %s). Skipping this pair.",
+                file1, file2, phred_offset_1, phred_offset_2, read_length_1, read_length_2
             )
             continue
         minimum_length = parameters["minimum_length"]
@@ -1721,8 +1780,8 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
     finally:
         tracker.close()
         for handle in file_writing_handles.values():
-            if not handle.closed:
-                handle.close()
+                if not handle.closed:
+                    handle.close()
     return file_stats
 
 ##### Input handling #####
@@ -1878,6 +1937,8 @@ def parse_args():
         nor --full-auto is given, calls `parser.error(...)`, which prints a
         usage message to stderr and exits with a non-zero status.
     """
+    setup_logging()
+
     parser = argparse.ArgumentParser(
         prog="readzor",
         description="Readzor: a modular FASTQ quality trimming pipeline.\n\n"
@@ -1908,6 +1969,10 @@ def parse_args():
     general_group.add_argument(
     "--progress", action="store_true", default=False,
     help="[FLAG] Show a live progress bar and estimated time remaining during processing, based on estimated read counts. Default: off."
+    )
+    general_group.add_argument(
+    "--verbose", action="store_true", default=False,
+    help="[FLAG] Verbose output, in addition to logging to logfile. Default: off."
     )
 
     input_group = parser.add_argument_group(
@@ -2136,11 +2201,11 @@ def parse_args():
         sys.exit(1)
 
     args = parser.parse_args()
+    setup_logging(verbose=args.verbose)
 
     if args.help and args.full_auto:
         print_full_auto_help(parser)
         sys.exit()
-
     if args.help:
         parser.print_help()
         sys.exit()
@@ -2166,10 +2231,9 @@ def parse_args():
                 parser.error(
                     f"--full-auto was set but no FASTQ files were detected in {cwd}."
                 )
-
-        # --- Full-auto overrides ---
-        print("[WARNING] --full-auto/-GO specified; ignoring all other input parameters (except input file parameters).")
-
+        
+        if not args.verbose:
+            print("[WARNING] --full-auto/-GO specified; ignoring all other input parameters (except input file parameters).")
         for action in parser._actions:
             dest = action.dest
             if dest == "help" or dest in FULL_AUTO_PRESERVED_DESTS:
@@ -2232,6 +2296,7 @@ def parse_args():
     parameters["poly_length_end"] = args.poly_length_end
     parameters["poly_length_both"] = args.poly_length_both
     parameters["show_progress"] = args.progress
+    parameters["verbose"] = args.verbose
 
     if parameters["nucl_filter"]:
         parameters["n_trimming_flag"] = False
@@ -2325,7 +2390,6 @@ def print_final_message():
     "Base-ically, we're done here. See you!",
     "Readzor, signing off!"
     ]
-    print("Analysis successfully completed!")
     print("\nIf you find Readzor useful, please consider citing:")
     print("\nAxel B. Janssen \n2026 \nReadzor: A modular and user-friendly Swiss-army knife approach to short-read sequencing preprocessing.")
     print(f"\n{random.choice(sign_off_messages)}\n")
@@ -2348,10 +2412,12 @@ def main():
             except RuntimeError:
                 pass
     parameters = parse_args()
-    created_output_dir = create_folder_structure(parameters["output_dir"])
     used_command = " ".join(map(shlex.quote, [sys.executable] + sys.argv))
+    created_output_dir = create_folder_structure(parameters["output_dir"])
+    setup_logging(output_dir = created_output_dir, verbose = parameters["verbose"])
     summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], parameters = parameters)
     write_summary_and_statistics(summary_results, parameters, used_command, output_dir = created_output_dir)
+    logger.info("Analysis successfully completed!")
     print_final_message()
 
 if __name__ == "__main__":

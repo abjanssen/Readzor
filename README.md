@@ -120,8 +120,9 @@ All modules are off by default. To use a module, specify a module flag. Further 
 `--help, -h` [FLAG]: Show this help message and exit. Combine with --full-auto/-GO for more information on fully automatic mode. Combine with --adapter-trim-flag/-af for more information on built-in adapter sequences.\
 `--version, -v` [FLAG]: Show Readzor version and exit.\
 `--full-auto, -GO` [FLAG]: Run Readzor in fully automatic mode. Combine with --help/-h for more information on fully automatic mode.\
-`--progress` [FLAG]: Show a live progress bar and estimated time remaining during processing, based on estimated read counts. Default: off.
-`--list-adapters` [FLAG]: Show all built-in adapter sequences and exit.
+`--progress` [FLAG]: Show a live progress bar and estimated time remaining during processing, based on estimated read counts. Default: off.\
+`--list-adapters` [FLAG]: Show all built-in adapter sequences and exit.\
+`--verbose` [FLAG] Verbose output, in addition to logging to logfile. Default: off.
     
 ### Input options
 Specify input FASTQ files using any combination of --input-files, --input-paired, and --input-unpaired. Lists with any combination of regular (fastq/fq) and gzipped (fastq.gz/fq.gz) files accepted.\
