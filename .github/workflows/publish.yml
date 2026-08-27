@@ -1,0 +1,256 @@
+name: Compare version, test, publish to (Test)PyPI, create release, and push docker
+
+on:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  check-version:
+    name: Extract & validate version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.VERSION }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package editable
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Extract VERSION from package
+        id: get_version
+        run: |
+          RAW_VERSION=$(python -c "from readzor.readzor import VERSION; print(VERSION)")
+          if [ -z "$RAW_VERSION" ]; then
+            echo "Failed to extract version from readzor.readzor.VERSION" >&2
+            exit 1
+          fi
+          VERSION="v${RAW_VERSION}"
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check version is newer than latest release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.get_version.outputs.VERSION }}
+        run: |
+          # Find the latest existing semver tag (if any)
+          LATEST_TAG=$(git ls-remote --tags origin 'v*' \
+            | sed 's/.*refs\/tags\///' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -t. -k1.2,1n -k2,2n -k3,3n \
+            | tail -n1)
+
+          echo "Latest existing tag: ${LATEST_TAG:-<none>}"
+          echo "New version: ${VERSION}"
+
+          if [ -z "$LATEST_TAG" ]; then
+            echo "No existing version tags found — treating ${VERSION} as the first release."
+          else
+            NEW_VER="${VERSION#v}"
+            OLD_VER="${LATEST_TAG#v}"
+
+            if [ "$NEW_VER" = "$OLD_VER" ]; then
+              echo "Version ${VERSION} is identical to the latest release ${LATEST_TAG}. Bump the version." >&2
+              exit 1
+            fi
+
+            # Sort the two versions and check that NEW_VER comes last (i.e. is greater)
+            HIGHEST=$(printf '%s\n%s\n' "$OLD_VER" "$NEW_VER" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n1)
+            if [ "$HIGHEST" != "$NEW_VER" ]; then
+              echo "Version ${VERSION} is not newer than the latest release ${LATEST_TAG}. Bump the version." >&2
+              exit 1
+            fi
+          fi
+
+          # Belt-and-braces: also fail if this exact tag or release already exists
+          if git ls-remote --tags origin | grep -q "refs/tags/${VERSION}$"; then
+            echo "Tag ${VERSION} already exists on origin." >&2
+            exit 1
+          fi
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "GitHub release ${VERSION} already exists." >&2
+            exit 1
+          fi
+
+      - name: Check version isn't already on PyPI
+        if: github.ref == 'refs/heads/main'
+        env:
+          RAW_VERSION: ${{ steps.get_version.outputs.VERSION }}
+        run: |
+          VER="${RAW_VERSION#v}"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://pypi.org/pypi/Readzor/${VER}/json")
+          if [ "$STATUS" = "200" ]; then
+            echo "Version ${VER} is already published on PyPI. Bump the version before releasing." >&2
+            exit 1
+          fi
+
+  test:
+    name: Run unit tests
+    needs: check-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14.7"
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          pip install -e .
+      - name: Run tests
+        run: |
+          pytest tests/readzor_tests.py
+
+  build-package:
+    name: Build distribution
+    needs: [check-version, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package editable
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Build release distributions
+        run: |
+          python -m pip install build --user
+          python -m build
+
+      - name: Store the distribution packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  publish-to-pypi:
+    name: Publish Python distribution to PyPI
+    needs: [check-version, build-package]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: PyPI
+      url: https://pypi.org/p/Readzor
+    permissions:
+      id-token: write
+    steps:
+      - name: Download all the dists
+        uses: actions/download-artifact@v8
+        with:
+          name: python-package-distributions
+          path: dist/
+      - name: Publish distribution to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-to-testpypi:
+    name: Publish Python distribution to TestPyPI
+    needs: [check-version, build-package]
+    runs-on: ubuntu-latest
+    environment:
+      name: TestPyPI
+      url: https://test.pypi.org/p/Readzor
+    permissions:
+      id-token: write
+    steps:
+      - name: Download all the dists
+        uses: actions/download-artifact@v8
+        with:
+          name: python-package-distributions
+          path: dist/
+      - name: Publish distribution to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  create-release:
+    name: Create GitHub Release
+    needs: [check-version, publish-to-pypi]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          gh release create "$VERSION" \
+            --title "Release $VERSION" \
+            --notes "Automated release generated for $VERSION"
+
+  docker-build:
+    name: Build and Push Docker Image
+    needs: [check-version, create-release]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.5.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.3.0
+
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ needs.check-version.outputs.version }}
+            type=raw,value=latest
+
+      - name: Build and push Docker image
+        id: build-and-push
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Sign the published Docker image
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build-and-push.outputs.digest }}
+        run: echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}

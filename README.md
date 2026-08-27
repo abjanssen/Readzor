@@ -1,21 +1,21 @@
 
-[![GitHub release](https://img.shields.io/github/v/release/abjanssen/readzor)](https://github.com/abjanssen/readzor/releases)
+[![GitHub release](https://img.shields.io/github/v/release/abjanssen/Readzor)](https://github.com/abjanssen/Readzor/releases)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 ![Yes, it's in Python'](https://img.shields.io/badge/Language-Python3-steelblue.svg)
-[![PyPI Downloads](https://img.shields.io/pypi/dm/readzor)](https://pypi.org/project/Readzor/)
-[![Bioconda Downloads](https://img.shields.io/conda/dn/bioconda/readzor)](https://bioconda.github.io/recipes/prokka/README.html)
-![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/abjanssen/readzor/total)(https://github.com/abjanssen/readzor)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/Readzor)](https://pypi.org/project/Readzor/)
+[![Bioconda Downloads](https://img.shields.io/conda/dn/bioconda/Readzor)](https://bioconda.github.io/recipes/prokka/README.html)
+![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/abjanssen/Readzor/total)(https://github.com/abjanssen/Readzor)
 
 
-# Welcome to ReadZor 
+# Welcome to Readzor 
 
-ReadZor is a fast, modular, and fully-featured FASTQ quality trimming and filtering pipeline. 
+Readzor is a fast, modular, and fully-featured FASTQ quality trimming and filtering pipeline. 
 By default, **<ins>all processing modules are off</ins>**, leaving you the explicit ability to adapt the workflow according to your needs and wishes.
 
 ## Feature overview
 **Modular trimming approach**:
 By design, each filter will indepedently assess each raw read. Outcomes are merged, and the most stringent trimming result per end is applied.
-For example, if the quality trimmer determines 5 bases should be removed from the 3' end, but the adapter trimmer identifies 12 bases to remove from that same end, ReadZor will merge these outcomes and trim the most restrictive amount (12 bases) to ensure high-quality output.
+For example, if the quality trimmer determines 5 bases should be removed from the 3' end, but the adapter trimmer identifies 12 bases to remove from that same end, Readzor will merge these outcomes and trim the most restrictive amount (12 bases) to ensure high-quality output.
 *   Quality-dependent end trimming
 *   Sliding windowquality trimming
 *   Homopolymer trimming from both read ends
@@ -27,20 +27,20 @@ For example, if the quality trimmer determines 5 bases should be removed from th
 *   Overall length threshold    
     
 **Auto-detection**:
-Using auto-detection methods, ReadZor provides an easy-to-use platform for novice users, enabling high quality read trimming with minimal inputs.
+Using auto-detection methods, Readzor provides an easy-to-use platform for novice users, enabling high quality read trimming with minimal inputs.
 *   File Pairing: paired vs. unpaired FASTQ files detection using internal header information, independent of file names.
 *   Read Numbering: read numbers detection, directly from headers.
 *   Compression: GZIP compression detection via magic bytes, regardless of the file extension.
 *   Phred Offsets: per-file Phred quality offsets detection (i.e., Phred33 vs. Phred64) based on quality string symbols.
 
 **Extra features**:
-Equipped with a number of other features, like built-in validation and seamless Slurm detection methods, ReadZor delivers a robust execution environment, ensuring reproducible outputs at any scale.
-*   Fully automatic mode: invoking ReadZor in fully automatic mode (optional file specification possible), will use predetermined settings to optimize read processing. For more info, invoke ReadZor with flags --full-auto and --help.
+Equipped with a number of other features, like built-in validation and seamless Slurm detection methods, Readzor delivers a robust execution environment, ensuring reproducible outputs at any scale.
+*   Fully automatic mode: invoking Readzor in fully automatic mode (optional file specification possible), will use predetermined settings to optimize read processing. For more info, invoke Readzor with flags --full-auto and --help.
 *   MGI/BGI header conversion: Built-in module to convert MGI/BGI fastq headers into standard Illumina format for downstream compatibility (e.g., with SAMtools).
 *   Safe and traceable outputs: Automatically generates isolated, timestamped output directories to prevent accidental file overwrites. Each run includes a comprehensive summary file detailing the exact parameters used and the final trimming outcomes for full reproducibility.
 *   HPC integration: Automatically reads Slurm environment variables to seamlessly scale threads and optimize performance on HPC clusters.
 *   Live progress monitoring: Features a dynamic progress tracker to accurately provide real-time feedback on processing speed, completion, and estimated time remaining.
-*   Real-time record validation: ReadZor detects malformed or corrupted FASTQ records on the fly, ensuring high-quality output.
+*   Real-time record validation: Readzor detects malformed or corrupted FASTQ records on the fly, ensuring high-quality output.
 *   Gzip compression: Compress your output files and control the compression depth  to optimize storage size.
 
 ## Installation and testing
@@ -48,9 +48,9 @@ Installation of Readzor is made easy through pip and conda, but you can also clo
 
 ### Pip
 ```python
-pip install readzor
-import readzor
-print(readzor.VERSION)
+pip install Readzor
+import Readzor
+print(Readzor.VERSION)
 ```
 
 ### Repository cloning
@@ -59,8 +59,8 @@ git clone https://github.com/abjanssen/Readzor.git
 pip install numpy
 pip install isal
 cd Readzor/src/reazor
-chmod u+x readzor.py
-python readzor.py --version
+chmod u+x Readzor.py
+python Readzor.py --version
 ```
 
 ## Using Readzor 
@@ -68,7 +68,7 @@ python readzor.py --version
 ### Beginner
 ```
 # Use predetermined settings, and let Readzor detect the files (and their pairing) in your current working directory
-% readzor -GO
+% Readzor -GO
 ```
 
 ### Beginner+
@@ -76,16 +76,16 @@ python readzor.py --version
 # Use predetermined settings, but specify your files
 
 # Use on Readzor's paired-filed detection:
-% readzor -GO --input-files /path/to/input/files
+% Readzor -GO --input-files /path/to/input/files
 
 # Specify paired files:
-% readzor -GO --input-paired /path/to/paired/files
+% Readzor -GO --input-paired /path/to/paired/files
 
 # Specify unpaired files:
-% readzor -GO --input-unpaired /path/to/unpaired/files
+% Readzor -GO --input-unpaired /path/to/unpaired/files
 
 # Or a combination of both: 
-% readzor -GO --input-unpaired /path/to/unpaired/files --input-paired /path/to/paired/files
+% Readzor -GO --input-unpaired /path/to/unpaired/files --input-paired /path/to/paired/files
 ```
 
 ### Novice
@@ -93,13 +93,13 @@ python readzor.py --version
 # Adapt the workflow according to your need by specifying specific trimming modules
 
 # Turn on quality-dependent end trimming, use its default settings
-% readzor --input-files /path/to/input/files --endqual-filter-flag
+% Readzor --input-files /path/to/input/files --endqual-filter-flag
 
 # Turn on adapter trimming, use its default settings
-% readzor --input-files /path/to/input/files --adapter-trim-flag
+% Readzor --input-files /path/to/input/files --adapter-trim-flag
 
 # Or use a combination
-% readzor --input-files /path/to/input/files --adapter-trim-flag --endqual-filter-flag
+% Readzor --input-files /path/to/input/files --adapter-trim-flag --endqual-filter-flag
 ```
 
 ### Advanced
@@ -107,31 +107,32 @@ python readzor.py --version
 # Detail the module settings according to your needs by specifying trimming parameters
 
 # Turn on quality-dependent end trimming, use custom settings
-% readzor --input-files /path/to/input/files --endqual-filter-flag --endqual-min-start 25 --endqual-min-end 25
+% Readzor --input-files /path/to/input/files --endqual-filter-flag --endqual-min-start 25 --endqual-min-end 25
 
 # Turn on adapter trimming, add custom sequences
-% readzor --input-files /path/to/input/files --adapter-trim-flag --adapter-fasta /path/to/fasta/file
+% Readzor --input-files /path/to/input/files --adapter-trim-flag --adapter-fasta /path/to/fasta/file
 ```
 
 ## Command line options 
 All modules are off by default. To use a module, specify a module flag. Further specifications with module settings possible.
 
-### General settings:
-`--help/-h` [FLAG]: Show this help message and exit. Combine with --full-auto/-GO for more information on fully automatic mode. Combine with --adapter-trim-flag/-af for more information on built-in adapter sequences.\
-`--version/-v` [FLAG]: Show ReadZor version and exit.\
+### General settings
+`--help, -h` [FLAG]: Show this help message and exit. Combine with --full-auto/-GO for more information on fully automatic mode. Combine with --adapter-trim-flag/-af for more information on built-in adapter sequences.\
+`--version, -v` [FLAG]: Show Readzor version and exit.\
 `--full-auto, -GO` [FLAG]: Run Readzor in fully automatic mode. Combine with --help/-h for more information on fully automatic mode.\
 `--progress` [FLAG]: Show a live progress bar and estimated time remaining during processing, based on estimated read counts. Default: off.
-
-### Input options:
+`--list-adapters` [FLAG]: Show all built-in adapter sequences and exit.
+    
+### Input options
 Specify input FASTQ files using any combination of --input-files, --input-paired, and --input-unpaired. Lists with any combination of regular (fastq/fq) and gzipped (fastq.gz/fq.gz) files accepted.\
 `--input-files, -i`: FASTQ files of unspecified pairing. Paired and unpaired files will be auto-detected.\
 `--input-paired, -ip `: Paired-end FASTQ files, given as one or more R1/R2 pairs, e.g. --input-paired sample1_R1 sample1_R2 sample2_R1 sample2_R2.\
 `--input-unpaired, -iu`: Unpaired FASTQ files.
 
-###Output options:
+### Output options
 `--output, -o`: Path to directory in which the timestamped results folder will be created. Default: current working directory.\
 `--gzip` [FLAG]: Compress filtered FASTQ files in gzip format using isal. Default: off.\
-`--gzip-level`: Set gzip compression level. Higher compression decreases processing speed. Possible levels: 0-3. Default: 2.
+`--gzip-level`: Set gzip compression level. Higher compression decreases processing speed. Possible levels: 0-3. Default: 1.
              
 ### General quality filters
 `--min-average-qual <int>`: Minimum average quality of output read. Default: 0.\
@@ -155,7 +156,7 @@ Trim the ends of each read, dependent on quality. Ends of reads will be trimmed 
                                
 ### N-Nucleotide end trimming
 Trim the ends of each read for N bases. Redundant when --nucl-filter is set.\
-`--n-end-trimming-flag, -ntf`: [FLAG]: Turn on the N nucleotide end trimming module. Default: off.
+`--n-trimming-flag, -ntf`: [FLAG]: Turn on the N nucleotide end trimming module. Default: off.
 
 ### Sliding window quality trimming
 Trim the reads for quality based on a sliding window of size X, moved with stepsize Y. Longest portion survives in case of mid-read quality dropoff.\
@@ -176,7 +177,7 @@ Illumina NovaSeq, NextSeq, and MiniSeq use a two-color chemistry, in which guani
 
 ### Adapter trimming
 Trim reads for Illumina adapter sequences. Standard sequences included are TruSeq3 universal and index adapters, and Nextera adapters. Only perfectly matching sequences are trimmed. Independent of quality.\
-`--adapter-trim-flag, -af`: [FLAG] Turn on adapter trimming module. Default: off. Combine with --help/-h for more information on built-in adapter sequences.\
+`--adapter-trim-flag, -af`: [FLAG] Turn on adapter trimming module. Default: off.\
 `--adapter-fasta-add, -ad`: FASTA file with adapter sequences to trim for, in addition to predefined sequences.\
 `--adapter-fasta-excl, -ax`: Fasta file with adapter sequences to trim for, excluding predefined and additional sequences specified.
     
@@ -195,7 +196,7 @@ Convert read header from MGI (BGI) format to Illumina format. Original header wi
 `--mgi-run`: Run ID for Illumina header conversion. Default: 'PLACEHOLDERrun'.
 
 ### Advanced options
-Further options that can be specified to alter the behavior of ReadZor.\
+Further options that can be specified to alter the behavior of Readzor.\
 `--threads, -t`: Number of threads to use. Default: platform-dependent through auto-detection (assigned CPUs on Slurm-managed systems, all-1 otherwise. Fallback: 1).\
 `--min-raw-read-length`: Minimum length a raw (untrimmed) read must have to be considered valid. Default: 0.\
 `--reads-for-phred-offset`: Number of reads to sample per file for detection of Phred quality encoding offset. Default: 500.\
@@ -203,13 +204,13 @@ Further options that can be specified to alter the behavior of ReadZor.\
 `--phred-offset`: Define Phred offset for all FASTQ files. Default: off (auto-detection per file).
 
 ## Software version
-Although Readzor can probably work on older versions of its dependencies (not extensively tested), it has been developed for best performance using the following versions:
+Although Readzor probably works on older versions of its dependencies, it has been developed adn test for best performance using the following versions:
 * NumPy: 2.5.2
 * Python: 3.14.7
 * Python-isal: 1.8.0
 
 ## Issues and bug reports
-Please leave a message in [issues](https://github.com/abjanssen/ReadZor/issues) or [discussions](https://github.com/abjanssen/ReadZor/discussions) if you notice an issue, bug, or otherwise. 
+Please leave a message in [issues](https://github.com/abjanssen/Readzor/issues) or [discussions](https://github.com/abjanssen/Readzor/discussions) if you notice an issue, bug, or otherwise. 
 
 ## License
 This project is provded under the GNU General Public License v3.0 (GPLv3).

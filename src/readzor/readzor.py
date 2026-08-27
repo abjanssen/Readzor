@@ -19,7 +19,7 @@ from isal import igzip as gzip
 
 ##### Definition of constant values #####
 WORKER_PARAMETERS = None
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3", "AGATCGGAAGAGC"), #12x in human genome
@@ -36,8 +36,8 @@ DEFAULT_ADAPTERS = [
 FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "full_auto"}
 FIELD_SEP = b"\x1f"
 FULL_AUTO_OVERRIDES = {
-    "endqual_filter_flag": True, #light
-    "adapter_trim_flag": True, #heavy
+    "endqual_filter_flag": True,
+    "adapter_trim_flag": True,
     "nucl_filter": True,
     "gzip": True
 }
@@ -1721,8 +1721,8 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
     finally:
         tracker.close()
         for handle in file_writing_handles.values():
-                if not handle.closed:
-                    handle.close()
+            if not handle.closed:
+                handle.close()
     return file_stats
 
 ##### Input handling #####
@@ -2140,6 +2140,7 @@ def parse_args():
     if args.help and args.full_auto:
         print_full_auto_help(parser)
         sys.exit()
+
     if args.help:
         parser.print_help()
         sys.exit()
