@@ -20,7 +20,7 @@ from isal import igzip as gzip
 
 ##### Definition of constant values #####
 WORKER_PARAMETERS = None
-VERSION = "0.1.4"
+VERSION = "0.1.5"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3", "AGATCGGAAGAGC"), #12x in human genome
