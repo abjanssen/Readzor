@@ -51,8 +51,6 @@ def test_readzor(tmp_path):
     assert len(files_in_output) == 7, f"Expected 7 files in output folder, found: {len(files_in_output)}"
     
     for filepath in files_in_output:
-        if filepath.name == "parameters.txt":
-            continue
         if filepath.name == "Readzor_log.txt":
             continue
     
