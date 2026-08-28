@@ -3,7 +3,8 @@
 [![Python3](https://img.shields.io/badge/Language-Python3-steelblue.svg)](https://www.python.org/)
 [![PyPI Downloads](https://img.shields.io/pypi/dm/Readzor?label=PyPI%20downloads)](https://pypi.org/project/Readzor/)
 [![Bioconda Downloads](https://img.shields.io/conda/dn/bioconda/Readzor?label=Bioconda%20downloads)](https://bioconda.github.io/recipes/readzor/README.html)
-[![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/abjanssen/Readzor/total?label=GitHub%20downloads)](https://github.com/abjanssen/Readzor)
+[![Docker Downloads](https://img.shields.io/badge/dynamic/json?url=https://ghcr-badge.elias.eu.org/api/abjanssen/Readzor/readzor&query=downloadCount&label=GHCR%20downloads)](https://github.com/abjanssen/Readzor/pkgs/container/readzor)
+[![Docker Pulls](https://ghcr-badge.elias.eu.org/api/abjanssen/Readzor/readzor?color=%2344cc11&tag=latest&label=GHCR+pulls)](https://github.com/abjanssen/Readzor/pkgs/container/readzor)
 
 # Welcome to Readzor 
 
