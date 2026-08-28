@@ -23,7 +23,7 @@ WORKER_PARAMETERS = None
 ESTIMATED_ZIP_RATIO = {}
 ESTIMATED_READ_COUNTS = {}
 ESTIMATED_BYTE_PER_READ = {}
-VERSION = "0.1.8"
+VERSION = "0.1.9"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3", "AGATCGGAAGAGC"), #12x in human genome
@@ -1198,8 +1198,7 @@ def adapter_trimming(sequence_arr, adapter_sequences):
     """
     n_reads, length = sequence_arr.shape
     right_cutoffs = np.full(n_reads, length, dtype=np.int16)
-    sequence_arr = sequence_arr.astype(np.uint8)
-    all_bytes = sequence_arr.tobytes()
+    all_bytes = memoryview(sequence_arr).tobytes()
     for i in range(n_reads):
         row_bytes = all_bytes[i*length:(i+1)*length]
         best = length
@@ -2213,7 +2212,7 @@ def parse_args():
     )
 
     adapter_trimming = parser.add_argument_group("Adapter trimming",
-                                                 "Trim reads for Illumina adapter sequences. Standard sequences included are TruSeq3 universal and index adapters, and Nextera adapters. Only perfectly matching sequences are trimmed. Indepedent of quality.")
+                                                 "Trim reads for Illumina adapter sequences. Standard sequences included are TruSeq3 universal and index adapters, and Nextera adapters. Only exactly matching sequences are trimmed. Adapter trimming is performed independent of quality.")
     adapter_trimming.add_argument(
         "--adapter-trim-flag", "-af", action="store_true", default = False,
         help='[FLAG] Turn on adapter trimming module. Default: off.'
