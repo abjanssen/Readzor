@@ -23,7 +23,7 @@ WORKER_PARAMETERS = None
 ESTIMATED_ZIP_RATIO = {}
 ESTIMATED_READ_COUNTS = {}
 ESTIMATED_BYTE_PER_READ = {}
-VERSION = "0.1.6"
+VERSION = "0.1.7"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3", "AGATCGGAAGAGC"), #12x in human genome
@@ -49,11 +49,11 @@ FULL_AUTO_OVERRIDES = {
 }
 NUCL_ATCG = b"ATCG"
 NUCL_ATCGN = b"ATCGN"
+ACTIVE_PROGRESS_TRACKER = None
 
 ##### Logging #####
 logger = logging.getLogger("readzor")
 file_only_logger = logging.getLogger("readzor.file_only")
-_active_progress_tracker = None
 
 class ProgressAwareStreamHandler(logging.StreamHandler):
     """
@@ -62,8 +62,8 @@ class ProgressAwareStreamHandler(logging.StreamHandler):
     terminal line.
     """
     def emit(self, record):
-        if _active_progress_tracker is not None:
-            _active_progress_tracker.clear_line()
+        if ACTIVE_PROGRESS_TRACKER is not None:
+            ACTIVE_PROGRESS_TRACKER.clear_line()
         super().emit(record)
 
 def setup_logging(output_dir=None, verbose = False, parameters = None):
@@ -1810,8 +1810,8 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
             def close(self): pass
             def clear_line(self): pass
         tracker = _NullTracker()
-    global _active_progress_tracker
-    _active_progress_tracker = tracker
+    global ACTIVE_PROGRESS_TRACKER
+    ACTIVE_PROGRESS_TRACKER = tracker
     file_stats = {}
     file_writing_handles = {}
     for file in unpaired:
@@ -1871,7 +1871,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
                     tracker.update(num_paired * 2 + num_singles + rejected)
     finally:
         tracker.close()
-        _active_progress_tracker = None
+        ACTIVE_PROGRESS_TRACKER = None
         for handle in file_writing_handles.values():
                 if not handle.closed:
                     handle.close()
