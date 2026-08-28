@@ -2213,7 +2213,7 @@ def parse_args():
     )
 
     adapter_trimming = parser.add_argument_group("Adapter trimming",
-                                                 "Trim reads for Illumina adapter sequences. Standard sequences included are TruSeq3 universal and index adapters, and Nextera adapters. Only perfectly matching sequences are trimmed. Indepedent of quality.")
+                                                 "Trim reads for Illumina adapter sequences. Standard sequences included are TruSeq3 universal and index adapters, and Nextera adapters. Only exactly matching sequences are trimmed. Adapter trimming is performed independent of quality.")
     adapter_trimming.add_argument(
         "--adapter-trim-flag", "-af", action="store_true", default = False,
         help='[FLAG] Turn on adapter trimming module. Default: off.'

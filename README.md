@@ -1,9 +1,9 @@
 [![GitHub release](https://img.shields.io/github/v/release/abjanssen/Readzor)](https://github.com/abjanssen/Readzor/releases)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Yes, it's in Python'](https://img.shields.io/badge/Language-Python3-steelblue.svg)
-[![PyPI Downloads](https://img.shields.io/pypi/dm/Readzor)](https://pypi.org/project/Readzor/)
-[![Bioconda Downloads](https://img.shields.io/conda/dn/bioconda/Readzor)](https://bioconda.github.io/recipes/prokka/README.html)
-![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/abjanssen/Readzor/total)(https://github.com/abjanssen/Readzor)
+[![Python3](https://img.shields.io/badge/Language-Python3-steelblue.svg)](https://www.python.org/)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/Readzor?label=PyPI%20downloads)](https://pypi.org/project/Readzor/)
+[![Bioconda Downloads](https://img.shields.io/conda/dn/bioconda/Readzor?label=Bioconda%20downloads)](https://bioconda.github.io/recipes/readzor/README.html)
+[![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/abjanssen/Readzor/total?label=GitHub%20downloads)](https://github.com/abjanssen/Readzor)
 
 # Welcome to Readzor 
 
@@ -192,7 +192,7 @@ Illumina NovaSeq, NextSeq, and MiniSeq use a two-color chemistry, in which guani
 `--poly-length-both, -plb`: Minimum length of homopolymer run at start and end of read required to trigger trimming. Default: 0.
 
 ### Adapter trimming
-Trim reads for Illumina adapter sequences. Standard sequences included are TruSeq3 universal and index adapters, and Nextera adapters. Only perfectly matching sequences are trimmed. Independent of quality.\
+Trim reads for Illumina adapter sequences. Standard sequences included are TruSeq3 universal and index adapters, and Nextera adapters. Only exactly matching sequences are trimmed. Adapter trimming is performed independent of quality.\
 `--adapter-trim-flag, -af`: [FLAG] Turn on adapter trimming module. Default: off.\
 `--adapter-fasta-add, -ad`: FASTA file with adapter sequences to trim for, in addition to predefined sequences.\
 `--adapter-fasta-excl, -ax`: Fasta file with adapter sequences to trim for, excluding predefined and additional sequences specified.
