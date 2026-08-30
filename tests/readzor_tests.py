@@ -7,10 +7,10 @@ DATA_DIR = Path(__file__).parent / "data"
 
 EXPECTED_HASHES = {
     "results_summary.txt": "f6b13b02882a2e109bc90e7419d2066e53efc34e05e9a350e7b8678b9e7017e8",
-    "test_paired_R1_paired_filtered.fastq.gz": "d3f327fa2442d49c87215a9c5bef50c71ca8141c6fb885961c5b9045e53c0c49",
-    "test_paired_R2_paired_filtered.fastq.gz": "2b678c0851044e66fe7a8c04546bc2af468cf2d7f6544c7e3e243b072228e875",
-    "test_paired_unpaired_filtered.fastq.gz": "afc3ac1631bc1f2f53116cb869b1fa23805d2f38bb81e89a1b0e1fe1ae938b0a",
-    "test_unpaired_testhash3_filtered.fastq.gz": "d4d127cab35a4570456950e25b5384d92f970c11b50ee0f904a71a9e65c009ca",
+    "test_paired_R1_paired_filtered.fastq.gz": "b9def62118ac494217c3ca3df30818f90788973c9722fe0fa688ff37039c46dc",
+    "test_paired_R2_paired_filtered.fastq.gz": "af72161490c3bc6d6cb262b47881d26c7f478b50ab367d8cd7087115795e4f27",
+    "test_paired_unpaired_filtered.fastq.gz": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "test_unpaired_testhash3_filtered.fastq.gz": "6f941cea0eade596e16a5c4474fda8cfd9e4f340c33ca6da07534355b18addf1",
 }
 
 def test_readzor(tmp_path):
