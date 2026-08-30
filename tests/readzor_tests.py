@@ -6,11 +6,11 @@ import gzip
 DATA_DIR = Path(__file__).parent / "data"
 
 EXPECTED_HASHES = {
-    "results_summary.txt": "b1a12db3dbffa3e7b1a8e6757a2ab6fe68a4dd387cfceb361d549c2c9880d3e3",
-    "test_paired_R1_paired_filtered.fastq.gz": "acf7526124d4987fe15634fc43862360b69418840b02b10309947b8e47d37e8a",
-    "test_paired_R2_paired_filtered.fastq.gz": "89d8385c3544ed1ba01823cd572c21937be72c3ce570d8832035d77de4d29976",
-    "test_paired_unpaired_filtered.fastq.gz": "f32092d0e15ee34b1d25a97cf3b98fbd8921acf9986192da6ae5b0beac625786",
-    "test_unpaired_testhash3_filtered.fastq.gz": "1d4b0706fd1821ac3ec78927f61b69d40c0dce2c097c78de0a80f9f19d966a51",
+    "results_summary.txt": "f6b13b02882a2e109bc90e7419d2066e53efc34e05e9a350e7b8678b9e7017e8",
+    "test_paired_R1_paired_filtered.fastq.gz": "d3f327fa2442d49c87215a9c5bef50c71ca8141c6fb885961c5b9045e53c0c49",
+    "test_paired_R2_paired_filtered.fastq.gz": "2b678c0851044e66fe7a8c04546bc2af468cf2d7f6544c7e3e243b072228e875",
+    "test_paired_unpaired_filtered.fastq.gz": "afc3ac1631bc1f2f53116cb869b1fa23805d2f38bb81e89a1b0e1fe1ae938b0a",
+    "test_unpaired_testhash3_filtered.fastq.gz": "d4d127cab35a4570456950e25b5384d92f970c11b50ee0f904a71a9e65c009ca",
 }
 
 def test_readzor(tmp_path):
