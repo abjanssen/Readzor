@@ -151,21 +151,22 @@ Specify input FASTQ files using any combination of --input-files, --input-paired
 `--gzip-level`: Set gzip compression level. Higher compression decreases processing speed. Possible values: 0-3. Default: 1.
              
 ### General quality filters
-`--min-average-qual <int>`: Minimum average quality of output read. Default: 0.\
+`--min-average-qual-pre <int>`: Minimum average quality of input read. Default: 0.\
+`--min-average-qual-post <int>`: Minimum average quality of output read. Default: 0.\
 `--min-length <int>`: Minimum length of output read. Default: 0.\
 `--max-length <int>`: Maximum length of output read. Default: off.\
 `--nucl-filter` [FLAG]: Reject reads containing `N` bases anywhere in read. Default: off.
 
 ### Set-Length end trimming
 Trim a set number of bases of the ends of each read, independent of sequence or quality.\
-`--cut-flag, -clf` [FLAG]: Turn on the set-length end trimming module. Default: off.\
+`--cut-flag, -cf` [FLAG]: Turn on the set-length end trimming module. Default: off.\
 `--cut-start, -cs <int>`: Number of bases to trim from the start of the read. Default: 0.\
 `--cut-end, -ce <int>`: Number of bases to trim from the end of the read. Default: 0.\
 `--cut-both, -cb  <int>`: Number of bases to trim from both ends of the read. Overwritten by --cut-start and --cut-end. Default: 0.
 
 ### Quality-dependent end trimming
 Trim the ends of each read, dependent on quality. Ends of reads will be trimmed up to first position that fulfills quality requirement.\
-`--endqual-filter-flag, -eff`: [FLAG] Turn on quality-dependent end trimming. Default: off.\
+`--endqual-filter-flag, -ef`: [FLAG] Turn on quality-dependent end trimming. Default: off.\
 `--endqual-min-start, -ems`: Specific phred score threshold for the start of the read. Default: 25.\
 `--endqual-min-end, -eme`: Specific phred score threshold for the end of the read. Default: 25.\
 `--endqual-min-both, -emb`: Phred score threshold for the quality trimming of read ends. Overwritten by --endqual-min-start and --endqual-min-end. Default: 25.
@@ -194,22 +195,23 @@ Illumina NovaSeq, NextSeq, and MiniSeq use a two-color chemistry, in which guani
 ### Adapter trimming
 Trim reads for Illumina adapter sequences. Standard sequences included are TruSeq3 universal and index adapters, and Nextera adapters. Only exactly matching sequences are trimmed. Adapter trimming is performed independent of quality.\
 `--adapter-trim-flag, -af`: [FLAG] Turn on adapter trimming module. Default: off.\
+`--adapter-mismatch, -am`: Number of mismatches allowed in adapter finding. Default: 0.\
 `--adapter-fasta-add, -ad`: FASTA file with adapter sequences to trim for, in addition to predefined sequences.\
 `--adapter-fasta-excl, -ax`: Fasta file with adapter sequences to trim for, excluding predefined and additional sequences specified.
     
 ### Low complexity filtering
 Detect complexity of reads using k-mer-based nucleotide frequencies. Low complexity reads are discarded entirely.\
-`--kmer-filter-flag`: [FLAG] Turn on the k-mer-based complexity filtering module. Default: off.\
-`--kmer-size`: K-mer length for k-mer-based complexity filtering. Comma-separated values are checked independently. Default: 4.\
-`--kmer-cutoff`: Minimum percentage of unique k-mers (relative to the maximum possible for the read) required to pass the complexity filter. Higher values are stricter. Default: 50.
+`--kmer-filter-flag, -kf`: [FLAG] Turn on the k-mer-based complexity filtering module. Default: off.\
+`--kmer-size, -ks`: K-mer length for k-mer-based complexity filtering. Comma-separated values are checked independently. Default: 4.\
+`--kmer-cutoff, -kc`: Minimum percentage of unique k-mers (relative to the maximum possible for the read) required to pass the complexity filter. Higher values are stricter. Default: 50.
 
 ### MGI header conversion
 Convert read header from MGI (BGI) format to Illumina format. Original header will be stored in the placeholder line. Conversion is necessary for downstream analysis with tools such as SAMtools.\
-`--mgi-convert-flag`: [FLAG] Turn on the MGI-to-Illumina header conversion module. Default: off.\
-`--mgi-bc5`: Input an i5 barcode for Illumina header conversion. Default: 'PLACEHOLDERi5'.\
-`--mgi-bc7`: Input an i7 barcode for Illumina header conversion. Default: 'PLACEHOLDERi7'.\
-`--mgi-instrument`: Instrument name for Illumina header conversion. Default: 'PLACEHOLDERinstrument'.\
-`--mgi-run`: Run ID for Illumina header conversion. Default: 'PLACEHOLDERrun'.
+`--mgi-convert-flag, -mf`: [FLAG] Turn on the MGI-to-Illumina header conversion module. Default: off.\
+`--mgi-bc5, -m5`: Input an i5 barcode for Illumina header conversion. Default: 'PLACEHOLDERi5'.\
+`--mgi-bc7, -m7`: Input an i7 barcode for Illumina header conversion. Default: 'PLACEHOLDERi7'.\
+`--mgi-instrument, -mi`: Instrument name for Illumina header conversion. Default: 'PLACEHOLDERinstrument'.\
+`--mgi-run, -mr`: Run ID for Illumina header conversion. Default: 'PLACEHOLDERrun'.
 
 ### Advanced options
 Further options that can be specified to alter the behavior of Readzor.\
