@@ -23,7 +23,7 @@ WORKER_PARAMETERS = None
 ESTIMATED_ZIP_RATIO = {}
 ESTIMATED_READ_COUNTS = {}
 ESTIMATED_BYTE_PER_READ = {}
-VERSION = "0.1.9"
+VERSION = "0.1.10"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3", "AGATCGGAAGAGC"), #12x in human genome
@@ -44,8 +44,7 @@ FULL_AUTO_OVERRIDES = {
     "adapter_trim_flag": True, #heavy
     "nucl_filter": True,
     "gzip": True,
-    "progress": True,
-    "verbose": True
+    "progress": True
 }
 NUCL_ATCG = b"ATCG"
 NUCL_ATCGN = b"ATCGN"
@@ -968,7 +967,7 @@ def trim_ends_quality(quality_arr, min_quality_both, endqual_min_start, endqual_
     end_cutoffs = length - qual_mask.argmax(axis=1)
     zero_end_rows = end_cutoffs == length
     if zero_end_rows.any():
-        end_good_pos = qual_mask[:, -1] | ~zero_end_rows
+        end_good_pos = qual_mask[:, 0] | ~zero_end_rows
         end_cutoffs = np.where(end_good_pos, end_cutoffs, 0)
     return start_cutoffs.astype(np.int16), end_cutoffs.astype(np.int16)
 
