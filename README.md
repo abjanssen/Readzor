@@ -225,6 +225,7 @@ Although Readzor probably works on older versions of its dependencies, it has be
 * NumPy: 2.5.2
 * Python: 3.14.7
 * Python-isal: 1.8.0
+* Regex: 2026.7.19
 
 ## Issues and bug reports
 Please leave a message in [issues](https://github.com/abjanssen/Readzor/issues) or [discussions](https://github.com/abjanssen/Readzor/discussions) if you notice an issue, bug, or otherwise. 

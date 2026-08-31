@@ -17,26 +17,26 @@ import time
 
 from isal import igzip as gzip
 import numpy as np
-import regex
 
 ##### Definition of constant values #####
 WORKER_PARAMETERS = None
 ESTIMATED_ZIP_RATIO = {}
 ESTIMATED_READ_COUNTS = {}
 ESTIMATED_BYTE_PER_READ = {}
-VERSION = "0.1.13"
+VERSION = "0.1.14"
 PHRED_ALLOWED = bytes(range(33, 127))
+#DEFAULT_ADAPTERS_SECOND = [
+#    ("TruSeq3_full_R1", "AGATCGGAAGAGCACACGTCTGAACTCCAGTCA"),
+#    ("TruSeq3_full_R2", "AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"),
+#    ]
 DEFAULT_ADAPTERS = [
-    ("TruSeq3", "AGATCGGAAGAGC"), #12x in human genome
-    ("TruSeq3_R1", "AGATCGGAAGAGCACACGTCTGAACTCCAGTCA"),
-    ("TruSeq3_R2", "AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"),
+    ("TruSeq3_full_R1_short", "AGATCGGAAGAGCACACGTC"),
+    ("TruSeq3_full_R1_short", "AGATCGGAAGAGCGTCGTGT"),
+#    ("TruSeq3", "AGATCGGAAGAGC"), #12x in human genome
+    ("TruSeq2", "AGATCGGAAGAGCGGTTCAG"),
     ("Nextera", "CTGTCTCTTATACACATCT"),
-    ("Nextera_transposas_R1", "TCGTCGGCAGCGTCAGATGTGTATAAGAGACAG"),
-    ("Nextera_transposas_R2", "GTCTCGTGGGCTCGGAGATGTGTATAAGAGACAG"),
-    ("Nextera_PCR_i7", "GTCTCGTGGGCTCGG"),
-    ("Nextera_PCR_i5", "TCGTCGGCAGCGTC"),
-    ("Illumina_RNA","ACTGTCTCTTATACACATCT"),
-    ("TruSeq_small_RNA","TGGAATTCTCGGGTGCCAAGG")
+    ("TruSeq_small_RNA","TGGAATTCTCGGGTGCCAAGG"),
+    ("Illumina_RNA","ACTGTCTCTTATACACATCT")
 ]
 FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "full_auto"}
 FIELD_SEP = b"\x1f"
@@ -1220,19 +1220,19 @@ def adapter_trimming(sequence_arr, adapter_sequences, mismatches):
     Detects adapter read-through from the end of each read.
     For each read, finds the earliest position where any provided adapter
     sequence appears (as an exact substring if mismatches <= 0, or as an
-    approximate/fuzzy match allowing up to `mismatches` substitutions if
-    mismatches > 0), and trims the read at that position. 'N' in either the
-    adapter or the read is treated as a wildcard matching any of A/T/C/G/N.
+    approximate match allowing up to `mismatches` substitutions if
+    mismatches > 0, via vectorized Hamming-distance search), and trims the
+    read at that position. 'N' in either the adapter or the read is treated
+    as a wildcard matching any of A/T/C/G/N.
     Args:
         sequence_arr (numpy.ndarray): (n_reads, read_length) array of
-            per-base ASCII sequence codes.
+            per-base ASCII sequence codes (uint8).
         adapter_sequences (list[bytes]): List of adapter byte-sequences to
             search for. May contain 'N' as a wildcard base.
         mismatches (int): Number of allowed mismatches (substitutions) when
-            searching for adapters. If <= 0, uses exact substring matching
-            (with 'N' in the adapter matching any base via manual scan is
-            NOT supported on this fast path — see note below). If > 0, uses
-            regex-based fuzzy matching with 'N' wildcard support.
+            searching for adapters. If <= 0, uses exact substring matching.
+            If > 0, uses vectorized Hamming-distance fuzzy matching
+            (substitutions only, no indels) with 'N' wildcard support.
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
             each of shape (n_reads,) and dtype int16, giving the left and right
@@ -1240,10 +1240,8 @@ def adapter_trimming(sequence_arr, adapter_sequences, mismatches):
     """
     n_reads, length = sequence_arr.shape
     right_cutoffs = np.full(n_reads, length, dtype=np.int16)
-    all_bytes = memoryview(sequence_arr).tobytes()
-
-    if mismatches <= 0:
-        # Exact match path (original behavior)
+    if mismatches == 0:
+        all_bytes = memoryview(sequence_arr).tobytes()
         for i in range(n_reads):
             row_bytes = all_bytes[i*length:(i+1)*length]
             best = length
@@ -1253,21 +1251,25 @@ def adapter_trimming(sequence_arr, adapter_sequences, mismatches):
                     best = pos
             right_cutoffs[i] = best
     else:
-        patterns = [
-            regex.compile(
-                            b"(?:%s){s<=%d,i<=0,d<=0}" % (adapter_bytes.replace(b"N", b"[ATCGN]"), mismatches)
-                        )
-            for adapter_bytes in adapter_sequences
-        ]
-        for i in range(n_reads):
-            row_bytes = all_bytes[i*length:(i+1)*length]
-            best = length
-            for pattern in patterns:
-                m = pattern.search(row_bytes)
-                if m is not None and m.start() < best:
-                    best = m.start()
-            right_cutoffs[i] = best
-
+        for adapter_bytes in adapter_sequences:
+            adapter = np.frombuffer(adapter_bytes, dtype=np.uint8)
+            adapter_len = len(adapter)
+            n_positions = length - adapter_len + 1
+            if n_positions <= 0:
+                continue
+            adapter_is_n = (adapter == ord('N'))
+            for pos in range(n_positions):
+                window = sequence_arr[:, pos:pos+adapter_len]
+                read_is_n = (window == ord('N'))
+                wildcard = read_is_n | adapter_is_n[None, :]
+                mismatch_count = np.sum(
+                    (window != adapter[None, :]) & ~wildcard, axis=1
+                )
+                hits = mismatch_count <= mismatches
+                if hits.any():
+                    idx = np.flatnonzero(hits)
+                    better = right_cutoffs[idx] > pos
+                    right_cutoffs[idx[better]] = pos
     return np.zeros(n_reads, dtype=np.int16), right_cutoffs
 
 def average_quality_batch(quality_arr, lefts, rights):
@@ -2284,7 +2286,7 @@ def parse_args():
     )
     adapter_trimming.add_argument(
         "--adapter-mismatch", "-am", type = int, default = 0, metavar="",
-        help="Number of mismatches allowed in adapter finding. Default: 0."
+        help="Number of mismatches allowed in adapter finding. Note: setting mismatches to > 0, infers significant processing constrains. Default: 0."
     )
     adapter_trimming.add_argument(
         "--adapter-fasta-add", "-ad", type = str, default = None, metavar="",
