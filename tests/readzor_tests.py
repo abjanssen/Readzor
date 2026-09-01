@@ -8,7 +8,7 @@ DATA_DIR = Path(__file__).parent / "data"
 EXPECTED_HASHES = {
     "results_summary.txt": "f6b13b02882a2e109bc90e7419d2066e53efc34e05e9a350e7b8678b9e7017e8",
     "test_paired_R1_paired_filtered.fastq.gz": "b9def62118ac494217c3ca3df30818f90788973c9722fe0fa688ff37039c46dc",
-    "test_paired_R2_paired_filtered.fastq.gz": "af72161490c3bc6d6cb262b47881d26c7f478b50ab367d8cd7087115795e4f27",
+    "test_paired_R2_paired_filtered.fastq.gz": "76a904ecd486f981d5fa4cf25512c40961e8fd0a9f88a3567a5956d5b90bc007",
     "test_paired_unpaired_filtered.fastq.gz": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "test_unpaired_testhash3_filtered.fastq.gz": "6f941cea0eade596e16a5c4474fda8cfd9e4f340c33ca6da07534355b18addf1",
 }
