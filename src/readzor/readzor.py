@@ -23,16 +23,11 @@ WORKER_PARAMETERS = None
 ESTIMATED_ZIP_RATIO = {}
 ESTIMATED_READ_COUNTS = {}
 ESTIMATED_BYTE_PER_READ = {}
-VERSION = "0.1.14"
+VERSION = "0.1.15"
 PHRED_ALLOWED = bytes(range(33, 127))
-#DEFAULT_ADAPTERS_SECOND = [
-#    ("TruSeq3_full_R1", "AGATCGGAAGAGCACACGTCTGAACTCCAGTCA"),
-#    ("TruSeq3_full_R2", "AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"),
-#    ]
 DEFAULT_ADAPTERS = [
-    ("TruSeq3_full_R1_short", "AGATCGGAAGAGCACACGTC"),
-    ("TruSeq3_full_R1_short", "AGATCGGAAGAGCGTCGTGT"),
-#    ("TruSeq3", "AGATCGGAAGAGC"), #12x in human genome
+    ("TruSeq3_full_R1_short", "AGATCGGAAGAGCACACGTC"), #first 20 of full seq
+    ("TruSeq3_full_R1_short", "AGATCGGAAGAGCGTCGTGT"),  #first 20 of full seq
     ("TruSeq2", "AGATCGGAAGAGCGGTTCAG"),
     ("Nextera", "CTGTCTCTTATACACATCT"),
     ("TruSeq_small_RNA","TGGAATTCTCGGGTGCCAAGG"),
@@ -41,8 +36,8 @@ DEFAULT_ADAPTERS = [
 FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "full_auto"}
 FIELD_SEP = b"\x1f"
 FULL_AUTO_OVERRIDES = {
-    "endqual_filter_flag": True, #light
-    "adapter_trim_flag": True, #heavy
+    "endqual_filter_flag": True,
+    "adapter_trim_flag": True,
     "nucl_filter": True,
     "gzip": True,
     "progress": True
