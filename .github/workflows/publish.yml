@@ -117,7 +117,7 @@ jobs:
     name: Publish Python distribution to PyPI
     needs: check-and-build
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
       name: PyPI
@@ -136,7 +136,7 @@ jobs:
   publish-to-testpypi:
     name: Publish Python distribution to TestPyPI
     needs: check-and-build
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
       name: TestPyPI
