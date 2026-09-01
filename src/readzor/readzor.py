@@ -15,33 +15,29 @@ import shutil
 import sys
 import time
 
-import numpy as np
 from isal import igzip as gzip
+import numpy as np
 
 ##### Definition of constant values #####
 WORKER_PARAMETERS = None
 ESTIMATED_ZIP_RATIO = {}
 ESTIMATED_READ_COUNTS = {}
 ESTIMATED_BYTE_PER_READ = {}
-VERSION = "0.1.12"
+VERSION = "0.1.15"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
-    ("TruSeq3", "AGATCGGAAGAGC"), #12x in human genome
-    ("TruSeq3_R1", "AGATCGGAAGAGCACACGTCTGAACTCCAGTCA"),
-    ("TruSeq3_R2", "AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"),
+    ("TruSeq3_full_R1_short", "AGATCGGAAGAGCACACGTC"), #first 20 of full seq
+    ("TruSeq3_full_R1_short", "AGATCGGAAGAGCGTCGTGT"),  #first 20 of full seq
+    ("TruSeq2", "AGATCGGAAGAGCGGTTCAG"),
     ("Nextera", "CTGTCTCTTATACACATCT"),
-    ("Nextera_transposas_R1", "TCGTCGGCAGCGTCAGATGTGTATAAGAGACAG"),
-    ("Nextera_transposas_R2", "GTCTCGTGGGCTCGGAGATGTGTATAAGAGACAG"),
-    ("Nextera_PCR_i7", "GTCTCGTGGGCTCGG"),
-    ("Nextera_PCR_i5", "TCGTCGGCAGCGTC"),
-    ("Illumina_RNA","ACTGTCTCTTATACACATCT"),
-    ("TruSeq_small_RNA","TGGAATTCTCGGGTGCCAAGG")
+    ("TruSeq_small_RNA","TGGAATTCTCGGGTGCCAAGG"),
+    ("Illumina_RNA","ACTGTCTCTTATACACATCT")
 ]
 FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "full_auto"}
 FIELD_SEP = b"\x1f"
 FULL_AUTO_OVERRIDES = {
-    "endqual_filter_flag": True, #light
-    "adapter_trim_flag": True, #heavy
+    "endqual_filter_flag": True,
+    "adapter_trim_flag": True,
     "nucl_filter": True,
     "gzip": True,
     "progress": True
@@ -888,13 +884,15 @@ def build_pipeline(parameters):
     if parameters.get("poly_filter_flag"):
         pipeline.append(lambda seq, qual: homopolymer_nucleotide_trimming(seq, poly_length_both=parameters["poly_length_both"], poly_length_start=parameters["poly_length_start"], poly_length_end=parameters["poly_length_end"], poly_bases_both=parameters["poly_bases_both"], poly_bases_start=parameters["poly_bases_start"], poly_bases_end=parameters["poly_bases_end"]))
     if parameters.get("adapter_trim_flag"):
-        pipeline.append(lambda seq, qual: adapter_trimming(seq, adapter_sequences = parameters["adapter_sequences"]))
+        pipeline.append(lambda seq, qual: adapter_trimming(seq, adapter_sequences=parameters["adapter_sequences"], mismatches=parameters["adapter_mismatch"]))
     if parameters.get("cut_flag"):
         pipeline.append(lambda seq, qual: cut_set_ends(seq, cut_both=parameters["cut_both"], cut_start=parameters["cut_start"], cut_end=parameters["cut_end"]))
     if parameters.get("n_trimming_flag"):
         pipeline.append(lambda seq, qual: n_end_trimming(seq))
     if parameters.get("kmer_filter_flag"):
         pipeline.append(lambda seq, qual: kmer_complexity_scan(seq, kmer=parameters["kmer_size"], low_complex_cutoff=parameters["kmer_cutoff"], allow_n=parameters["allow_n_kmer"]))
+    if parameters.get("minimum_average_qual_pre") > 0:
+        pipeline.append(lambda seq, qual: average_quality_filter_wrapper(qual, min_avg_qual=parameters["minimum_average_qual_pre"]))
     return pipeline
 
 ##### Writing files functions #####
@@ -926,6 +924,30 @@ def open_fastq_writer(filepath, output_dir, gzip_output):
     return open(out_filepath, "xb")
 
 ##### Processing reads functions #####
+def average_quality_filter_wrapper(quality_arr, min_avg_qual):
+    """
+    Wraps average_quality_batch to conform to the pipeline's (left, right)
+    boundary-array contract, since average_quality_batch is a whole-read
+    pass/fail filter rather than a trimmer.
+    Reads with average quality >= min_avg_qual are left untouched
+    (left=0, right=read_length). Reads that fail the threshold are collapsed
+    to a zero-length boundary (left=0, right=0), signaling downstream stages
+    to treat them as fully discarded.
+    Args:
+        quality_arr (numpy.ndarray): (n_reads, read_length) array of
+            per-base quality scores.
+        min_avg_qual (float): Minimum average quality required to keep a read.
+    Returns:
+        tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
+            each of shape (n_reads,) and dtype int16.
+    """
+    n_reads, length = quality_arr.shape
+    avg_quals = average_quality_batch(quality_arr, lefts=0, rights=length)
+    passed = avg_quals >= min_avg_qual
+    left_cutoffs = np.zeros(n_reads, dtype=np.int16)
+    right_cutoffs = np.where(passed, length, 0).astype(np.int16)
+    return left_cutoffs, right_cutoffs
+
 def trim_ends_quality(quality_arr, min_quality_both, endqual_min_start, endqual_min_end):
     """
     Determines per-read trim boundaries based on quality thresholds at each end.
@@ -1109,11 +1131,9 @@ def sliding_window_quality(quality_arr, slider_quality, slider_window, slider_st
     of the read where every window of `slider_window` bases has a mean
     quality above `slider_quality`.
 
-    Rather than trimming only from the ends inward, it
-    identifies the best surviving internal stretch of acceptable quality
-    and reports its boundaries. If `slider_filter_flag` is False,
-    returns boundaries that trim nothing (left=0, right=read_length) for
-    every read.
+    Rather than trimming only from the ends inward, it identifies the best
+    surviving internal stretch of acceptable quality and reports its
+    boundaries.
 
     Args:
         quality_arr (numpy.ndarray): (n_reads, read_length) array of
@@ -1121,26 +1141,29 @@ def sliding_window_quality(quality_arr, slider_quality, slider_window, slider_st
         slider_quality (int): Minimum acceptable mean quality within a window.
         slider_window (int): Number of bases per sliding window.
         slider_step (int): Step size between successive window start positions.
-        slider_filter_flag (bool): Flag to enable or disable sliding window quality filtering.
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
-            each of shape (n_reads,) and dtype int16, giving the best surviving 
+            each of shape (n_reads,) and dtype int16, giving the best surviving
             [left, right) region per read. Reads with no failing windows keep
             their full length; reads that fail everywhere get a zero-length region.
     """
     n_reads, length = quality_arr.shape
     if length < slider_window:
-        return np.zeros(n_reads, dtype = np.int16), np.full(n_reads, length, dtype = np.int16)
+        return np.zeros(n_reads, dtype=np.int16), np.full(n_reads, length, dtype=np.int16)
     cumsum = np.cumsum(quality_arr, axis=1, dtype=np.int32)
     cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int32), cumsum], axis=1)
     window_starts = np.arange(0, length - slider_window + 1, slider_step)
     window_sums = cumsum[:, window_starts + slider_window] - cumsum[:, window_starts]
-    failed_mask = window_sums <= (slider_quality * slider_window)
+    failed_mask = window_sums < (slider_quality * slider_window)
     bad_positions = np.zeros((n_reads, length), dtype=bool)
-    for j, start in enumerate(window_starts):
-        rows_failed = failed_mask[:, j]
-        bad_positions[rows_failed, start:start + slider_window] = True
+    n_windows = len(window_starts)
+    if slider_step == 1:
+        for offset in range(slider_window):
+            bad_positions[:, offset:offset + n_windows] |= failed_mask
+    else:
+        for j, start in enumerate(window_starts):
+            bad_positions[:, start:start + slider_window] |= failed_mask[:, j:j + 1]
     good_positions = ~bad_positions
     no_bad = ~bad_positions.any(axis=1)
     all_bad = bad_positions.all(axis=1)
@@ -1150,62 +1173,98 @@ def sliding_window_quality(quality_arr, slider_quality, slider_window, slider_st
     needs_stretch_search = ~no_bad & ~all_bad
     if not needs_stretch_search.any():
         return left_cutoffs, right_cutoffs
-    sub = good_positions[needs_stretch_search]
-    m = sub.shape[0]
-    padded = np.zeros((m, length + 2), dtype=bool)
-    padded[:, 1:-1] = sub
-    diffs = np.diff(padded.astype(np.int8), axis=1)
-    row_idx, start_cols = np.where(diffs == 1)
+    padded = np.zeros((needs_stretch_search.sum(), length + 2), dtype=bool)
+    padded[:, 1:-1] = good_positions[needs_stretch_search]
+    diffs = np.diff(padded.view(np.int8), axis=1)
+    local_rows, start_cols = np.where(diffs == 1)
     _, end_cols = np.where(diffs == -1)
+    global_rows = np.where(needs_stretch_search)[0][local_rows]
     run_lengths = end_cols - start_cols
-    row_cumsum = cumsum[needs_stretch_search]
-    run_sums = row_cumsum[row_idx, end_cols] - row_cumsum[row_idx, start_cols]
-    run_means = run_sums / run_lengths
-    order = np.lexsort((-run_means, -run_lengths, row_idx))
-    sorted_row_idx = row_idx[order]
-    group_first_idx = np.concatenate([[0], np.nonzero(np.diff(sorted_row_idx))[0] + 1])
-    best_order_positions = order[group_first_idx]
-    best_rows = row_idx[best_order_positions]
-    best_starts = start_cols[best_order_positions]
-    best_ends = end_cols[best_order_positions]
-    needs_row_indices = np.where(needs_stretch_search)[0]
-    left_cutoffs[needs_row_indices[best_rows]] = best_starts
-    right_cutoffs[needs_row_indices[best_rows]] = best_ends
+    order = np.lexsort((-run_lengths, global_rows))
+    sorted_rows = global_rows[order]
+    sorted_lengths = run_lengths[order]
+    first_in_group = np.concatenate([[0], np.flatnonzero(sorted_rows[1:] != sorted_rows[:-1]) + 1])
+    best_idx = order[first_in_group]
+    if len(first_in_group) < len(sorted_rows):
+        second_in_group = first_in_group[first_in_group + 1 < len(sorted_rows)] + 1
+        tied_mask = (sorted_rows[second_in_group] == sorted_rows[second_in_group - 1]) & \
+                    (sorted_lengths[second_in_group] == sorted_lengths[second_in_group - 1])
+        if np.any(tied_mask):
+            tied_global_rows = np.unique(sorted_rows[second_in_group[tied_mask]])
+            is_tied_run = np.isin(global_rows, tied_global_rows)
+            t_rows = global_rows[is_tied_run]
+            t_starts = start_cols[is_tied_run]
+            t_ends = end_cols[is_tied_run]
+            t_lengths = run_lengths[is_tied_run]
+            t_sums = cumsum[t_rows, t_ends] - cumsum[t_rows, t_starts]
+            t_means = t_sums / t_lengths
+            t_order = np.lexsort((-t_means, -t_lengths, t_rows))
+            t_sorted_rows = t_rows[t_order]
+            t_first_in_group = np.concatenate([[0], np.flatnonzero(t_sorted_rows[1:] != t_sorted_rows[:-1]) + 1])
+            t_best_idx = t_order[t_first_in_group]
+            untied_mask = ~np.isin(global_rows[best_idx], tied_global_rows)
+            best_idx = np.concatenate([best_idx[untied_mask], np.flatnonzero(is_tied_run)[t_best_idx]])
+    left_cutoffs[global_rows[best_idx]] = start_cols[best_idx]
+    right_cutoffs[global_rows[best_idx]] = end_cols[best_idx]
+
     return left_cutoffs, right_cutoffs
 
-def adapter_trimming(sequence_arr, adapter_sequences):
+def adapter_trimming(sequence_arr, adapter_sequences, mismatches):
     """
     Determines per-read trim boundaries to remove specific adapter sequences.
     Detects adapter read-through from the end of each read.
-
     For each read, finds the earliest position where any provided adapter
-    sequence appears as an exact substring, and trims the read at that position.
-    If `adapter_trim_flag` is False, returns boundaries that trim nothing 
-    (left=0, right=read_length) for every read.
-
+    sequence appears (as an exact substring if mismatches <= 0, or as an
+    approximate match allowing up to `mismatches` substitutions if
+    mismatches > 0, via vectorized Hamming-distance search), and trims the
+    read at that position. 'N' in either the adapter or the read is treated
+    as a wildcard matching any of A/T/C/G/N.
     Args:
         sequence_arr (numpy.ndarray): (n_reads, read_length) array of
-            per-base ASCII sequence codes.
-        trim_sequences (list[tuple[str, str]]): List of (name, sequence) tuples 
-            representing the adapter sequences to search for.
-        adapter_trim_flag (bool): Flag to enable or disable adapter trimming.
-
+            per-base ASCII sequence codes (uint8).
+        adapter_sequences (list[bytes]): List of adapter byte-sequences to
+            search for. May contain 'N' as a wildcard base.
+        mismatches (int): Number of allowed mismatches (substitutions) when
+            searching for adapters. If <= 0, uses exact substring matching.
+            If > 0, uses vectorized Hamming-distance fuzzy matching
+            (substitutions only, no indels) with 'N' wildcard support.
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
-            each of shape (n_reads,) and dtype int32, giving the left and right 
+            each of shape (n_reads,) and dtype int16, giving the left and right
             trim boundaries per read. Left cutoffs are always 0 (3'-end trimming only).
     """
     n_reads, length = sequence_arr.shape
     right_cutoffs = np.full(n_reads, length, dtype=np.int16)
-    all_bytes = memoryview(sequence_arr).tobytes()
-    for i in range(n_reads):
-        row_bytes = all_bytes[i*length:(i+1)*length]
-        best = length
+    if mismatches == 0:
+        all_bytes = memoryview(sequence_arr).tobytes()
+        for i in range(n_reads):
+            row_bytes = all_bytes[i*length:(i+1)*length]
+            best = length
+            for adapter_bytes in adapter_sequences:
+                pos = row_bytes.find(adapter_bytes)
+                if pos != -1 and pos < best:
+                    best = pos
+            right_cutoffs[i] = best
+    else:
         for adapter_bytes in adapter_sequences:
-            pos = row_bytes.find(adapter_bytes)
-            if pos != -1 and pos < best:
-                best = pos
-        right_cutoffs[i] = best
+            adapter = np.frombuffer(adapter_bytes, dtype=np.uint8)
+            adapter_len = len(adapter)
+            n_positions = length - adapter_len + 1
+            if n_positions <= 0:
+                continue
+            adapter_is_n = (adapter == ord('N'))
+            for pos in range(n_positions):
+                window = sequence_arr[:, pos:pos+adapter_len]
+                read_is_n = (window == ord('N'))
+                wildcard = read_is_n | adapter_is_n[None, :]
+                mismatch_count = np.sum(
+                    (window != adapter[None, :]) & ~wildcard, axis=1
+                )
+                hits = mismatch_count <= mismatches
+                if hits.any():
+                    idx = np.flatnonzero(hits)
+                    better = right_cutoffs[idx] > pos
+                    right_cutoffs[idx[better]] = pos
     return np.zeros(n_reads, dtype=np.int16), right_cutoffs
 
 def average_quality_batch(quality_arr, lefts, rights):
@@ -1307,7 +1366,7 @@ def kmer_complexity_scan(sequence_arr, kmer, low_complex_cutoff, allow_n):
     return np.zeros(n_reads, dtype=np.int16), second_array
 
 ##### Unpaired reads workflow functions #####
-def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, minimum_average_qual, read_length, gzip_output, gzip_level, parameters):
+def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, minimum_average_qual_post, read_length, gzip_output, gzip_level, parameters):
     """
     Validates, quality-trims, and length/quality-filters a chunk of unpaired
     FASTQ reads.
@@ -1324,7 +1383,7 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
         phred_offset (int): Phred encoding offset (33 or 64).
         minimum_length (int): Minimum acceptable read length after trimming.
         maximum_length (int): Maximum acceptable read length after trimming.
-        minimum_average_qual (float): Minimum acceptable mean quality after trimming.
+        minimum_average_qual_post (float): Minimum acceptable mean quality after trimming.
         read_length (int): Expected original read length (for validation).
         gzip_output (bool): If True, compresses output records with Isal gzip.
         gzip_level (int): Isal gzip compression level (0-3).
@@ -1369,9 +1428,9 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
     else:
         lengths_out = rights - lefts
         length_mask = (lengths_out <= maximum_length) & (lengths_out >= minimum_length)
-    if minimum_average_qual > 0:
+    if minimum_average_qual_post > 0:
         average_quals = average_quality_batch(quality_arr, lefts, rights)
-        qual_mask = average_quals >= minimum_average_qual
+        qual_mask = average_quals >= minimum_average_qual_post
     else:
         qual_mask = np.ones(n_reads, dtype=bool)
     keep_mask = length_mask & qual_mask
@@ -1471,7 +1530,7 @@ def process_unpaired_task_flat(task, parameters):
         phred_offset=task["phred_offset"],
         minimum_length=task["minimum_length"],
         maximum_length=task["maximum_length"],
-        minimum_average_qual=parameters["minimum_average_qual"],
+        minimum_average_qual_post=parameters["minimum_average_qual_post"],
         read_length=task["read_length"],
         gzip_output = parameters["gzip_output"],
         gzip_level = parameters["gzip_level"],
@@ -1599,7 +1658,7 @@ def generate_paired_tasks(files, chunk_size, parameters):
                 "gzip_level": parameters["gzip_level"]
             }
 
-def trim_reads(records, phred_offset, minimum_length, maximum_length, read_length, minimum_average_qual, parameters):
+def trim_reads(records, phred_offset, minimum_length, maximum_length, read_length, minimum_average_qual_post, parameters):
     """
     Validates, quality-trims, and length/quality-filters a batch of FASTQ
     reads, keyed by their base (mate-independent) read ID.
@@ -1615,7 +1674,7 @@ def trim_reads(records, phred_offset, minimum_length, maximum_length, read_lengt
         minimum_length (int): Minimum acceptable read length after trimming.
         maximum_length (int): Maximum acceptable read length after trimming.
         read_length (int): Expected original read length (for validation).
-        minimum_average_qual (float): Minimum acceptable mean quality after trimming.
+        minimum_average_qual_post (float): Minimum acceptable mean quality after trimming.
         parameters (dict): Dictionary of configuration parameters.
 
     Returns:
@@ -1657,9 +1716,9 @@ def trim_reads(records, phred_offset, minimum_length, maximum_length, read_lengt
     else:
         lengths_out = rights - lefts
         length_mask = (lengths_out <= maximum_length) & (lengths_out >= minimum_length)
-    if minimum_average_qual > 0:
+    if minimum_average_qual_post > 0:
         avg_quals = average_quality_batch(quality_arr, lefts, rights)
-        qual_mask = avg_quals >= minimum_average_qual
+        qual_mask = avg_quals >= minimum_average_qual_post
     else:
         qual_mask = np.ones(sequence_arr.shape[0], dtype=bool)
     keep_mask = length_mask & qual_mask
@@ -1702,8 +1761,8 @@ def process_paired_chunk(chunks, phred_offset, read_length, minimum_length, maxi
             - Total count of rejected reads.
     """
     chunk1, chunk2 = chunks
-    survivors_1, rejected_1 = trim_reads(chunk1, phred_offset, minimum_length, maximum_length, minimum_average_qual = parameters["minimum_average_qual"], read_length = read_length, parameters = parameters)
-    survivors_2, rejected_2 = trim_reads(chunk2, phred_offset, minimum_length, maximum_length, minimum_average_qual = parameters["minimum_average_qual"], read_length = read_length, parameters = parameters)
+    survivors_1, rejected_1 = trim_reads(chunk1, phred_offset, minimum_length, maximum_length, minimum_average_qual_post = parameters["minimum_average_qual_post"], read_length = read_length, parameters = parameters)
+    survivors_2, rejected_2 = trim_reads(chunk2, phred_offset, minimum_length, maximum_length, minimum_average_qual_post = parameters["minimum_average_qual_post"], read_length = read_length, parameters = parameters)
     remaining_2 = dict(survivors_2)
     paired_out_1 = []
     paired_out_2 = []
@@ -1998,7 +2057,7 @@ def parse_args():
             - endqual_min_start, endqual_min_end (int or None): Phred score
               thresholds for trimming the 5' and 3' ends specifically;
               override min_quality_trim for their respective end if given.
-            - minimum_average_qual (int or None): Minimum average read quality.
+            - minimum_average_qual_post (int or None): Minimum average read quality.
             - cut_start, cut_end (int or None): Fixed number of bases to trim
               from the start and end of the read specifically.
             - cut_both (int or None): Fixed number of bases to trim from both
@@ -2098,7 +2157,11 @@ def parse_args():
 
     general_quality_group = parser.add_argument_group("General output filter options")
     general_quality_group.add_argument(
-        "--min-average-qual", type=int, default = 0, metavar = "", choices=range(0, 127),
+        "--min-average-qual-pre", type=int, default = 0, metavar = "", choices=range(0, 127),
+        help="Minimum average quality of input read. Default: 0."
+    )
+    general_quality_group.add_argument(
+        "--min-average-qual-post", type=int, default = 0, metavar = "", choices=range(0, 127),
         help="Minimum average quality of output read. Default: 0."
     )
     general_quality_group.add_argument(
@@ -2118,7 +2181,7 @@ def parse_args():
                                                 "Trim a set number of bases of the ends of each read, independent of sequence or quality."
                                                 )
     trim_ends_group.add_argument(
-        "--cut-flag", "-clf",action="store_true", default = False,
+        "--cut-flag", "-cf",action="store_true", default = False,
         help="[FLAG] Turn on set-length end trimming module. Default: off."
     )
     trim_ends_group.add_argument(
@@ -2137,7 +2200,7 @@ def parse_args():
     quality_ends_group = parser.add_argument_group("Quality-dependent end trimming",
                                                    "Trim the ends of each read, dependent on quality. Ends of reads will be trimmed up to first position that fulfills quality requirement.")
     quality_ends_group.add_argument(
-        "--endqual-filter-flag", "-eff", action="store_true", default = False,
+        "--endqual-filter-flag", "-ef", action="store_true", default = False,
         help="[FLAG] Turn on quality-dependent end trimming. Default: off."
     )
     quality_ends_group.add_argument(
@@ -2217,48 +2280,52 @@ def parse_args():
         help='[FLAG] Turn on adapter trimming module. Default: off.'
     )
     adapter_trimming.add_argument(
+        "--adapter-mismatch", "-am", type = int, default = 0, metavar="",
+        help="Number of mismatches allowed in adapter finding. Note: setting mismatches to > 0, infers significant processing constrains. Default: 0."
+    )
+    adapter_trimming.add_argument(
         "--adapter-fasta-add", "-ad", type = str, default = None, metavar="",
         help="Fasta file with adapter sequences to trim for, in addition to predefined sequences."
     )
     adapter_trimming.add_argument(
         "--adapter-fasta-excl", "-ax", type = str, default = None, metavar="",
-        help="Fasta file with adapter sequences to trim for, excluding predefined and additional sequences specified"
+        help="Fasta file with adapter sequences to trim for, excluding predefined and additional sequences specified."
     )
 
     low_complexity_group = parser.add_argument_group("Low complexity filtering",
                                                      "Detect complexity of reads using kmer-based nucleotide frequencies. Low complex reads discarded entirely.")
     low_complexity_group.add_argument(
-        "--kmer-filter-flag", action="store_true", default=False,
+        "--kmer-filter-flag", "-kf", action="store_true", default=False,
         help="[FLAG] Turn on the kmer-based complexity filtering module. Default: off."
     )
     low_complexity_group.add_argument(
-        "--kmer-size", type = int, default = 4, metavar="",
+        "--kmer-size", "-ks", type = int, default = 4, metavar="",
         help="Kmer length for kmer-based complexity filtering. Comma-separated values are checked independently. Default: 4."
     )
     low_complexity_group.add_argument(
-        "--kmer-cutoff", type = int, default = 50, metavar="",
+        "--kmer-cutoff", "-kc", type = int, default = 50, metavar="",
         help="Minimum percentage of unique k-mers (relative to the maximum possible for the read) required to pass the complexity filter. Higher values are stricter. Default: 50."
     )
     mgi_convert_group = parser.add_argument_group("MGI header conversion",
                                                   "Convert read header from MGI (BGI) format to Illumina format. Original header will be stored in the placeholder line. Conversion is necessary for downstream analysis with tools such as samtools")
     mgi_convert_group.add_argument(
-        "--mgi-convert-flag", action="store_true", default=False,
+        "--mgi-convert-flag", "-mf", action="store_true", default=False,
         help="[FLAG] Turn on the MGI-to-Illumina header conversion module. Default: off."
     )
     mgi_convert_group.add_argument(
-        "--mgi-bc5", type = str, default = "PLACEHOLDERi5", metavar="",
+        "--mgi-bc5", "-m5", type = str, default = "PLACEHOLDERi5", metavar="",
         help="Input a i5 barcode for Illumina header conversion. Default: 'PLACEHOLDERi5'."
     )
     mgi_convert_group.add_argument(
-        "--mgi-bc7", type = str, default = "PLACEHOLDERi7", metavar="",
+        "--mgi-bc7", "-m7", type = str, default = "PLACEHOLDERi7", metavar="",
         help="Input a i7 barcode for Illumina header conversion. Default: 'PLACEHOLDERi7'."
     )
     mgi_convert_group.add_argument(
-        "--mgi-instrument", type = str, default = "PLACEHOLDERinstrument", metavar="",
+        "--mgi-instrument", "-mi", type = str, default = "PLACEHOLDERinstrument", metavar="",
         help="Instrument name for Illumina header conversion. Default: 'PLACEHOLDERinstrument'."
     )
     mgi_convert_group.add_argument(
-        "--mgi-run", type = str, default = "PLACEHOLDERrun", metavar="",
+        "--mgi-run", "-mr", type = str, default = "PLACEHOLDERrun", metavar="",
         help="Run ID for Illumina header conversion. Default: 'PLACEHOLDERrun'."
     )
 
@@ -2340,7 +2407,8 @@ def parse_args():
     parameters["min_quality_both"] = args.endqual_min_both
     parameters["endqual_min_start"] = args.endqual_min_start
     parameters["endqual_min_end"] = args.endqual_min_end
-    parameters["minimum_average_qual"] = args.min_average_qual
+    parameters["minimum_average_qual_post"] = args.min_average_qual_post
+    parameters["minimum_average_qual_pre"] = args.min_average_qual_pre    
     parameters["cut_start"] = args.cut_start
     parameters["cut_end"] = args.cut_end
     parameters["cut_both"] = args.cut_both
@@ -2380,6 +2448,7 @@ def parse_args():
     parameters["poly_length_both"] = args.poly_length_both
     parameters["show_progress"] = args.progress
     parameters["verbose"] = args.verbose
+    parameters["adapter_mismatch"] = args.adapter_mismatch
 
     if parameters["nucl_filter"]:
         parameters["n_trimming_flag"] = False

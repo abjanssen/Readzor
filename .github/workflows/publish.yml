@@ -8,9 +8,10 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  check-version:
-    name: Extract & validate version
-    runs-on: ubuntu-latest
+  check-and-build:
+    name: Extract version, validate, test, and build
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.get_version.outputs.VERSION }}
     steps:
@@ -93,45 +94,13 @@ jobs:
             exit 1
           fi
 
-  test:
-    name: Run unit tests
-    needs: check-version
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.14.7"
-      - name: Install packages
+      - name: Install test dependencies
         run: |
-          python -m pip install --upgrade pip
           pip install pytest
-          pip install -e .
+
       - name: Run tests
         run: |
           pytest tests/readzor_tests.py
-
-  build-package:
-    name: Build distribution
-    needs: [check-version, test]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.14.7"
-
-      - name: Install package editable
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e .
 
       - name: Build release distributions
         run: |
@@ -146,9 +115,10 @@ jobs:
 
   publish-to-pypi:
     name: Publish Python distribution to PyPI
-    needs: [check-version, build-package]
+    needs: check-and-build
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
     environment:
       name: PyPI
       url: https://pypi.org/p/Readzor
@@ -165,8 +135,9 @@ jobs:
 
   publish-to-testpypi:
     name: Publish Python distribution to TestPyPI
-    needs: [check-version, build-package]
-    runs-on: ubuntu-latest
+    needs: check-and-build
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
     environment:
       name: TestPyPI
       url: https://test.pypi.org/p/Readzor
@@ -185,8 +156,9 @@ jobs:
 
   create-release:
     name: Create GitHub Release
-    needs: [check-version, build-package, publish-to-pypi]
-    runs-on: ubuntu-latest
+    needs: [check-and-build, publish-to-pypi]
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
@@ -196,7 +168,7 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ needs.check-version.outputs.version }} # Fixed source job
+          VERSION: ${{ needs.check-and-build.outputs.version }}
         run: |
           gh release create "$VERSION" \
             --title "Release $VERSION" \
@@ -204,9 +176,10 @@ jobs:
 
   docker-build:
     name: Build and Push Docker Image
-    needs: [check-version, create-release] # Lists check-version so output context is preserved
+    needs: [check-and-build, create-release]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: write
@@ -234,7 +207,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=${{ needs.check-version.outputs.version }}
+            type=raw,value=${{ needs.check-and-build.outputs.version }}
             type=raw,value=latest
 
       - name: Build and push Docker image
