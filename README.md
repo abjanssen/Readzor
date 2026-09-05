@@ -7,28 +7,28 @@
 
 # Welcome to Readzor 
 
-Readzor is a fast, modular, and fully-featured FASTQ quality trimming and filtering pipeline. 
+Readzor is a fast, modular, and fully-featured FASTQ quality trimming and filtering pipeline. \
 By default, **<ins>all processing modules are off</ins>**, leaving you the explicit ability to adapt the workflow according to your needs and wishes.
 
 ## Feature overview
 **Modular trimming approach**:
-By design, each filter will indepedently assess each raw read. Outcomes are merged, and the most stringent trimming result per end is applied.
+By design, each filter will indepedently assess each raw read. Outcomes are merged, and the most stringent trimming result per end is applied.\
 For example, if the quality trimmer determines 5 bases should be removed from the 3' end, but the adapter trimmer identifies 12 bases to remove from that same end, Readzor will merge these outcomes and trim the most restrictive amount (12 bases) to ensure high-quality output.
-*   Quality-dependent end trimming
-*   Sliding windowquality trimming
-*   Homopolymer trimming from both read ends
-*   Adapter trimming for TruSeq and Nextera adapters.
-*   N-base trimming from read ends, or in overall.
-*   Low complexity filtering based on K-mer counts.
+*   Quality-dependent end trimming.
+*   Sliding windowquality trimming.
+*   Homopolymer trimming, from both read ends.
+*   Adapter trimming for TruSeq, Nextera, and Illumina RNA-seq adapters.
+*   N-base trimming from both read ends, and overall N-filtering.
+*   K-mer based Low complexity filtering.
 *   Set-length read end trimming.
 *   Overall quality threshold.
-*   Overall length threshold    
+*   Overall length threshold.
     
 **Auto-detection**:
 Using auto-detection methods, Readzor provides an easy-to-use platform for novice users, enabling high quality read trimming with minimal inputs.
 *   File Pairing: paired vs. unpaired FASTQ files detection using internal header information, independent of file names.
 *   Read Numbering: read numbers detection, directly from headers.
-*   Compression: GZIP compression detection via magic bytes, regardless of the file extension.
+*   Compression: Gzip compression detection via magic bytes, regardless of the file extension.
 *   Phred Offsets: per-file Phred quality offsets detection (i.e., Phred33 vs. Phred64) based on quality string symbols.
 
 **Extra features**:
@@ -221,11 +221,13 @@ Further options that can be specified to alter the behavior of Readzor.\
 `--phred-offset`: Define phred offset for all FASTQ files. When set, per-file auto-detection will not be performed. Possible values: 33, 64. Default: off (auto-detection per file).
 
 ## Software version
-Although Readzor probably works on older versions of its dependencies, it has been developed adn test for best performance using the following versions:
-* NumPy: 2.5.2
-* Python: 3.14.7
-* Python-isal: 1.8.0
-* Regex: 2026.7.19
+Readzor depends on the following software packages:
+* NumPy (version required: 2.5.2)
+* Python (version required: not specified)
+* Python-isal (version required: 1.8.0)
+
+Although Readzor works on older versions of Python, it has been developed and tested for best performance using version 3.14.7:
+
 
 ## Issues and bug reports
 Please leave a message in [issues](https://github.com/abjanssen/Readzor/issues) or [discussions](https://github.com/abjanssen/Readzor/discussions) if you notice an issue, bug, or otherwise. 
