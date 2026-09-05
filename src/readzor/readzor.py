@@ -23,7 +23,7 @@ WORKER_PARAMETERS = None
 ESTIMATED_ZIP_RATIO = {}
 ESTIMATED_READ_COUNTS = {}
 ESTIMATED_BYTE_PER_READ = {}
-VERSION = "0.1.17"
+VERSION = "0.1.18"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3_full_R1_short", "AGATCGGAAGAGCACACGTC"), #first 20 of full seq
@@ -37,7 +37,7 @@ FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "f
 FIELD_SEP = b"\x1f"
 FULL_AUTO_OVERRIDES = {
     "endqual_filter_flag": True,
-    "adapter_trim_flag": True,
+    "adapter_trim_flag": False,
     "nucl_filter": True,
     "gzip": True,
     "progress": True
@@ -718,7 +718,7 @@ def validate_fastq(header, sequence, plus, quality, nucl_filter, read_length):
     if len(plus) > 1 and plus[1:] != header[1:]:
         return False
     seq_len = len(sequence)
-    if read_length is not None and seq_len != read_length:
+    if seq_len != read_length:
         raise ValueError(
             f"FASTQ file contain uneven read lengths. Found {seq_len}, expected {read_length}.")
     if seq_len != len(quality):
