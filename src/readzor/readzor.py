@@ -37,7 +37,7 @@ FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "f
 FIELD_SEP = b"\x1f"
 FULL_AUTO_OVERRIDES = {
     "endqual_filter_flag": True,
-    "adapter_trim_flag": False,
+    "adapter_trim_flag": True,
     "nucl_filter": True,
     "gzip": True,
     "progress": True
