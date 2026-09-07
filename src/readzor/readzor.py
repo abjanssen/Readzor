@@ -23,7 +23,7 @@ WORKER_PARAMETERS = None
 ESTIMATED_ZIP_RATIO = {}
 ESTIMATED_READ_COUNTS = {}
 ESTIMATED_BYTE_PER_READ = {}
-VERSION = "0.1.18"
+VERSION = "0.1.19"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3_full_R1_short", "AGATCGGAAGAGCACACGTC"), #first 20 of full seq
@@ -37,7 +37,7 @@ FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "f
 FIELD_SEP = b"\x1f"
 FULL_AUTO_OVERRIDES = {
     "endqual_filter_flag": True,
-    "adapter_trim_flag": False,
+    "adapter_trim_flag": True,
     "nucl_filter": True,
     "gzip": True,
     "progress": True
@@ -139,7 +139,7 @@ def estimate_bytes_per_read(filepath):
         return header_bytes + seq_bytes + plus_bytes + qual_bytes
     raise ValueError(f"No FASTQ records found in '{filepath}'; cannot estimate bytes per read.")
 
-def estimate_gzip_ratio(filepath, sample_bytes=10 * 1024 * 1024):
+def estimate_gzip_ratio(filepath, sample_bytes=50 * 1024 * 1024):
     """
     Estimate a gzip file's compression ratio (uncompressed / compressed) by
     decompressing a leading sample, rather than the whole file.

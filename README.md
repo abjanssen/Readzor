@@ -1,9 +1,10 @@
-[![GitHub release](https://img.shields.io/github/v/release/abjanssen/Readzor)](https://github.com/abjanssen/Readzor/releases)
+[![GitHub release](https://img.shields.io/github/v/release/abjanssen/Readzor?label=Latest%20release)](https://github.com/abjanssen/Readzor/releases)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Python3](https://img.shields.io/badge/Language-Python3-steelblue.svg)](https://www.python.org/)
+[![DOI](https://zenodo.org/badge/1333429627.svg)](https://doi.org/10.5281/zenodo.22336649)
 [![PyPI Downloads](https://img.shields.io/pepy/dt/readzor?label=PyPI%20downloads)](https://pypi.org/project/Readzor/)
-[![Bioconda Downloads](https://img.shields.io/conda/dn/bioconda/Readzor?label=Bioconda%20downloads)](https://bioconda.github.io/recipes/readzor/README.html)
-[![Docker Downloads](https://img.shields.io/badge/dynamic/json?url=https://ghcr-badge.elias.eu.org/api/abjanssen/Readzor/readzor&query=downloadCount&label=Docker%20downloads)](https://github.com/abjanssen/Readzor/pkgs/container/readzor)
+[![Bioconda Downloads](https://img.shields.io/conda/dn/bioconda/Readzor?label=Bioconda%20downloads&color=%2352b924)](https://bioconda.github.io/recipes/readzor/README.html)
+[![Docker Downloads](https://img.shields.io/badge/dynamic/json?url=https://ghcr-badge.elias.eu.org/api/abjanssen/Readzor/readzor&query=downloadCount&label=Docker%20downloads&color=%2352b924)](https://github.com/abjanssen/Readzor/pkgs/container/readzor)
 
 # Welcome to Readzor 
 
@@ -239,7 +240,7 @@ This project is provded under the GNU General Public License v3.0 (GPLv3).
 Axel B. Janssen ([Google Scholar](https://scholar.google.com/citations?user=TWi-ysEAAAAJ&hl)/[GitHub](https://github.com/abjanssen/))
 
 ## Reference
-A reference for Readzor will be available soon.
+Please use the DOI (https://doi.org/10.5281/zenodo.22336649) for your references. A more detailed manuscript for Readzor will be available soon. 
 
 ## Legal
 The oligonucleotide sequences used for adapter trimming, included in this work, are copyrighted and protected by intellectual property, including issued or pending patents, copyright, and trade secrets.\
