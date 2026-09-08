@@ -3,7 +3,7 @@
 [![Python3](https://img.shields.io/badge/Language-Python3-steelblue.svg)](https://www.python.org/)
 [![DOI](https://zenodo.org/badge/1333429627.svg)](https://doi.org/10.5281/zenodo.22336649)
 [![PyPI Downloads](https://img.shields.io/pepy/dt/readzor?label=PyPI%20downloads)](https://pypi.org/project/Readzor/)
-[![Bioconda Downloads](https://img.shields.io/conda/dn/bioconda/Readzor?label=Bioconda%20downloads&color=%2352b924)](https://bioconda.github.io/recipes/readzor/README.html)
+[![Bioconda Downloads](https://img.shields.io/conda/dn/bioconda/Readzor?label=Bioconda%20downloads&color=%2352b924)](https://anaconda.org/channels/bioconda/packages/readzor/overview)
 [![Docker Downloads](https://img.shields.io/badge/dynamic/json?url=https://ghcr-badge.elias.eu.org/api/abjanssen/Readzor/readzor&query=downloadCount&label=Docker%20downloads&color=%2352b924)](https://github.com/abjanssen/Readzor/pkgs/container/readzor)
 
 # Welcome to Readzor 
@@ -33,11 +33,11 @@ Using auto-detection methods, Readzor provides an easy-to-use platform for novic
 *   Phred Offsets: per-file Phred quality offsets detection (i.e., Phred33 vs. Phred64) based on quality string symbols.
 
 **Extra features**:
-Equipped with a number of other features, like built-in validation and seamless Slurm detection methods, Readzor delivers a robust execution environment, ensuring reproducible outputs at any scale.
+Equipped with a number of other features, like built-in validation and seamless HPC cluster detection methods, Readzor delivers a robust execution environment, ensuring reproducible outputs at any scale.
 *   Fully automatic mode: invoking Readzor in fully automatic mode (optional file specification possible), will use predetermined settings to optimize read processing. For more info, invoke Readzor with flags --full-auto and --help.
 *   MGI/BGI header conversion: Built-in module to convert MGI/BGI fastq headers into standard Illumina format for downstream compatibility (e.g., with SAMtools).
 *   Safe and traceable outputs: Automatically generates isolated, timestamped output directories to prevent accidental file overwrites. Each run includes a comprehensive summary file detailing the exact parameters used and the final trimming outcomes for full reproducibility.
-*   HPC integration: Automatically reads Slurm environment variables to seamlessly scale threads and optimize performance on HPC clusters.
+*   HPC integration: Automatically reads HPC cluster environment variables to seamlessly scale threads and optimize performance on HPC clusters.
 *   Live progress monitoring: Features a dynamic progress tracker to accurately provide real-time feedback on processing speed, completion, and estimated time remaining.
 *   Real-time record validation: Readzor detects malformed or corrupted FASTQ records on the fly, ensuring high-quality output.
 *   Gzip compression: Compress your output files and control the compression depth  to optimize storage size.
@@ -216,9 +216,9 @@ Convert read header from MGI (BGI) format to Illumina format. Original header wi
 
 ### Advanced options
 Further options that can be specified to alter the behavior of Readzor.\
-`--threads, -t`: Number of threads to use. Default: platform-dependent through auto-detection (assigned CPUs on Slurm-managed systems, all-1 otherwise. Fallback: 1).\
+`--threads, -t`: Number of threads to use. Default: platform-dependent through auto-detection (assigned CPUs on HPC cluster systems, all-1 otherwise. Fallback: 1).\
 `--reads-for-phred-offset`: Number of reads to sample per file for detection of Phred quality encoding offset. Default: 500.\
-`--chunk-size`: Number of reads per chunk sent to each worker thread. Note: empirically set at 1000, changing can alter processing speed. Default: 1000.\
+`--chunk-size`: Number of reads per chunk sent to each worker. Default: platform-dependent (empiricallyset to 20,000 for HPC cluster systems, 1000 otherwise). Default: 1000.\
 `--phred-offset`: Define phred offset for all FASTQ files. When set, per-file auto-detection will not be performed. Possible values: 33, 64. Default: off (auto-detection per file).
 
 ## Software version
