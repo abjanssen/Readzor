@@ -23,7 +23,7 @@ WORKER_PARAMETERS = None
 ESTIMATED_ZIP_RATIO = {}
 ESTIMATED_READ_COUNTS = {}
 ESTIMATED_BYTE_PER_READ = {}
-VERSION = "0.1.20"
+VERSION = "0.1.21"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3_full_R1_short", "AGATCGGAAGAGCACACGTC"), #first 20 of full seq
@@ -161,6 +161,34 @@ def estimate_gzip_ratio(filepath, sample_bytes=50 * 1024 * 1024):
     if compressed_read == 0 or uncompressed_read < 1024 * 1024:
         return None
     return uncompressed_read / compressed_read
+
+def chunk_size_setter(chunk_size):
+    """
+    Resolves the chunk size to use for parallel processing.
+    If a chunk size is explicitly given, it's returned unchanged.
+    Otherwise, detects whether a supported job scheduler's tools are
+    available on the system (SLURM, PBS/Torque, SGE, or LSF) and picks
+    a larger default chunk size for scheduler-managed (typically
+    higher-resource) systems, or a smaller default otherwise.
+    Args:
+        chunk_size (int | None): User-specified chunk size. Defaults to
+            None (auto-detect).
+    Returns:
+        int: The resolved chunk size — 20000 on scheduler-managed systems,
+            1000 otherwise, unless overridden.
+    """
+    if chunk_size is not None:
+        return chunk_size
+
+    scheduler_tools = (
+        'sinfo', 'sbatch',
+        'qsub', 'qstat',
+        'bsub', 'bjobs'
+    )
+    if any(shutil.which(tool) is not None for tool in scheduler_tools):
+        return 20000
+    else:
+        return 1000
 
 def count_reads_estimated(filepath, default_gzip_ratio=4):
     """
@@ -338,12 +366,13 @@ def create_folder_structure(output_dir):
 def worker_determination(threads=None):
     """
     Determine the number of worker processes for parallel task execution.
-    
+
     The worker count is calculated in the following order of precedence:
-    1. **Explicit Request**: If `threads` is a valid integer, it is used.
-    2. **Slurm Environment**: If `SLURM_CPUS_PER_TASK` is set and valid, it is used.
-    3. **Local Default**: Uses (available CPUs - 1).
-    
+    1. Explicit Request: If `threads` is a valid integer, it is used.
+    2. Scheduler Environment: If a supported job-scheduler CPU variable
+       (SLURM, PBS, SGE, LSF, or OMP_NUM_THREADS) is set and valid, it is used.
+    3. Local Default: Uses (available CPUs - 1).
+
     All return values are clamped to a minimum of 1 worker.
 
     Args:
@@ -355,12 +384,16 @@ def worker_determination(threads=None):
     """
     if isinstance(threads, int) and not isinstance(threads, bool):
         return max(1, threads)
-    slurm_cpus = os.environ.get('SLURM_CPUS_PER_TASK')
-    if slurm_cpus is not None:
-        try:
-            return max(1, int(slurm_cpus))
-        except ValueError:
-            pass
+
+    for var in ("SLURM_CPUS_PER_TASK", "PBS_NCPUS", "NCPUS", "NSLOTS",
+                "LSB_DJOB_NUMPROC", "OMP_NUM_THREADS"):
+        val = os.environ.get(var)
+        if val:
+            try:
+                return max(1, int(val))
+            except ValueError:
+                pass
+
     return max(1, (os.cpu_count() or 1) - 1)
 
 def common_name_parts(filenames):
@@ -2465,6 +2498,7 @@ def parse_args():
         parameters["adapter_sequences"] = []
 
     parameters["threads"] = worker_determination(parameters["threads"])
+    parameters["chunk_size"] = chunk_size_setter(parameters["chunk_size"])
 
     return parameters
 
@@ -2563,8 +2597,10 @@ def print_final_message():
     ]
     citation_notice = "If you find Readzor useful, please consider citing:"
     citation = (
-        "Axel B. Janssen \n2026 \n"
-        "Readzor: A modular and user-friendly Swiss-army knife approach to short-read sequencing preprocessing."
+        "Axel B. Janssen\n"
+        "Readzor: A modular and user-friendly Swiss-army knife approach to short-read sequencing processing.\n"
+        "2026\n"
+        "https://doi.org/10.5281/zenodo.22336649"
     )
     sign_off = random.choice(sign_off_messages)
 
