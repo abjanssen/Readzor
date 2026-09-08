@@ -23,7 +23,7 @@ WORKER_PARAMETERS = None
 ESTIMATED_ZIP_RATIO = {}
 ESTIMATED_READ_COUNTS = {}
 ESTIMATED_BYTE_PER_READ = {}
-VERSION = "0.1.21"
+VERSION = "0.1.22"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3_full_R1_short", "AGATCGGAAGAGCACACGTC"), #first 20 of full seq
@@ -2373,7 +2373,7 @@ def parse_args():
         help="Number of reads to sample per file for detection of Phred quality encoding offset. Default: 500."
     )
     advanced_group.add_argument(
-        "--chunk-size", type=int, default = 1000, metavar="",
+        "--chunk-size", type=int, default = None, metavar="",
         help="Number of reads per chunk sent to each worker thread. Note: empirically set at 1000, changing can alter processing speed. Default: 1000."
     )
     advanced_group.add_argument(
