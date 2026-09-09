@@ -1,0 +1,11 @@
+trimmomatic \
+    PE \
+    -phred33 \
+    -threads [THREAD_COUNT] \
+    SRR2052337_1.fastq.gz SRR2052337_2.fastq.gz \
+    output_R1_paired.fastq.gz output_R1_unpaired.fastq.g \
+    output_R2_paired.fastq.gz output_R2_unpaired.fastq.g \
+    ILLUMINACLIP:TruSeq3-PE.fa:0:30:10 \
+    LEADING:25 \
+    TRAILING:25 \
+    MINLEN:50

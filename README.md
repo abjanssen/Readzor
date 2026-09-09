@@ -229,7 +229,6 @@ Readzor depends on the following software packages:
 
 Although Readzor works on older versions of Python, it has been developed and tested for best performance using version 3.14.7:
 
-
 ## Issues and bug reports
 Please leave a message in [issues](https://github.com/abjanssen/Readzor/issues) or [discussions](https://github.com/abjanssen/Readzor/discussions) if you notice an issue, bug, or otherwise. 
 
@@ -241,6 +240,26 @@ Axel B. Janssen ([Google Scholar](https://scholar.google.com/citations?user=TWi-
 
 ## Reference
 Please use the DOI (https://doi.org/10.5281/zenodo.22336649) for your references. A more detailed manuscript for Readzor will be available soon. 
+
+## Performance benchmarking
+Benchmarking for HPC clusters was performed on the Curnagl HPC cluster of the University of Lausanne, Switzerland. All runs were performed on Zen3 CPUs.\
+Curnagl is a 96 node HPC cluster based on AMD Zen2/3 CPUs providing a total of 4608 compute cores and 54TB of memory. 8 machines are equipped with 2 A100 GPUs and all nodes have 100Gb/s HDR Infiniband and 100Gb/s Ethernet network connections in a fat-tree topology. The principal storage is a 2PB disk backed filesystem and a 150TB SSD based scratch system. Additionally all nodes have 1.6 TB local NVMe drives.
+
+Benchmarking was performed using, installed according to specified instructions, in dedicated micromamba environments:
+* Fastp v1.3.6
+* Readzor v0.1.22
+* Trimmomatic v0.41
+
+For benchmarking, a public humane Genome-in-a-Bottle dataset was obtained from the NCBI Sequence Read Archive (SRR2052337). This dataset contains 36.4 million paired-end 150 bp reads, from an Illumina HiSeq 2500 machine.
+This dataset was processed as paired, and unpaired files using all software packages.
+Commands were adapted to perform the same tasks where possible, and are available from the [benchmarking folder](/docs/benchmarking). For Fastp and Trimmomatic, successive commands were run in the same job to simulate consecutive processing.
+All measurements were performed in triplicate and averaged, except for the 32-core and all Trimmomatic benchmarks, which are are single measurements.
+
+![Paired_curnagl_memoryusage](/docs/benchmarking/Paired_curnagl_memoryusage.png)
+![Paired_curnagl_processingtime](/docs/benchmarking/Paired_curnagl_processingtime.png)
+![Unpaired_curnagl_memoryusage](/docs/benchmarking/Unpaired_curnagl_memoryusage.png)
+![Unpaired_curnagl_processingtime](/docs/benchmarking/Unpaired_curnagl_processingtime.png)
+
 
 ## Legal
 The oligonucleotide sequences used for adapter trimming, included in this work, are copyrighted and protected by intellectual property, including issued or pending patents, copyright, and trade secrets.\
