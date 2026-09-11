@@ -23,7 +23,7 @@ WORKER_PARAMETERS = None
 ESTIMATED_ZIP_RATIO = {}
 ESTIMATED_READ_COUNTS = {}
 ESTIMATED_BYTE_PER_READ = {}
-VERSION = "0.1.23"
+VERSION = "0.1.24"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3_full_R1_short", "AGATCGGAAGAGCACACGTC"), #first 20 of full seq
@@ -1582,8 +1582,11 @@ def process_paired_task_flat(task, parameters):
         parameters (dict): Dictionary of configuration parameters.
 
     Returns:
-        tuple: A tuple containing (type, file1, file2, paired_out_1, paired_out_2, 
-            singles_out, num_paired, num_singles, rejected).
+        tuple: A tuple containing (type, file1, file2, paired_out_1, paired_out_2,
+            R1_singles_out, R2_singles_out, num_paired, num_R1_singles,
+            num_R2_singles, rejected_1, rejected_2). R1 and R2 singleton
+            records and rejected counts are kept separate since each mate
+            is trimmed and filtered independently before reconciliation.
     """
     file1 = task["file1"]
     file2 = task["file2"]
@@ -1786,13 +1789,16 @@ def process_paired_chunk(chunks, phred_offset, read_length, minimum_length, maxi
         parameters (dict): Dictionary of configuration parameters.
 
     Returns:
-        tuple[bytes, bytes, bytes, int, int, int]: A tuple containing:
+        tuple[bytes, bytes, bytes, bytes, int, int, int, int, int]: A tuple containing:
             - Surviving R1 records whose R2 mate also survived (optionally gzipped).
             - Surviving R2 records whose R1 mate also survived (optionally gzipped).
-            - Surviving records whose mate did not survive, treated as unpaired singletons (optionally gzipped).
+            - Surviving R1 records whose mate did not survive, treated as unpaired singletons (optionally gzipped).
+            - Surviving R2 records whose mate did not survive, treated as unpaired singletons (optionally gzipped).
             - Count of surviving read pairs.
-            - Count of surviving singleton reads.
-            - Total count of rejected reads.
+            - Count of surviving R1 singleton reads.
+            - Count of surviving R2 singleton reads.
+            - Count of R1 reads rejected during trimming.
+            - Count of R2 reads rejected during trimming.
     """
     chunk1, chunk2 = chunks
     survivors_1, rejected_1 = trim_reads(chunk1, phred_offset, minimum_length, maximum_length, minimum_average_qual_post = parameters["minimum_average_qual_post"], read_length = read_length, parameters = parameters)
@@ -1887,7 +1893,14 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
         parameters (dict): Dictionary of configuration parameters.
 
     Returns:
-        dict: A dictionary containing statistics and counts for kept and rejected reads per file.
+        dict: Mapping of file identifiers to their summary statistics.
+            For each unpaired file (keyed by its filepath), the value is
+            a dict with ``kept`` and ``rejected`` counts. For each paired
+            group (keyed by the pair's common filename prefix), the value
+            is a dict with ``kept_pairs``, ``kept_R1_singletons``,
+            ``kept_R2_singletons``, ``rejected_R1``, and ``rejected_R2``
+            counts, since each mate is trimmed and filtered independently
+            before reconciliation.
     """
     auto_paired, auto_unpaired = find_paired_files(unspecified_files)
     unpaired = auto_unpaired + (unpaired_files or [])
@@ -2193,17 +2206,17 @@ def parse_args():
         help="[FLAG] Compress filtered FASTQ files in gzip format. Default: off."
     )
     output_group.add_argument(
-        "--gzip-level", type=int, default = 1, metavar = "", choices=range(0, 3),
+        "--gzip-level", type=int, default = 1, metavar = "", choices=range(0, 4),
         help="Set gzip compression level. Higher compression decreases processing speed. Possible values: 0-3. Default: 1."
     )
 
     general_quality_group = parser.add_argument_group("General output filter options")
     general_quality_group.add_argument(
-        "--min-average-qual-pre", type=int, default = 0, metavar = "", choices=range(0, 127),
+        "--min-average-qual-pre", type=int, default = 0, metavar = "", choices=range(0, 128),
         help="Minimum average quality of input read. Default: 0."
     )
     general_quality_group.add_argument(
-        "--min-average-qual-post", type=int, default = 0, metavar = "", choices=range(0, 127),
+        "--min-average-qual-post", type=int, default = 0, metavar = "", choices=range(0, 128),
         help="Minimum average quality of output read. Default: 0."
     )
     general_quality_group.add_argument(
@@ -2515,7 +2528,7 @@ def parse_args():
 def write_summary_and_statistics(summary_results, parameters, used_command, output_dir):
     """
     Write summary statistics and parameters to output text files.
-
+ 
     The function creates two files in the specified output directory:
     ``results_summary.txt`` containing per-file summary counts and
     ``parameters.txt`` containing the parameter key-value pairs used
@@ -2524,8 +2537,10 @@ def write_summary_and_statistics(summary_results, parameters, used_command, outp
     Args:
         summary_results (dict): Dictionary mapping file names to dictionaries
             of summary statistics. Entries may contain either ``kept`` and
-            ``rejected`` counts or ``kept_pairs``, ``kept_singletons``, and
-            ``rejected`` counts.
+            ``rejected`` counts, or ``kept_pairs``, ``kept_R1_singletons``,
+            ``kept_R2_singletons``, ``rejected_R1``, and ``rejected_R2``
+            counts for paired entries (R1/R2 rejects tracked separately
+            since the mates are filtered and split independently).
         used_command (str): The exact shell-quoted command line used to invoke
             this run.
         parameters (dict): Dictionary of parameter names and their values to
