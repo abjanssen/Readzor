@@ -245,7 +245,7 @@ Please use the DOI (https://doi.org/10.5281/zenodo.22336649) for your references
 Benchmarking for HPC clusters was performed on the Curnagl HPC cluster of the University of Lausanne, Switzerland. All runs were performed on Zen3 CPUs.\
 Curnagl is a 96 node HPC cluster based on AMD Zen2/3 CPUs providing a total of 4608 compute cores and 54TB of memory. 8 machines are equipped with 2 A100 GPUs and all nodes have 100Gb/s HDR Infiniband and 100Gb/s Ethernet network connections in a fat-tree topology. The principal storage is a 2PB disk backed filesystem and a 150TB SSD based scratch system. Additionally all nodes have 1.6 TB local NVMe drives.
 
-Benchmarking was performed using, installed according to specified instructions, in dedicated micromamba environments:
+Benchmarking was performed using the following package versions, installed according to specified instructions in dedicated micromamba environments:
 * Fastp v1.3.6
 * Readzor v0.1.22
 * Trimmomatic v0.41

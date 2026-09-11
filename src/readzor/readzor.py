@@ -23,7 +23,7 @@ WORKER_PARAMETERS = None
 ESTIMATED_ZIP_RATIO = {}
 ESTIMATED_READ_COUNTS = {}
 ESTIMATED_BYTE_PER_READ = {}
-VERSION = "0.1.22"
+VERSION = "0.1.23"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3_full_R1_short", "AGATCGGAAGAGCACACGTC"), #first 20 of full seq
@@ -39,6 +39,7 @@ FULL_AUTO_OVERRIDES = {
     "endqual_filter_flag": True,
     "adapter_trim_flag": True,
     "nucl_filter": True,
+    "min_length": 50,
     "gzip": True,
     "progress": True
 }
@@ -1586,7 +1587,7 @@ def process_paired_task_flat(task, parameters):
     """
     file1 = task["file1"]
     file2 = task["file2"]
-    paired_out_1, paired_out_2, singles_out, num_paired, num_singles, rejected = process_paired_chunk(
+    paired_out_1, paired_out_2, R1_singles_out, R2_singles_out, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2 = process_paired_chunk(
         chunks = (task["chunk1"],task["chunk2"] ),
         phred_offset=task["phred_offset"],
         minimum_length=task["minimum_length"],
@@ -1596,7 +1597,7 @@ def process_paired_task_flat(task, parameters):
         gzip_level = task["gzip_level"],
         parameters=parameters
     )
-    return task["type"], file1, file2, paired_out_1, paired_out_2, singles_out, num_paired, num_singles, rejected
+    return task["type"], file1, file2, paired_out_1, paired_out_2, R1_singles_out, R2_singles_out, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2
 
 def generate_paired_tasks(files, chunk_size, parameters):
     """
@@ -1799,29 +1800,34 @@ def process_paired_chunk(chunks, phred_offset, read_length, minimum_length, maxi
     remaining_2 = dict(survivors_2)
     paired_out_1 = []
     paired_out_2 = []
-    singles_out = []
+    singles_out_1 = []
+    singles_out_2 = []
     for bid, record in survivors_1.items():
         mate = remaining_2.pop(bid, None)
         if mate is not None:
             paired_out_1.append(record)
             paired_out_2.append(mate)
         else:
-            singles_out.append(record)
-    singles_out.extend(remaining_2.values())
-    num_singles = len(singles_out)
+            singles_out_1.append(record)
+    singles_out_2.extend(remaining_2.values())
+    num_R1_singles = len(singles_out_1)
+    num_R2_singles = len(singles_out_2)
     num_paired = len(paired_out_1)
     paired_out_1 = b"".join(paired_out_1)
     paired_out_2 = b"".join(paired_out_2)
-    singles_out = b"".join(singles_out)
+    singles_out_1 = b"".join(singles_out_1)
+    singles_out_2 = b"".join(singles_out_2)
     if gzip_output:
         isal_level = min(max(gzip_level, 0), 3)
         try:
             paired_out_1 = gzip.compress(paired_out_1, compresslevel=isal_level)
             paired_out_2 = gzip.compress(paired_out_2, compresslevel=isal_level)
-            singles_out = gzip.compress(singles_out, compresslevel=isal_level)
+            singles_out_1 = gzip.compress(singles_out_1, compresslevel=isal_level)
+            singles_out_2 = gzip.compress(singles_out_2, compresslevel=isal_level)
         except Exception as e:
             raise RuntimeError(f"Compression failed inside worker: {str(e)}") from None
-    return paired_out_1, paired_out_2, singles_out, num_paired, num_singles, rejected_1 + rejected_2
+    return paired_out_1, paired_out_2, singles_out_1, singles_out_2, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2
+
 
 ##### Input handler functions #####
 def worker_initilizer(parameters):
@@ -1919,8 +1925,8 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
             suffix_n += 1
         used_prefixes.add(common_prefix)
         pair_keys[(file1, file2)] = common_prefix
-        file_stats[common_prefix] = {"kept_pairs": 0, "kept_singletons": 0, "rejected": 0}
-        for suffix in ["_R1_paired", "_R2_paired", "_unpaired"]:
+        file_stats[common_prefix] = {"kept_pairs": 0, "kept_R1_singletons": 0, "kept_R2_singletons": 0, "rejected_R1": 0, "rejected_R2": 0}
+        for suffix in ["_R1_paired", "_R2_paired", "_R1_unpaired", "_R2_unpaired"]:
             key = f"{common_prefix}{suffix}"
             file_writing_handles[key] = open_fastq_writer(
                 key,
@@ -1937,28 +1943,31 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
     try:
         with mp.Pool(threads, initializer=worker_initilizer, initargs=(parameters,)) as pool:
             for result in pool.imap_unordered(unified_worker, unified_chunk_streamer(), chunksize=1):
-                if result[0] == "unpaired":  # Unpaired result: (type, filepath, chunk_results, kept, rejected)
+                if result[0] == "unpaired":
                     _, filepath, chunk_results, kept, rejected = result
                     if chunk_results:
                         file_writing_handles[filepath].write(chunk_results)
                     file_stats[filepath]["kept"] += kept
                     file_stats[filepath]["rejected"] += rejected
                     tracker.update(kept + rejected)
-                elif result[0] == "paired":  # Paired result: (type, file1, file2, p1, p2, singles, rejected)
-                    _, file1, file2, paired_out_1, paired_out_2, singles_out, num_paired, num_singles, rejected = result
+                elif result[0] == "paired":
+                    _, file1, file2, paired_out_1, paired_out_2, R1_singles_out, R2_singles_out, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2 = result
                     common_prefix = pair_keys[(file1, file2)]
                     writes = [
                         (f"{common_prefix}_R1_paired", paired_out_1),
                         (f"{common_prefix}_R2_paired", paired_out_2),
-                        (f"{common_prefix}_unpaired", singles_out)
+                        (f"{common_prefix}_R1_unpaired", R1_singles_out),
+                        (f"{common_prefix}_R2_unpaired", R2_singles_out)
                     ]
                     for handle_key, records in writes:
                         if records:
                             file_writing_handles[handle_key].write(records)
                     file_stats[common_prefix]["kept_pairs"] += num_paired
-                    file_stats[common_prefix]["kept_singletons"] += num_singles
-                    file_stats[common_prefix]["rejected"] += rejected
-                    tracker.update(num_paired * 2 + num_singles + rejected)
+                    file_stats[common_prefix]["kept_R1_singletons"] += num_R1_singles
+                    file_stats[common_prefix]["kept_R2_singletons"] += num_R2_singles
+                    file_stats[common_prefix]["rejected_R1"] += rejected_1
+                    file_stats[common_prefix]["rejected_R2"] += rejected_2
+                    tracker.update(num_paired * 2 + num_R1_singles + num_R2_singles + rejected_1 + rejected_2)
     finally:
         tracker.close()
         ACTIVE_PROGRESS_TRACKER = None
@@ -2531,18 +2540,24 @@ def write_summary_and_statistics(summary_results, parameters, used_command, outp
     unpaired_data = []
     for file_path, counts in summary_results.items():
         filename = os.path.basename(file_path)
-        rejected = counts["rejected"]
         if "kept" in counts:
-            unpaired_data.append((filename, counts["kept"], rejected))
+            unpaired_data.append((filename, counts["kept"], counts["rejected"]))
         else:
-            paired_data.append((filename, counts["kept_pairs"], counts["kept_singletons"], rejected))
+            paired_data.append((
+                filename,
+                counts["kept_pairs"],
+                counts["kept_R1_singletons"],
+                counts["kept_R2_singletons"],
+                counts["rejected_R1"],
+                counts["rejected_R2"],
+            ))
     summary_path = os.path.join(output_dir, "results_summary.txt")
     with open(summary_path, "w", encoding="utf-8") as f:
         if paired_data:
             f.write("[Paired Reads]\n")
-            f.write("Pair with common prefix\tKept_Pairs\tKept_Singletons\tRejected\n")
+            f.write("Pair with common prefix\tKept_Pairs\tKept_R1_Singletons\tKept_R2_Singletons\tRejected_R1\tRejected_R2\n")
             for item in paired_data:
-                f.write(f"{item[0]}\t{item[1]}\t{item[2]}\t{item[3]}\n")
+                f.write(f"{item[0]}\t{item[1]}\t{item[2]}\t{item[3]}\t{item[4]}\t{item[5]}\n")
             f.write("\n")
         if unpaired_data:
             f.write("[Unpaired Reads]\n")
