@@ -40,7 +40,8 @@ Equipped with a number of other features, like built-in validation and seamless 
 *   HPC integration: Automatically reads HPC cluster environment variables to seamlessly scale threads and optimize performance on HPC clusters.
 *   Live progress monitoring: Features a dynamic progress tracker to accurately provide real-time feedback on processing speed, completion, and estimated time remaining.
 *   Real-time record validation: Readzor detects malformed or corrupted FASTQ records on the fly, ensuring high-quality output.
-*   Gzip compression: Compress your output files and control the compression depth  to optimize storage size.
+*   Gzip compression: Compress your output files and control the compression depth to optimize storage size.
+*   Dry-run: Perform a dry run according to specified settings, printing verbose output to screen, to catch config errors before committing to a full run.
 
 ## Input data requirements
 *  Due to the pipeline design of Readzor, it is **<ins>required</ins>** that all (paired) reads in a file are the same length. If different length reads are found, Readzor will quit and throw an error. Independent FASTQ files may have different read lengths.\
@@ -53,6 +54,7 @@ Installation of Readzor is made easy through pip and conda, but you can also clo
 ### Bioconda
 ```bash
 conda search readzor
+conda install readzor
 readzor --version
 ```
 
@@ -65,6 +67,7 @@ docker run --rm ghcr.io/abjanssen/readzor:latest --version
 ### Github 
 ```bash
 git clone https://github.com/abjanssen/Readzor.git
+pip install fuzzysearch==0.8.1
 pip install numpy==2.5.2
 pip install isal==1.8.0
 cd Readzor/src/readzor
@@ -112,10 +115,10 @@ print(Readzor.VERSION)
 % Readzor --input-files /path/to/input/files --endqual-filter-flag
 
 # Turn on adapter trimming, use its default settings
-% Readzor --input-files /path/to/input/files --adapter-trim-flag
+% Readzor --input-files /path/to/input/files --adapter-filter-flag
 
 # Or use a combination
-% Readzor --input-files /path/to/input/files --adapter-trim-flag --endqual-filter-flag
+% Readzor --input-files /path/to/input/files --adapter-filter-flag --endqual-filter-flag
 ```
 
 ### Advanced
@@ -126,14 +129,14 @@ print(Readzor.VERSION)
 % Readzor --input-files /path/to/input/files --endqual-filter-flag --endqual-min-start 25 --endqual-min-end 25
 
 # Turn on adapter trimming, add custom sequences
-% Readzor --input-files /path/to/input/files --adapter-trim-flag --adapter-fasta /path/to/fasta/file
+% Readzor --input-files /path/to/input/files --adapter-filter-flag --adapter-fasta /path/to/fasta/file
 ```
 
 ## Command line options 
 All modules are off by default. To use a module, specify a module flag. Further specifications with module settings possible.
 
 ### General settings
-`--help, -h` [FLAG]: Show this help message and exit. Combine with --full-auto/-GO for more information on fully automatic mode. Combine with --adapter-trim-flag/-af for more information on built-in adapter sequences.\
+`--help, -h` [FLAG]: Show this help message and exit. Combine with --full-auto/-GO for more information on fully automatic mode. Combine with --adapter-filter-flag/-af for more information on built-in adapter sequences.\
 `--version, -v` [FLAG]: Show Readzor version and exit.\
 `--full-auto, -GO` [FLAG]: Run Readzor in fully automatic mode. Combine with --help/-h for more information on fully automatic mode.\
 `--progress` [FLAG]: Show a live progress bar and estimated time remaining during processing, based on estimated read counts. Default: off.\
@@ -197,7 +200,7 @@ Illumina NovaSeq, NextSeq, and MiniSeq use a two-color chemistry, in which guani
 
 ### Adapter trimming
 Trim reads for Illumina adapter sequences. Standard sequences included are TruSeq3 universal and index adapters, and Nextera adapters. Only exactly matching sequences are trimmed. Adapter trimming is performed independent of quality.\
-`--adapter-trim-flag, -af`: [FLAG] Turn on adapter trimming module. Default: off.\
+`--adapter-filter-flag, -af`: [FLAG] Turn on adapter trimming module. Default: off.\
 `--adapter-mismatch, -am`: Number of mismatches allowed in adapter finding. Default: 0.\
 `--adapter-fasta-add, -ad`: FASTA file with adapter sequences to trim for, in addition to predefined sequences.\
 `--adapter-fasta-excl, -ax`: Fasta file with adapter sequences to trim for, excluding predefined and additional sequences specified.
@@ -225,8 +228,9 @@ Further options that can be specified to alter the behavior of Readzor.\
 
 ## Software version
 Readzor depends on the following software packages:
+* Fuzzysearch (version required: 0.8.1)
 * NumPy (version required: 2.5.2)
-* Python (version required: not specified)
+* Python (no version requirement)
 * Python-isal (version required: 1.8.0)
 
 Although Readzor works on older versions of Python, it has been developed and tested for best performance using version 3.14.7:

@@ -13,18 +13,19 @@ import re
 import shlex
 import shutil
 import sys
+import tempfile
 import time
 
+from fuzzysearch import find_near_matches
 from isal import igzip as gzip
 import numpy as np
-from fuzzysearch import find_near_matches
 
 ##### Definition of constant values #####
 WORKER_PARAMETERS = None
 ESTIMATED_ZIP_RATIO = {}
 ESTIMATED_READ_COUNTS = {}
 ESTIMATED_BYTE_PER_READ = {}
-VERSION = "0.1.25"
+VERSION = "0.1.26"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3_full_R1_short", "AGATCGGAAGAGCACA"), #first 16 of full seq
@@ -1512,9 +1513,9 @@ def generate_unpaired_tasks(filepaths, chunk_size, parameters):
             minimum_len = int(parameters["minimum_length_perc"] / 100 * read_length)
         else:
             minimum_len = parameters["minimum_length_abs"]
-        if parameters["maximum_length_abs"] != 0:
+        if parameters["maximum_length_abs"] is not None:
             maximum_len = parameters["maximum_length_abs"]
-        elif parameters["maximum_length_perc"] != 0:
+        elif parameters["maximum_length_perc"] is not None:
             maximum_len = int(parameters["maximum_length_perc"] / 100 * read_length)
         else:
             maximum_len = read_length
@@ -1654,10 +1655,9 @@ def generate_paired_tasks(files, chunk_size, parameters):
             minimum_length = int(parameters["minimum_length_perc"] / 100 * read_length_1)
         else:
             minimum_length = parameters["minimum_length_abs"]
-        maximum_length = parameters["maximum_length"]
-        if parameters["maximum_length_abs"] != 0:
+        if parameters["maximum_length_abs"] is not None:
             maximum_length = parameters["maximum_length_abs"]
-        elif parameters["maximum_length_perc"] != 0:
+        elif parameters["maximum_length_perc"] is not None:
             maximum_length = int(parameters["maximum_length_perc"] / 100 * read_length_1)
         else:
             maximum_length = read_length_1
@@ -1951,17 +1951,29 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
                 gzip_output=parameters["gzip_output"]
                 )
     def unified_chunk_streamer():
+        chunks_per_file = threads if parameters["dryrun"] else None
         if unpaired is not None:
             logger.info("Started processing unpaired files.")
-            yield from generate_unpaired_tasks(filepaths=unpaired, chunk_size=chunk_size, parameters=parameters)
+            for filepath in unpaired:
+                gen = generate_unpaired_tasks(filepaths=[filepath], chunk_size=chunk_size, parameters=parameters)
+                if chunks_per_file is not None:
+                    gen = itertools.islice(gen, chunks_per_file)
+                yield from gen
             logger.info("Finished processing unpaired files.")
         if paired is not None:
             logger.info("Started processing paired files.")
-            yield from generate_paired_tasks(files=paired, chunk_size=chunk_size, parameters=parameters)
+            for pair in paired:
+                gen = generate_paired_tasks(files=[pair], chunk_size=chunk_size, parameters=parameters)
+                if chunks_per_file is not None:
+                    gen = itertools.islice(gen, chunks_per_file)
+                yield from gen
             logger.info("Started processing paired files.")
+    
+    chunk_stream = unified_chunk_streamer()
+    
     try:
         with mp.Pool(threads, initializer=worker_initilizer, initargs=(parameters,)) as pool:
-            for result in pool.imap_unordered(unified_worker, unified_chunk_streamer(), chunksize=1):
+            for result in pool.imap_unordered(unified_worker, chunk_stream, chunksize=1):
                 if result[0] == "unpaired":
                     _, filepath, chunk_results, kept, rejected = result
                     if chunk_results:
@@ -2416,6 +2428,10 @@ def parse_args():
         "--phred-offset", type = int, choices=[33, 64], default = None, metavar="",
         help="Define phred offset for all FASTQ files. When set, per-file auto-detection will not be performed. Possible values: 33, 64. Default: off (auto-detection per file)."
     )
+    advanced_group.add_argument(
+        "--dryrun", action="store_true", default=False,
+        help="Perform a dry run according to specified settings. Implies --verbose. Default: off."
+    )
 
     if len(sys.argv) == 1:
         parser.print_help(sys.stderr)
@@ -2467,6 +2483,7 @@ def parse_args():
 
     # --- Store parameters ---
     parameters = {}
+    parameters["dryrun"] = args.dryrun
     parameters["full_auto"] = args.full_auto
     parameters["unspecified_files"] = args.input_files
     parameters["unpaired_files"] = args.input_unpaired
@@ -2537,7 +2554,7 @@ def parse_args():
 
     parameters["threads"] = worker_determination(parameters["threads"])
     parameters["chunk_size"] = chunk_size_setter(parameters["chunk_size"])
-
+    
     return parameters
 
 ##### Wrap up functions #####
@@ -2595,7 +2612,7 @@ def write_summary_and_statistics(summary_results, parameters, used_command, outp
             f.write("Filename\tKept\tRejected\n")
             for item in unpaired_data:
                 f.write(f"{item[0]}\t{item[1]}\t{item[2]}\n")
-
+  
 def log_parameters(parameters):
     """
     Log all run parameters to the logger, one per line, tagged [PARAMETER]
@@ -2676,6 +2693,9 @@ def main():
             except RuntimeError:
                 pass
     parameters = parse_args()
+    if parameters["dryrun"]:
+        dry_run(parameters)
+        return
     used_command = " ".join(map(shlex.quote, [sys.executable] + sys.argv))
     created_output_dir = create_folder_structure(parameters["output_dir"])
     setup_logging(output_dir = created_output_dir, verbose = parameters["verbose"], parameters = parameters)
@@ -2685,5 +2705,15 @@ def main():
     logger.info("Analysis successfully completed!")
     print_final_message()
 
+def dry_run(parameters):
+    with tempfile.TemporaryDirectory(prefix="readzor_dryrun_") as tmp_dir:
+        used_command = " ".join(map(shlex.quote, [sys.executable] + sys.argv))
+        created_output_dir = create_folder_structure(tmp_dir)
+        setup_logging(output_dir = created_output_dir, verbose = True, parameters = parameters)
+        log_parameters(parameters)
+        summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], parameters = parameters)
+        write_summary_and_statistics(summary_results, parameters, used_command, output_dir = created_output_dir)
+        logger.info("Dryrun completed!")
+    
 if __name__ == "__main__":
     main()
