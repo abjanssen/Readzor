@@ -22,8 +22,8 @@ For example, if the quality trimmer determines 5 bases should be removed from th
 *   N-base trimming from both read ends, and overall N-filtering.
 *   K-mer based Low complexity filtering.
 *   Set-length read end trimming.
-*   Overall quality threshold.
-*   Overall length threshold.
+*   Average output quality threshold.
+*   Overall length thresholds.
     
 **Auto-detection**:
 Using auto-detection methods, Readzor provides an easy-to-use platform for novice users, enabling high quality read trimming with minimal inputs.
@@ -154,8 +154,10 @@ Specify input FASTQ files using any combination of --input-files, --input-paired
 ### General quality filters
 `--min-average-qual-pre <int>`: Minimum average quality of input read. Default: 0.\
 `--min-average-qual-post <int>`: Minimum average quality of output read. Default: 0.\
-`--min-length <int>`: Minimum length of output read. Default: 0.\
-`--max-length <int>`: Maximum length of output read. Default: off.\
+`--min-length-abs <int>`: Minimum length of output read in absolute number of nucleotides. Overrides --min-length-perc when both set. Default: 0.\
+`--min-length-perc <float>`: Minimum length of output read as percentage of input read. Overridden by --min-length-abs when both set. Default: 0.\
+`--max-length-abs <int>`: Maximum length of output read in absolute number of nucleotides. Overrides --max-length-perc when both set. Default: off.\
+`--max-length-perc <float>`: Maximum length of output read as percentage of input read. Overridden by --max-length-abs when both set. Default: off.\
 `--nucl-filter` [FLAG]: Reject reads containing `N` bases anywhere in read. Default: off.
 
 ### Set-Length end trimming

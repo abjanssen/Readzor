@@ -17,17 +17,18 @@ import time
 
 from isal import igzip as gzip
 import numpy as np
+from fuzzysearch import find_near_matches
 
 ##### Definition of constant values #####
 WORKER_PARAMETERS = None
 ESTIMATED_ZIP_RATIO = {}
 ESTIMATED_READ_COUNTS = {}
 ESTIMATED_BYTE_PER_READ = {}
-VERSION = "0.1.24"
+VERSION = "0.1.25"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
-    ("TruSeq3_full_R1_short", "AGATCGGAAGAGCACACGTC"), #first 20 of full seq
-    ("TruSeq3_full_R1_short", "AGATCGGAAGAGCGTCGTGT"),  #first 20 of full seq
+    ("TruSeq3_full_R1_short", "AGATCGGAAGAGCACA"), #first 16 of full seq
+    ("TruSeq3_full_R2_short", "AGATCGGAAGAGCGTC"),  #first 16 of full seq
     ("TruSeq2", "AGATCGGAAGAGCGGTTCAG"),
     ("Nextera", "CTGTCTCTTATACACATCT"),
     ("TruSeq_small_RNA","TGGAATTCTCGGGTGCCAAGG"),
@@ -37,9 +38,9 @@ FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "f
 FIELD_SEP = b"\x1f"
 FULL_AUTO_OVERRIDES = {
     "endqual_filter_flag": True,
-    "adapter_trim_flag": True,
+    "adapter_filter_flag": True,
     "nucl_filter": True,
-    "min_length": 50,
+    "min_length_perc": 33.3,
     "gzip": True,
     "progress": True
 }
@@ -904,7 +905,7 @@ def build_pipeline(parameters):
 
     Args:
         parameters (dict): Configuration dictionary containing boolean flags 
-            (e.g., 'endqual_filter_flag', 'adapter_trim_flag') and strategy-specific 
+            (e.g., 'endqual_filter_flag', 'adapter_filter_flag') and strategy-specific 
             trimming arguments.
 
     Returns:
@@ -917,7 +918,7 @@ def build_pipeline(parameters):
         pipeline.append(lambda seq, qual: sliding_window_quality(qual, slider_quality=parameters["slider_quality"], slider_window=parameters["slider_window"], slider_step=parameters["slider_step"]))
     if parameters.get("poly_filter_flag"):
         pipeline.append(lambda seq, qual: homopolymer_nucleotide_trimming(seq, poly_length_both=parameters["poly_length_both"], poly_length_start=parameters["poly_length_start"], poly_length_end=parameters["poly_length_end"], poly_bases_both=parameters["poly_bases_both"], poly_bases_start=parameters["poly_bases_start"], poly_bases_end=parameters["poly_bases_end"]))
-    if parameters.get("adapter_trim_flag"):
+    if parameters.get("adapter_filter_flag"):
         pipeline.append(lambda seq, qual: adapter_trimming(seq, adapter_sequences=parameters["adapter_sequences"], mismatches=parameters["adapter_mismatch"]))
     if parameters.get("cut_flag"):
         pipeline.append(lambda seq, qual: cut_set_ends(seq, cut_both=parameters["cut_both"], cut_start=parameters["cut_start"], cut_end=parameters["cut_end"]))
@@ -1269,8 +1270,8 @@ def adapter_trimming(sequence_arr, adapter_sequences, mismatches):
     """
     n_reads, length = sequence_arr.shape
     right_cutoffs = np.full(n_reads, length, dtype=np.int16)
+    all_bytes = memoryview(sequence_arr).tobytes()
     if mismatches == 0:
-        all_bytes = memoryview(sequence_arr).tobytes()
         for i in range(n_reads):
             row_bytes = all_bytes[i*length:(i+1)*length]
             best = length
@@ -1280,27 +1281,17 @@ def adapter_trimming(sequence_arr, adapter_sequences, mismatches):
                     best = pos
             right_cutoffs[i] = best
     else:
-        for adapter_bytes in adapter_sequences:
-            adapter = np.frombuffer(adapter_bytes, dtype=np.uint8)
-            adapter_len = len(adapter)
-            n_positions = length - adapter_len + 1
-            if n_positions <= 0:
-                continue
-            adapter_is_n = (adapter == ord('N'))
-            for pos in range(n_positions):
-                window = sequence_arr[:, pos:pos+adapter_len]
-                read_is_n = (window == ord('N'))
-                wildcard = read_is_n | adapter_is_n[None, :]
-                mismatch_count = np.sum(
-                    (window != adapter[None, :]) & ~wildcard, axis=1
-                )
-                hits = mismatch_count <= mismatches
-                if hits.any():
-                    idx = np.flatnonzero(hits)
-                    better = right_cutoffs[idx] > pos
-                    right_cutoffs[idx[better]] = pos
+        for i in range(n_reads):
+            best = length
+            row_bytes = all_bytes[i*length:(i+1)*length]
+            for adapter_bytes in adapter_sequences:
+                matches = find_near_matches(adapter_bytes, row_bytes, max_substitutions=mismatches, max_insertions=0, max_deletions=0)
+                for matched in matches:
+                    if matched.start < best:
+                        best = matched.start
+            right_cutoffs[i] = best
     return np.zeros(n_reads, dtype=np.int16), right_cutoffs
-
+    
 def average_quality_batch(quality_arr, lefts, rights):
     """
     Computes the mean quality score within a per-read [left, right) window,
@@ -1517,9 +1508,15 @@ def generate_unpaired_tasks(filepaths, chunk_size, parameters):
         logger.info("%s: read length of %s detected.", os.path.basename(filepath), read_length)
         logger.info("%s: bytes per read: %s.", os.path.basename(filepath), ESTIMATED_BYTE_PER_READ[filepath])
         logger.info("%s: (estimated) read count: %s.", os.path.basename(filepath), ESTIMATED_READ_COUNTS.get(filepath, "unknown"))
-        minimum_len = parameters["minimum_length"]
-        maximum_len = parameters["maximum_length"]
-        if maximum_len is None:
+        if parameters["minimum_length_abs"] == 0:
+            minimum_len = int(parameters["minimum_length_perc"] / 100 * read_length)
+        else:
+            minimum_len = parameters["minimum_length_abs"]
+        if parameters["maximum_length_abs"] != 0:
+            maximum_len = parameters["maximum_length_abs"]
+        elif parameters["maximum_length_perc"] != 0:
+            maximum_len = int(parameters["maximum_length_perc"] / 100 * read_length)
+        else:
             maximum_len = read_length
         reads_iter = lazy_fastq(filepath)
         chunk_number = 0
@@ -1653,9 +1650,16 @@ def generate_paired_tasks(files, chunk_size, parameters):
                 file1, file2, phred_offset_1, phred_offset_2, read_length_1, read_length_2
             )
             continue
-        minimum_length = parameters["minimum_length"]
+        if parameters["minimum_length_abs"] == 0:
+            minimum_length = int(parameters["minimum_length_perc"] / 100 * read_length_1)
+        else:
+            minimum_length = parameters["minimum_length_abs"]
         maximum_length = parameters["maximum_length"]
-        if maximum_length is None:
+        if parameters["maximum_length_abs"] != 0:
+            maximum_length = parameters["maximum_length_abs"]
+        elif parameters["maximum_length_perc"] != 0:
+            maximum_length = int(parameters["maximum_length_perc"] / 100 * read_length_1)
+        else:
             maximum_length = read_length_1
         reads_iter_1 = lazy_fastq(file1)
         reads_iter_2 = lazy_fastq(file2)
@@ -1947,12 +1951,14 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
                 gzip_output=parameters["gzip_output"]
                 )
     def unified_chunk_streamer():
-        logger.info("Started processing unpaired files.")
-        yield from generate_unpaired_tasks(filepaths=unpaired, chunk_size=chunk_size, parameters=parameters)
-        logger.info("Finished processing unpaired files.")
-        logger.info("Started processing paired files.")
-        yield from generate_paired_tasks(files=paired, chunk_size=chunk_size, parameters=parameters)
-        logger.info("Started processing paired files.")
+        if unpaired is not None:
+            logger.info("Started processing unpaired files.")
+            yield from generate_unpaired_tasks(filepaths=unpaired, chunk_size=chunk_size, parameters=parameters)
+            logger.info("Finished processing unpaired files.")
+        if paired is not None:
+            logger.info("Started processing paired files.")
+            yield from generate_paired_tasks(files=paired, chunk_size=chunk_size, parameters=parameters)
+            logger.info("Started processing paired files.")
     try:
         with mp.Pool(threads, initializer=worker_initilizer, initargs=(parameters,)) as pool:
             for result in pool.imap_unordered(unified_worker, unified_chunk_streamer(), chunksize=1):
@@ -2220,12 +2226,20 @@ def parse_args():
         help="Minimum average quality of output read. Default: 0."
     )
     general_quality_group.add_argument(
-        "--min-length", type=int, default = 0, metavar = "", 
-        help="Minimum length of output read. Note: raw read lengths may be n+1, for example: a 150 bp will probably have yielded 151 bp reads. Default: 0."
+        "--min-length-abs", type=int, default = 0, metavar = "", 
+        help="Minimum length of output read in absolute number of nucleotides. Note: raw read lengths may be n+1, for example: a 150 bp will probably have yielded 151 bp reads. Overrides --min-length-perc when both set. Default: 0."
     )
     general_quality_group.add_argument(
-        "--max-length", type = int, default = None, metavar = "", 
-        help="Maximum length of output read. Default: off."
+        "--min-length-perc", type=float, default = 0.0, metavar = "", 
+        help="Minimum length of output read as percentage of input read. Note: raw read lengths may be n+1, for example: a 150 bp will probably have yielded 151 bp reads. Overridden by --min-length-abs when both set. Default: 0."
+    )
+    general_quality_group.add_argument(
+        "--max-length-abs", type = int, default = None, metavar = "", 
+        help="Maximum length of output read in absolute number of nucleotides. Overrides --max-length-perc when both set. Default: off."
+    )
+    general_quality_group.add_argument(
+        "--max-length-perc", type = float, default = None, metavar = "", 
+        help="Maximum length of output read as percentage of input read. Overridden by --max-length-abs when both set. Default: off."
     )
     general_quality_group.add_argument(
         "--nucl-filter", action="store_true", default=False,
@@ -2331,7 +2345,7 @@ def parse_args():
     adapter_trimming = parser.add_argument_group("Adapter trimming",
                                                  "Trim reads for Illumina adapter sequences. Standard sequences included are TruSeq3 universal and index adapters, and Nextera adapters. Only exactly matching sequences are trimmed. Adapter trimming is performed independent of quality.")
     adapter_trimming.add_argument(
-        "--adapter-trim-flag", "-af", action="store_true", default = False,
+        "--adapter-filter-flag", "-af", action="store_true", default = False,
         help='[FLAG] Turn on adapter trimming module. Default: off.'
     )
     adapter_trimming.add_argument(
@@ -2457,8 +2471,10 @@ def parse_args():
     parameters["unspecified_files"] = args.input_files
     parameters["unpaired_files"] = args.input_unpaired
     parameters["paired_files"] = group_paired_input_into_pairs(files = args.input_paired, parser = parser)
-    parameters["minimum_length"] = args.min_length
-    parameters["maximum_length"] = args.max_length
+    parameters["minimum_length_abs"] = args.min_length_abs
+    parameters["minimum_length_perc"] = args.min_length_perc
+    parameters["maximum_length_abs"] = args.max_length_abs
+    parameters["maximum_length_perc"] = args.max_length_perc
     parameters["min_quality_both"] = args.endqual_min_both
     parameters["endqual_min_start"] = args.endqual_min_start
     parameters["endqual_min_end"] = args.endqual_min_end
@@ -2474,7 +2490,7 @@ def parse_args():
     parameters["gzip_output"] = args.gzip
     parameters["gzip_level"] = args.gzip_level
     parameters["reads_for_phred_offset"] = args.reads_for_phred_offset
-    parameters["adapter_trim_flag"] = args.adapter_trim_flag
+    parameters["adapter_filter_flag"] = args.adapter_filter_flag
     parameters["adapter_fasta_add"] = args.adapter_fasta_add
     parameters["adapter_fasta_excl"] = args.adapter_fasta_excl
     parameters["nucl_filter"] = args.nucl_filter
@@ -2508,7 +2524,7 @@ def parse_args():
     if parameters["nucl_filter"]:
         parameters["n_trimming_flag"] = False
 
-    if parameters.get("adapter_trim_flag"):
+    if parameters.get("adapter_filter_flag"):
         if parameters.get("adapter_fasta_excl"):
             raw_adapters = load_adapters_from_fasta(parameters["adapter_fasta_excl"])
         elif parameters.get("adapter_fasta_add"):
