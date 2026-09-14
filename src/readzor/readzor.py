@@ -25,7 +25,7 @@ WORKER_PARAMETERS = None
 ESTIMATED_ZIP_RATIO = {}
 ESTIMATED_READ_COUNTS = {}
 ESTIMATED_BYTE_PER_READ = {}
-VERSION = "0.1.26"
+VERSION = "0.1.27"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3_full_R1_short", "AGATCGGAAGAGCACA"), #first 16 of full seq
@@ -48,6 +48,14 @@ FULL_AUTO_OVERRIDES = {
 NUCL_ATCG = b"ATCG"
 NUCL_ATCGN = b"ATCGN"
 ACTIVE_PROGRESS_TRACKER = None
+PHRED64_TO_33 = bytes.maketrans(
+    bytes(range(59, 127)),
+    bytes(max(33, b - 31) for b in range(59, 127))
+)
+PHRED33_TO_64 = bytes.maketrans(
+    bytes(range(33, 127)),
+    bytes(min(126, b + 31) for b in range(33, 127))
+)
 
 ##### Logging #####
 logger = logging.getLogger("readzor")
@@ -1453,20 +1461,29 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
         length_mask = np.ones(n_reads, dtype=bool)
     else:
         lengths_out = rights - lefts
-        length_mask = (lengths_out <= maximum_length) & (lengths_out >= minimum_length)
+        length_mask = (lengths_out <= maximum_length) & (lengths_out >= minimum_length) & (lengths_out > 0)
     if minimum_average_qual_post > 0:
         average_quals = average_quality_batch(quality_arr, lefts, rights)
         qual_mask = average_quals >= minimum_average_qual_post
     else:
         qual_mask = np.ones(n_reads, dtype=bool)
     keep_mask = length_mask & qual_mask
+    if parameters["phred_out"] == 33 and phred_offset == 64:
+        qual_table = PHRED64_TO_33
+    elif parameters["phred_out"] == 64 and phred_offset == 33:
+        qual_table = PHRED33_TO_64
+    else:
+        qual_table = None
     results = []
     for header, sequence, plus_line, quality, left, right, keep in zip(
             valid_headers, valid_sequences, valid_pluses, valid_qualities, lefts, rights, keep_mask):
         if not keep:
             rejected += 1
             continue
-        results.append(b"\n".join((header, sequence[left:right], plus_line, quality[left:right])) + b"\n")
+        qual_out = quality[left:right]
+        if qual_table is not None:
+            qual_out = qual_out.translate(qual_table)
+        results.append(b"\n".join((header, sequence[left:right], plus_line, qual_out)) + b"\n")
     len_results = len(results)
     results = b"".join(results)
     if gzip_output:
@@ -1738,7 +1755,7 @@ def trim_reads(records, phred_offset, minimum_length, maximum_length, read_lengt
         else:
             rejected += 1
     if not valid_headers:
-        return {}, len(records) // 4
+        return {}, len(records)
     if parameters["mgi_convert_flag"]:
         valid_pluses = [plus + b"_OriginalHeader:" + header for plus, header in zip(valid_pluses, valid_headers)]
         valid_headers = [header_mgi_to_illumina(header, parameters["mgi_bc5"], parameters["mgi_bc7"], parameters["mgi_instrument"], parameters["mgi_run"]) for header in valid_headers]
@@ -1756,13 +1773,19 @@ def trim_reads(records, phred_offset, minimum_length, maximum_length, read_lengt
         length_mask = np.ones(sequence_arr.shape[0], dtype=bool)
     else:
         lengths_out = rights - lefts
-        length_mask = (lengths_out <= maximum_length) & (lengths_out >= minimum_length)
+        length_mask = (lengths_out <= maximum_length) & (lengths_out >= minimum_length) & (lengths_out > 0)
     if minimum_average_qual_post > 0:
         avg_quals = average_quality_batch(quality_arr, lefts, rights)
         qual_mask = avg_quals >= minimum_average_qual_post
     else:
         qual_mask = np.ones(sequence_arr.shape[0], dtype=bool)
     keep_mask = length_mask & qual_mask
+    if parameters["phred_out"] == 33 and phred_offset == 64:
+        qual_table = PHRED64_TO_33
+    elif parameters["phred_out"] == 64 and phred_offset == 33:
+        qual_table = PHRED33_TO_64
+    else:
+        qual_table = None
     survivors = {}
     for i, keep in enumerate(keep_mask):
         if not keep:
@@ -1771,10 +1794,12 @@ def trim_reads(records, phred_offset, minimum_length, maximum_length, read_lengt
         left, right = int(lefts[i]), int(rights[i])
         seq_out = valid_sequences[i][left:right]
         qual_out = valid_qualities[i][left:right]
+        if qual_table is not None:
+            qual_out = qual_out.translate(qual_table)
         base_id, _ = read_info_from_header(valid_headers[i])
         survivors[base_id] = b"\n".join((valid_headers[i], seq_out, valid_pluses[i], qual_out)) + b"\n"
     return survivors, rejected
-
+        
 def process_paired_chunk(chunks, phred_offset, read_length, minimum_length, maximum_length, gzip_output, gzip_level, parameters):
     """
     Trims and filters one paired chunk of R1/R2 reads, then reconciles the
@@ -1951,7 +1976,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
                 gzip_output=parameters["gzip_output"]
                 )
     def unified_chunk_streamer():
-        chunks_per_file = threads if parameters["dryrun"] else None
+        chunks_per_file = threads if parameters["testrun"] else None
         if unpaired is not None:
             logger.info("Started processing unpaired files.")
             for filepath in unpaired:
@@ -1973,7 +1998,8 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
     
     try:
         with mp.Pool(threads, initializer=worker_initilizer, initargs=(parameters,)) as pool:
-            for result in pool.imap_unordered(unified_worker, chunk_stream, chunksize=1):
+            submit = pool.imap if parameters["ordered_output"] else pool.imap_unordered
+            for result in submit(unified_worker, chunk_stream, chunksize=1):
                 if result[0] == "unpaired":
                     _, filepath, chunk_results, kept, rejected = result
                     if chunk_results:
@@ -2429,10 +2455,18 @@ def parse_args():
         help="Define phred offset for all FASTQ files. When set, per-file auto-detection will not be performed. Possible values: 33, 64. Default: off (auto-detection per file)."
     )
     advanced_group.add_argument(
-        "--dryrun", action="store_true", default=False,
-        help="Perform a dry run according to specified settings. Implies --verbose. Default: off."
+        "--testrun", action="store_true", default=False,
+        help="Perform a test run according to specified settings. Implies --verbose. Default: off."
     )
-
+    advanced_group.add_argument(
+        "--ordered-output", action="store_true", default=False,
+        help="[FLAG] Force writing output reads in the same order they appear in the input file. Default: off."
+    )
+    advanced_group.add_argument(
+        "--phred-out", type=int, choices=[33, 64], default=None, metavar="",
+        help="Convert Phred encoding from 33 to 64, and vice versa. Possible values: 33, 64. Default: off."
+    )
+    
     if len(sys.argv) == 1:
         parser.print_help(sys.stderr)
         sys.exit(1)
@@ -2483,7 +2517,7 @@ def parse_args():
 
     # --- Store parameters ---
     parameters = {}
-    parameters["dryrun"] = args.dryrun
+    parameters["testrun"] = args.testrun
     parameters["full_auto"] = args.full_auto
     parameters["unspecified_files"] = args.input_files
     parameters["unpaired_files"] = args.input_unpaired
@@ -2537,7 +2571,9 @@ def parse_args():
     parameters["show_progress"] = args.progress
     parameters["verbose"] = args.verbose
     parameters["adapter_mismatch"] = args.adapter_mismatch
-
+    parameters["ordered_output"] = args.ordered_output
+    parameters["phred_out"] = args.phred_out
+    
     if parameters["nucl_filter"]:
         parameters["n_trimming_flag"] = False
 
@@ -2693,7 +2729,7 @@ def main():
             except RuntimeError:
                 pass
     parameters = parse_args()
-    if parameters["dryrun"]:
+    if parameters["testrun"]:
         dry_run(parameters)
         return
     used_command = " ".join(map(shlex.quote, [sys.executable] + sys.argv))
@@ -2706,14 +2742,14 @@ def main():
     print_final_message()
 
 def dry_run(parameters):
-    with tempfile.TemporaryDirectory(prefix="readzor_dryrun_") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="readzor_testrun_") as tmp_dir:
         used_command = " ".join(map(shlex.quote, [sys.executable] + sys.argv))
         created_output_dir = create_folder_structure(tmp_dir)
         setup_logging(output_dir = created_output_dir, verbose = True, parameters = parameters)
         log_parameters(parameters)
         summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], parameters = parameters)
         write_summary_and_statistics(summary_results, parameters, used_command, output_dir = created_output_dir)
-        logger.info("Dryrun completed!")
+        logger.info("testrun completed!")
     
 if __name__ == "__main__":
     main()

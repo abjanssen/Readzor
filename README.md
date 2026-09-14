@@ -224,7 +224,10 @@ Further options that can be specified to alter the behavior of Readzor.\
 `--threads, -t`: Number of threads to use. Default: platform-dependent through auto-detection (assigned CPUs on HPC cluster systems, all-1 otherwise. Fallback: 1).\
 `--reads-for-phred-offset`: Number of reads to sample per file for detection of Phred quality encoding offset. Default: 500.\
 `--chunk-size`: Number of reads per chunk sent to each worker. Default: platform-dependent (empiricallyset to 20,000 for HPC cluster systems, 1000 otherwise). Default: 1000.\
-`--phred-offset`: Define phred offset for all FASTQ files. When set, per-file auto-detection will not be performed. Possible values: 33, 64. Default: off (auto-detection per file).
+`--phred-offset`: Define phred offset for all FASTQ files. When set, per-file auto-detection will not be performed. Possible values: 33, 64. Default: off (auto-detection per file). \
+`--testrun`: Perform a limited test run according to specified settings. Implies --verbose. Default: off. \
+`--ordered-output`: [FLAG] Force writing output reads in the same order they appear in the input file. Default: off. \
+`--phred-out`: Convert Phred encoding from 33 to 64, and vice versa. Possible values: 33, 64. Default: off. \
 
 ## Software version
 Readzor depends on the following software packages:
