@@ -117,8 +117,12 @@ def setup_logging(output_dir=None, verbose = False, parameters = None):
         logger.info("Command used: %s", used_command)
         if parameters["full_auto"]:
             logger.warning("--full-auto/-GO specified; ignoring all other input parameters (except input file parameters).")
-        logger.info("Output directory created at %s", output_dir)
-        logger.info("Log file initialized at %s", log_path)
+        if parameters["testrun"]:
+            logger.info("Testrun output directory temporarily created at %s", output_dir)
+            logger.info("Testrun log file temporarily initialized at %s", log_path)
+        else:
+            logger.info("Output directory created at %s", output_dir)
+            logger.info("Log file initialized at %s", log_path)
         file_only_logger.setLevel(logging.DEBUG)
         file_only_logger.propagate = False
         file_only_logger.addHandler(file_handler)
@@ -1256,22 +1260,20 @@ def sliding_window_quality(quality_arr, slider_quality, slider_window, slider_st
 def adapter_trimming(sequence_arr, adapter_sequences, mismatches):
     """
     Determines per-read trim boundaries to remove specific adapter sequences.
-    Detects adapter read-through from the end of each read.
     For each read, finds the earliest position where any provided adapter
     sequence appears (as an exact substring if mismatches <= 0, or as an
     approximate match allowing up to `mismatches` substitutions if
     mismatches > 0, via vectorized Hamming-distance search), and trims the
-    read at that position. 'N' in either the adapter or the read is treated
-    as a wildcard matching any of A/T/C/G/N.
+    read at that position. 
     Args:
         sequence_arr (numpy.ndarray): (n_reads, read_length) array of
             per-base ASCII sequence codes (uint8).
         adapter_sequences (list[bytes]): List of adapter byte-sequences to
-            search for. May contain 'N' as a wildcard base.
+            search for. 
         mismatches (int): Number of allowed mismatches (substitutions) when
-            searching for adapters. If <= 0, uses exact substring matching.
+            searching for adapters. If = 0, uses exact substring matching.
             If > 0, uses vectorized Hamming-distance fuzzy matching
-            (substitutions only, no indels) with 'N' wildcard support.
+            (substitutions only, no indels).
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
             each of shape (n_reads,) and dtype int16, giving the left and right
@@ -1992,7 +1994,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
                 if chunks_per_file is not None:
                     gen = itertools.islice(gen, chunks_per_file)
                 yield from gen
-            logger.info("Started processing paired files.")
+            logger.info("Finished processing paired files.")
     
     chunk_stream = unified_chunk_streamer()
     
@@ -2440,7 +2442,7 @@ def parse_args():
                                                "Further options that can be specified to alter the behaviour of Readzor.")
     advanced_group.add_argument(
         "--threads", "-t", type = int, default = None, metavar="",
-        help="Number of threads to use (defaults: platform-dependent through auto-detection: detection of assigned CPUs on Slurm-managed systems, all-1 otherwise. Fallback: 1."
+        help="Number of threads to use. Default: platform-dependent through auto-detection: detection of assigned CPUs on HPC clusters, all-1 otherwise. Fallback: 1."
     )
     advanced_group.add_argument(
         "--reads-for-phred-offset", type = int, default = 500, metavar="",
@@ -2448,7 +2450,7 @@ def parse_args():
     )
     advanced_group.add_argument(
         "--chunk-size", type=int, default = None, metavar="",
-        help="Number of reads per chunk sent to each worker thread. Note: empirically set at 1000, changing can alter processing speed. Default: 1000."
+        help="Number of reads per chunk sent to each worker thread. Note: empirically set to either 20000 (for HPC clusters), or 1000, for optimal performance. Changing can alter processing speed. Default: 1000."
     )
     advanced_group.add_argument(
         "--phred-offset", type = int, choices=[33, 64], default = None, metavar="",
@@ -2456,7 +2458,7 @@ def parse_args():
     )
     advanced_group.add_argument(
         "--testrun", action="store_true", default=False,
-        help="Perform a test run according to specified settings. Implies --verbose. Default: off."
+        help="[FLAG] Perform a test run according to specified settings. Implies --verbose. Default: off."
     )
     advanced_group.add_argument(
         "--ordered-output", action="store_true", default=False,
@@ -2557,7 +2559,7 @@ def parse_args():
     parameters["kmer_filter_flag"] = args.kmer_filter_flag
     parameters["kmer_size"] = args.kmer_size
     parameters["kmer_cutoff"] = args.kmer_cutoff
-    parameters["allow_n_kmer"] = args.nucl_filter
+    parameters["allow_n_kmer"] = not args.nucl_filter
     parameters["cut_flag"] = args.cut_flag
     parameters["endqual_filter_flag"] = args.endqual_filter_flag
     parameters["slider_filter_flag"] = args.slider_filter_flag
@@ -2730,7 +2732,7 @@ def main():
                 pass
     parameters = parse_args()
     if parameters["testrun"]:
-        dry_run(parameters)
+        test_run(parameters)
         return
     used_command = " ".join(map(shlex.quote, [sys.executable] + sys.argv))
     created_output_dir = create_folder_structure(parameters["output_dir"])
@@ -2741,7 +2743,7 @@ def main():
     logger.info("Analysis successfully completed!")
     print_final_message()
 
-def dry_run(parameters):
+def test_run(parameters):
     with tempfile.TemporaryDirectory(prefix="readzor_testrun_") as tmp_dir:
         used_command = " ".join(map(shlex.quote, [sys.executable] + sys.argv))
         created_output_dir = create_folder_structure(tmp_dir)
@@ -2749,7 +2751,8 @@ def dry_run(parameters):
         log_parameters(parameters)
         summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], parameters = parameters)
         write_summary_and_statistics(summary_results, parameters, used_command, output_dir = created_output_dir)
-        logger.info("testrun completed!")
+        logger.info("All files deleted.")
+        logger.info("Testrun completed!")
     
 if __name__ == "__main__":
     main()

@@ -225,8 +225,8 @@ Further options that can be specified to alter the behavior of Readzor.\
 `--reads-for-phred-offset`: Number of reads to sample per file for detection of Phred quality encoding offset. Default: 500.\
 `--chunk-size`: Number of reads per chunk sent to each worker. Default: platform-dependent (empiricallyset to 20,000 for HPC cluster systems, 1000 otherwise). Default: 1000.\
 `--phred-offset`: Define phred offset for all FASTQ files. When set, per-file auto-detection will not be performed. Possible values: 33, 64. Default: off (auto-detection per file). \
-`--testrun`: Perform a limited test run according to specified settings. Implies --verbose. Default: off. \
-`--ordered-output`: [FLAG] Force writing output reads in the same order they appear in the input file. Default: off. \
+`--testrun`: [FLAG] Perform a limited test run according to specified settings. Also sets --verbose. Default: off. \
+`--ordered-output`: [FLAG] Force writing output reads in the same order as the input reads, with the exception of filtered reads. Default: off. \
 `--phred-out`: Convert Phred encoding from 33 to 64, and vice versa. Possible values: 33, 64. Default: off. \
 
 ## Software version
