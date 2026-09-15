@@ -15,6 +15,7 @@ import shutil
 import sys
 import tempfile
 import time
+import threading
 
 from fuzzysearch import find_near_matches
 from isal import igzip as gzip
@@ -25,7 +26,7 @@ WORKER_PARAMETERS = None
 ESTIMATED_ZIP_RATIO = {}
 ESTIMATED_READ_COUNTS = {}
 ESTIMATED_BYTE_PER_READ = {}
-VERSION = "0.1.27"
+VERSION = "0.1.28"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ("TruSeq3_full_R1_short", "AGATCGGAAGAGCACA"), #first 16 of full seq
@@ -1997,11 +1998,18 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
             logger.info("Finished processing paired files.")
     
     chunk_stream = unified_chunk_streamer()
-    
+
+    backpressure = threading.Semaphore(threads * 5)
+    def bounded_chunk_stream():
+        for item in chunk_stream:
+            backpressure.acquire()
+            yield item
+
     try:
         with mp.Pool(threads, initializer=worker_initilizer, initargs=(parameters,)) as pool:
             submit = pool.imap if parameters["ordered_output"] else pool.imap_unordered
-            for result in submit(unified_worker, chunk_stream, chunksize=1):
+            for result in submit(unified_worker, bounded_chunk_stream(), chunksize=1):
+                backpressure.release()
                 if result[0] == "unpaired":
                     _, filepath, chunk_results, kept, rejected = result
                     if chunk_results:
