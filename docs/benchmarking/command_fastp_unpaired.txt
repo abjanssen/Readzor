@@ -1,0 +1,13 @@
+fastp -i SRR2052337_1.fastq.gz  \
+      -o output_1.fastq.gz \
+      --cut_front --cut_front_window_size 1 --cut_front_mean_quality 25 \
+      --cut_tail --cut_tail_window_size 1 --cut_tail_mean_quality 25 --n_base_limit 50 \
+      --length_required 50 --disable_quality_filtering --disable_trim_poly_g \
+      -j fastp_1.json -h fastp_1.html --thread [THREAD_COUNT]
+
+fastp -i SRR2052337_2.fastq.gz  \
+      -o output_2.fastq.gz \
+      --cut_front --cut_front_window_size 1 --cut_front_mean_quality 25 \
+      --cut_tail --cut_tail_window_size 1 --cut_tail_mean_quality 25 --n_base_limit 50 \
+      --length_required 50 --disable_quality_filtering --disable_trim_poly_g \
+      -j fastp_2.json -h fastp_2.html --thread [THREAD_COUNT]

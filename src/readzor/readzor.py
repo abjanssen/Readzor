@@ -13,8 +13,11 @@ import re
 import shlex
 import shutil
 import sys
+import tempfile
 import time
+import threading
 
+from fuzzysearch import find_near_matches
 from isal import igzip as gzip
 import numpy as np
 
@@ -23,11 +26,11 @@ WORKER_PARAMETERS = None
 ESTIMATED_ZIP_RATIO = {}
 ESTIMATED_READ_COUNTS = {}
 ESTIMATED_BYTE_PER_READ = {}
-VERSION = "0.1.22"
+VERSION = "0.1.28"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
-    ("TruSeq3_full_R1_short", "AGATCGGAAGAGCACACGTC"), #first 20 of full seq
-    ("TruSeq3_full_R1_short", "AGATCGGAAGAGCGTCGTGT"),  #first 20 of full seq
+    ("TruSeq3_full_R1_short", "AGATCGGAAGAGCACA"), #first 16 of full seq
+    ("TruSeq3_full_R2_short", "AGATCGGAAGAGCGTC"),  #first 16 of full seq
     ("TruSeq2", "AGATCGGAAGAGCGGTTCAG"),
     ("Nextera", "CTGTCTCTTATACACATCT"),
     ("TruSeq_small_RNA","TGGAATTCTCGGGTGCCAAGG"),
@@ -37,14 +40,23 @@ FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "f
 FIELD_SEP = b"\x1f"
 FULL_AUTO_OVERRIDES = {
     "endqual_filter_flag": True,
-    "adapter_trim_flag": True,
+    "adapter_filter_flag": True,
     "nucl_filter": True,
+    "min_length_perc": 33.3,
     "gzip": True,
     "progress": True
 }
 NUCL_ATCG = b"ATCG"
 NUCL_ATCGN = b"ATCGN"
 ACTIVE_PROGRESS_TRACKER = None
+PHRED64_TO_33 = bytes.maketrans(
+    bytes(range(59, 127)),
+    bytes(max(33, b - 31) for b in range(59, 127))
+)
+PHRED33_TO_64 = bytes.maketrans(
+    bytes(range(33, 127)),
+    bytes(min(126, b + 31) for b in range(33, 127))
+)
 
 ##### Logging #####
 logger = logging.getLogger("readzor")
@@ -106,8 +118,12 @@ def setup_logging(output_dir=None, verbose = False, parameters = None):
         logger.info("Command used: %s", used_command)
         if parameters["full_auto"]:
             logger.warning("--full-auto/-GO specified; ignoring all other input parameters (except input file parameters).")
-        logger.info("Output directory created at %s", output_dir)
-        logger.info("Log file initialized at %s", log_path)
+        if parameters["testrun"]:
+            logger.info("Testrun output directory temporarily created at %s", output_dir)
+            logger.info("Testrun log file temporarily initialized at %s", log_path)
+        else:
+            logger.info("Output directory created at %s", output_dir)
+            logger.info("Log file initialized at %s", log_path)
         file_only_logger.setLevel(logging.DEBUG)
         file_only_logger.propagate = False
         file_only_logger.addHandler(file_handler)
@@ -903,7 +919,7 @@ def build_pipeline(parameters):
 
     Args:
         parameters (dict): Configuration dictionary containing boolean flags 
-            (e.g., 'endqual_filter_flag', 'adapter_trim_flag') and strategy-specific 
+            (e.g., 'endqual_filter_flag', 'adapter_filter_flag') and strategy-specific 
             trimming arguments.
 
     Returns:
@@ -916,7 +932,7 @@ def build_pipeline(parameters):
         pipeline.append(lambda seq, qual: sliding_window_quality(qual, slider_quality=parameters["slider_quality"], slider_window=parameters["slider_window"], slider_step=parameters["slider_step"]))
     if parameters.get("poly_filter_flag"):
         pipeline.append(lambda seq, qual: homopolymer_nucleotide_trimming(seq, poly_length_both=parameters["poly_length_both"], poly_length_start=parameters["poly_length_start"], poly_length_end=parameters["poly_length_end"], poly_bases_both=parameters["poly_bases_both"], poly_bases_start=parameters["poly_bases_start"], poly_bases_end=parameters["poly_bases_end"]))
-    if parameters.get("adapter_trim_flag"):
+    if parameters.get("adapter_filter_flag"):
         pipeline.append(lambda seq, qual: adapter_trimming(seq, adapter_sequences=parameters["adapter_sequences"], mismatches=parameters["adapter_mismatch"]))
     if parameters.get("cut_flag"):
         pipeline.append(lambda seq, qual: cut_set_ends(seq, cut_both=parameters["cut_both"], cut_start=parameters["cut_start"], cut_end=parameters["cut_end"]))
@@ -1245,22 +1261,20 @@ def sliding_window_quality(quality_arr, slider_quality, slider_window, slider_st
 def adapter_trimming(sequence_arr, adapter_sequences, mismatches):
     """
     Determines per-read trim boundaries to remove specific adapter sequences.
-    Detects adapter read-through from the end of each read.
     For each read, finds the earliest position where any provided adapter
     sequence appears (as an exact substring if mismatches <= 0, or as an
     approximate match allowing up to `mismatches` substitutions if
     mismatches > 0, via vectorized Hamming-distance search), and trims the
-    read at that position. 'N' in either the adapter or the read is treated
-    as a wildcard matching any of A/T/C/G/N.
+    read at that position. 
     Args:
         sequence_arr (numpy.ndarray): (n_reads, read_length) array of
             per-base ASCII sequence codes (uint8).
         adapter_sequences (list[bytes]): List of adapter byte-sequences to
-            search for. May contain 'N' as a wildcard base.
+            search for. 
         mismatches (int): Number of allowed mismatches (substitutions) when
-            searching for adapters. If <= 0, uses exact substring matching.
+            searching for adapters. If = 0, uses exact substring matching.
             If > 0, uses vectorized Hamming-distance fuzzy matching
-            (substitutions only, no indels) with 'N' wildcard support.
+            (substitutions only, no indels).
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
             each of shape (n_reads,) and dtype int16, giving the left and right
@@ -1268,8 +1282,8 @@ def adapter_trimming(sequence_arr, adapter_sequences, mismatches):
     """
     n_reads, length = sequence_arr.shape
     right_cutoffs = np.full(n_reads, length, dtype=np.int16)
+    all_bytes = memoryview(sequence_arr).tobytes()
     if mismatches == 0:
-        all_bytes = memoryview(sequence_arr).tobytes()
         for i in range(n_reads):
             row_bytes = all_bytes[i*length:(i+1)*length]
             best = length
@@ -1279,27 +1293,17 @@ def adapter_trimming(sequence_arr, adapter_sequences, mismatches):
                     best = pos
             right_cutoffs[i] = best
     else:
-        for adapter_bytes in adapter_sequences:
-            adapter = np.frombuffer(adapter_bytes, dtype=np.uint8)
-            adapter_len = len(adapter)
-            n_positions = length - adapter_len + 1
-            if n_positions <= 0:
-                continue
-            adapter_is_n = (adapter == ord('N'))
-            for pos in range(n_positions):
-                window = sequence_arr[:, pos:pos+adapter_len]
-                read_is_n = (window == ord('N'))
-                wildcard = read_is_n | adapter_is_n[None, :]
-                mismatch_count = np.sum(
-                    (window != adapter[None, :]) & ~wildcard, axis=1
-                )
-                hits = mismatch_count <= mismatches
-                if hits.any():
-                    idx = np.flatnonzero(hits)
-                    better = right_cutoffs[idx] > pos
-                    right_cutoffs[idx[better]] = pos
+        for i in range(n_reads):
+            best = length
+            row_bytes = all_bytes[i*length:(i+1)*length]
+            for adapter_bytes in adapter_sequences:
+                matches = find_near_matches(adapter_bytes, row_bytes, max_substitutions=mismatches, max_insertions=0, max_deletions=0)
+                for matched in matches:
+                    if matched.start < best:
+                        best = matched.start
+            right_cutoffs[i] = best
     return np.zeros(n_reads, dtype=np.int16), right_cutoffs
-
+    
 def average_quality_batch(quality_arr, lefts, rights):
     """
     Computes the mean quality score within a per-read [left, right) window,
@@ -1460,20 +1464,29 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_length, maximum_length, 
         length_mask = np.ones(n_reads, dtype=bool)
     else:
         lengths_out = rights - lefts
-        length_mask = (lengths_out <= maximum_length) & (lengths_out >= minimum_length)
+        length_mask = (lengths_out <= maximum_length) & (lengths_out >= minimum_length) & (lengths_out > 0)
     if minimum_average_qual_post > 0:
         average_quals = average_quality_batch(quality_arr, lefts, rights)
         qual_mask = average_quals >= minimum_average_qual_post
     else:
         qual_mask = np.ones(n_reads, dtype=bool)
     keep_mask = length_mask & qual_mask
+    if parameters["phred_out"] == 33 and phred_offset == 64:
+        qual_table = PHRED64_TO_33
+    elif parameters["phred_out"] == 64 and phred_offset == 33:
+        qual_table = PHRED33_TO_64
+    else:
+        qual_table = None
     results = []
     for header, sequence, plus_line, quality, left, right, keep in zip(
             valid_headers, valid_sequences, valid_pluses, valid_qualities, lefts, rights, keep_mask):
         if not keep:
             rejected += 1
             continue
-        results.append(b"\n".join((header, sequence[left:right], plus_line, quality[left:right])) + b"\n")
+        qual_out = quality[left:right]
+        if qual_table is not None:
+            qual_out = qual_out.translate(qual_table)
+        results.append(b"\n".join((header, sequence[left:right], plus_line, qual_out)) + b"\n")
     len_results = len(results)
     results = b"".join(results)
     if gzip_output:
@@ -1516,9 +1529,15 @@ def generate_unpaired_tasks(filepaths, chunk_size, parameters):
         logger.info("%s: read length of %s detected.", os.path.basename(filepath), read_length)
         logger.info("%s: bytes per read: %s.", os.path.basename(filepath), ESTIMATED_BYTE_PER_READ[filepath])
         logger.info("%s: (estimated) read count: %s.", os.path.basename(filepath), ESTIMATED_READ_COUNTS.get(filepath, "unknown"))
-        minimum_len = parameters["minimum_length"]
-        maximum_len = parameters["maximum_length"]
-        if maximum_len is None:
+        if parameters["minimum_length_abs"] == 0:
+            minimum_len = int(parameters["minimum_length_perc"] / 100 * read_length)
+        else:
+            minimum_len = parameters["minimum_length_abs"]
+        if parameters["maximum_length_abs"] is not None:
+            maximum_len = parameters["maximum_length_abs"]
+        elif parameters["maximum_length_perc"] is not None:
+            maximum_len = int(parameters["maximum_length_perc"] / 100 * read_length)
+        else:
             maximum_len = read_length
         reads_iter = lazy_fastq(filepath)
         chunk_number = 0
@@ -1581,12 +1600,15 @@ def process_paired_task_flat(task, parameters):
         parameters (dict): Dictionary of configuration parameters.
 
     Returns:
-        tuple: A tuple containing (type, file1, file2, paired_out_1, paired_out_2, 
-            singles_out, num_paired, num_singles, rejected).
+        tuple: A tuple containing (type, file1, file2, paired_out_1, paired_out_2,
+            R1_singles_out, R2_singles_out, num_paired, num_R1_singles,
+            num_R2_singles, rejected_1, rejected_2). R1 and R2 singleton
+            records and rejected counts are kept separate since each mate
+            is trimmed and filtered independently before reconciliation.
     """
     file1 = task["file1"]
     file2 = task["file2"]
-    paired_out_1, paired_out_2, singles_out, num_paired, num_singles, rejected = process_paired_chunk(
+    paired_out_1, paired_out_2, R1_singles_out, R2_singles_out, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2 = process_paired_chunk(
         chunks = (task["chunk1"],task["chunk2"] ),
         phred_offset=task["phred_offset"],
         minimum_length=task["minimum_length"],
@@ -1596,7 +1618,7 @@ def process_paired_task_flat(task, parameters):
         gzip_level = task["gzip_level"],
         parameters=parameters
     )
-    return task["type"], file1, file2, paired_out_1, paired_out_2, singles_out, num_paired, num_singles, rejected
+    return task["type"], file1, file2, paired_out_1, paired_out_2, R1_singles_out, R2_singles_out, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2
 
 def generate_paired_tasks(files, chunk_size, parameters):
     """
@@ -1649,9 +1671,15 @@ def generate_paired_tasks(files, chunk_size, parameters):
                 file1, file2, phred_offset_1, phred_offset_2, read_length_1, read_length_2
             )
             continue
-        minimum_length = parameters["minimum_length"]
-        maximum_length = parameters["maximum_length"]
-        if maximum_length is None:
+        if parameters["minimum_length_abs"] == 0:
+            minimum_length = int(parameters["minimum_length_perc"] / 100 * read_length_1)
+        else:
+            minimum_length = parameters["minimum_length_abs"]
+        if parameters["maximum_length_abs"] is not None:
+            maximum_length = parameters["maximum_length_abs"]
+        elif parameters["maximum_length_perc"] is not None:
+            maximum_length = int(parameters["maximum_length_perc"] / 100 * read_length_1)
+        else:
             maximum_length = read_length_1
         reads_iter_1 = lazy_fastq(file1)
         reads_iter_2 = lazy_fastq(file2)
@@ -1730,7 +1758,7 @@ def trim_reads(records, phred_offset, minimum_length, maximum_length, read_lengt
         else:
             rejected += 1
     if not valid_headers:
-        return {}, len(records) // 4
+        return {}, len(records)
     if parameters["mgi_convert_flag"]:
         valid_pluses = [plus + b"_OriginalHeader:" + header for plus, header in zip(valid_pluses, valid_headers)]
         valid_headers = [header_mgi_to_illumina(header, parameters["mgi_bc5"], parameters["mgi_bc7"], parameters["mgi_instrument"], parameters["mgi_run"]) for header in valid_headers]
@@ -1748,13 +1776,19 @@ def trim_reads(records, phred_offset, minimum_length, maximum_length, read_lengt
         length_mask = np.ones(sequence_arr.shape[0], dtype=bool)
     else:
         lengths_out = rights - lefts
-        length_mask = (lengths_out <= maximum_length) & (lengths_out >= minimum_length)
+        length_mask = (lengths_out <= maximum_length) & (lengths_out >= minimum_length) & (lengths_out > 0)
     if minimum_average_qual_post > 0:
         avg_quals = average_quality_batch(quality_arr, lefts, rights)
         qual_mask = avg_quals >= minimum_average_qual_post
     else:
         qual_mask = np.ones(sequence_arr.shape[0], dtype=bool)
     keep_mask = length_mask & qual_mask
+    if parameters["phred_out"] == 33 and phred_offset == 64:
+        qual_table = PHRED64_TO_33
+    elif parameters["phred_out"] == 64 and phred_offset == 33:
+        qual_table = PHRED33_TO_64
+    else:
+        qual_table = None
     survivors = {}
     for i, keep in enumerate(keep_mask):
         if not keep:
@@ -1763,10 +1797,12 @@ def trim_reads(records, phred_offset, minimum_length, maximum_length, read_lengt
         left, right = int(lefts[i]), int(rights[i])
         seq_out = valid_sequences[i][left:right]
         qual_out = valid_qualities[i][left:right]
+        if qual_table is not None:
+            qual_out = qual_out.translate(qual_table)
         base_id, _ = read_info_from_header(valid_headers[i])
         survivors[base_id] = b"\n".join((valid_headers[i], seq_out, valid_pluses[i], qual_out)) + b"\n"
     return survivors, rejected
-
+        
 def process_paired_chunk(chunks, phred_offset, read_length, minimum_length, maximum_length, gzip_output, gzip_level, parameters):
     """
     Trims and filters one paired chunk of R1/R2 reads, then reconciles the
@@ -1785,13 +1821,16 @@ def process_paired_chunk(chunks, phred_offset, read_length, minimum_length, maxi
         parameters (dict): Dictionary of configuration parameters.
 
     Returns:
-        tuple[bytes, bytes, bytes, int, int, int]: A tuple containing:
+        tuple[bytes, bytes, bytes, bytes, int, int, int, int, int]: A tuple containing:
             - Surviving R1 records whose R2 mate also survived (optionally gzipped).
             - Surviving R2 records whose R1 mate also survived (optionally gzipped).
-            - Surviving records whose mate did not survive, treated as unpaired singletons (optionally gzipped).
+            - Surviving R1 records whose mate did not survive, treated as unpaired singletons (optionally gzipped).
+            - Surviving R2 records whose mate did not survive, treated as unpaired singletons (optionally gzipped).
             - Count of surviving read pairs.
-            - Count of surviving singleton reads.
-            - Total count of rejected reads.
+            - Count of surviving R1 singleton reads.
+            - Count of surviving R2 singleton reads.
+            - Count of R1 reads rejected during trimming.
+            - Count of R2 reads rejected during trimming.
     """
     chunk1, chunk2 = chunks
     survivors_1, rejected_1 = trim_reads(chunk1, phred_offset, minimum_length, maximum_length, minimum_average_qual_post = parameters["minimum_average_qual_post"], read_length = read_length, parameters = parameters)
@@ -1799,29 +1838,34 @@ def process_paired_chunk(chunks, phred_offset, read_length, minimum_length, maxi
     remaining_2 = dict(survivors_2)
     paired_out_1 = []
     paired_out_2 = []
-    singles_out = []
+    singles_out_1 = []
+    singles_out_2 = []
     for bid, record in survivors_1.items():
         mate = remaining_2.pop(bid, None)
         if mate is not None:
             paired_out_1.append(record)
             paired_out_2.append(mate)
         else:
-            singles_out.append(record)
-    singles_out.extend(remaining_2.values())
-    num_singles = len(singles_out)
+            singles_out_1.append(record)
+    singles_out_2.extend(remaining_2.values())
+    num_R1_singles = len(singles_out_1)
+    num_R2_singles = len(singles_out_2)
     num_paired = len(paired_out_1)
     paired_out_1 = b"".join(paired_out_1)
     paired_out_2 = b"".join(paired_out_2)
-    singles_out = b"".join(singles_out)
+    singles_out_1 = b"".join(singles_out_1)
+    singles_out_2 = b"".join(singles_out_2)
     if gzip_output:
         isal_level = min(max(gzip_level, 0), 3)
         try:
             paired_out_1 = gzip.compress(paired_out_1, compresslevel=isal_level)
             paired_out_2 = gzip.compress(paired_out_2, compresslevel=isal_level)
-            singles_out = gzip.compress(singles_out, compresslevel=isal_level)
+            singles_out_1 = gzip.compress(singles_out_1, compresslevel=isal_level)
+            singles_out_2 = gzip.compress(singles_out_2, compresslevel=isal_level)
         except Exception as e:
             raise RuntimeError(f"Compression failed inside worker: {str(e)}") from None
-    return paired_out_1, paired_out_2, singles_out, num_paired, num_singles, rejected_1 + rejected_2
+    return paired_out_1, paired_out_2, singles_out_1, singles_out_2, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2
+
 
 ##### Input handler functions #####
 def worker_initilizer(parameters):
@@ -1881,7 +1925,14 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
         parameters (dict): Dictionary of configuration parameters.
 
     Returns:
-        dict: A dictionary containing statistics and counts for kept and rejected reads per file.
+        dict: Mapping of file identifiers to their summary statistics.
+            For each unpaired file (keyed by its filepath), the value is
+            a dict with ``kept`` and ``rejected`` counts. For each paired
+            group (keyed by the pair's common filename prefix), the value
+            is a dict with ``kept_pairs``, ``kept_R1_singletons``,
+            ``kept_R2_singletons``, ``rejected_R1``, and ``rejected_R2``
+            counts, since each mate is trimmed and filtered independently
+            before reconciliation.
     """
     auto_paired, auto_unpaired = find_paired_files(unspecified_files)
     unpaired = auto_unpaired + (unpaired_files or [])
@@ -1919,8 +1970,8 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
             suffix_n += 1
         used_prefixes.add(common_prefix)
         pair_keys[(file1, file2)] = common_prefix
-        file_stats[common_prefix] = {"kept_pairs": 0, "kept_singletons": 0, "rejected": 0}
-        for suffix in ["_R1_paired", "_R2_paired", "_unpaired"]:
+        file_stats[common_prefix] = {"kept_pairs": 0, "kept_R1_singletons": 0, "kept_R2_singletons": 0, "rejected_R1": 0, "rejected_R2": 0}
+        for suffix in ["_R1_paired", "_R2_paired", "_R1_unpaired", "_R2_unpaired"]:
             key = f"{common_prefix}{suffix}"
             file_writing_handles[key] = open_fastq_writer(
                 key,
@@ -1928,37 +1979,62 @@ def input_handler(unspecified_files, unpaired_files, paired_files, output_dir, t
                 gzip_output=parameters["gzip_output"]
                 )
     def unified_chunk_streamer():
-        logger.info("Started processing unpaired files.")
-        yield from generate_unpaired_tasks(filepaths=unpaired, chunk_size=chunk_size, parameters=parameters)
-        logger.info("Finished processing unpaired files.")
-        logger.info("Started processing paired files.")
-        yield from generate_paired_tasks(files=paired, chunk_size=chunk_size, parameters=parameters)
-        logger.info("Started processing paired files.")
+        chunks_per_file = threads if parameters["testrun"] else None
+        if unpaired is not None:
+            logger.info("Started processing unpaired files.")
+            for filepath in unpaired:
+                gen = generate_unpaired_tasks(filepaths=[filepath], chunk_size=chunk_size, parameters=parameters)
+                if chunks_per_file is not None:
+                    gen = itertools.islice(gen, chunks_per_file)
+                yield from gen
+            logger.info("Finished processing unpaired files.")
+        if paired is not None:
+            logger.info("Started processing paired files.")
+            for pair in paired:
+                gen = generate_paired_tasks(files=[pair], chunk_size=chunk_size, parameters=parameters)
+                if chunks_per_file is not None:
+                    gen = itertools.islice(gen, chunks_per_file)
+                yield from gen
+            logger.info("Finished processing paired files.")
+    
+    chunk_stream = unified_chunk_streamer()
+
+    backpressure = threading.Semaphore(threads * 5)
+    def bounded_chunk_stream():
+        for item in chunk_stream:
+            backpressure.acquire()
+            yield item
+
     try:
         with mp.Pool(threads, initializer=worker_initilizer, initargs=(parameters,)) as pool:
-            for result in pool.imap_unordered(unified_worker, unified_chunk_streamer(), chunksize=1):
-                if result[0] == "unpaired":  # Unpaired result: (type, filepath, chunk_results, kept, rejected)
+            submit = pool.imap if parameters["ordered_output"] else pool.imap_unordered
+            for result in submit(unified_worker, bounded_chunk_stream(), chunksize=1):
+                backpressure.release()
+                if result[0] == "unpaired":
                     _, filepath, chunk_results, kept, rejected = result
                     if chunk_results:
                         file_writing_handles[filepath].write(chunk_results)
                     file_stats[filepath]["kept"] += kept
                     file_stats[filepath]["rejected"] += rejected
                     tracker.update(kept + rejected)
-                elif result[0] == "paired":  # Paired result: (type, file1, file2, p1, p2, singles, rejected)
-                    _, file1, file2, paired_out_1, paired_out_2, singles_out, num_paired, num_singles, rejected = result
+                elif result[0] == "paired":
+                    _, file1, file2, paired_out_1, paired_out_2, R1_singles_out, R2_singles_out, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2 = result
                     common_prefix = pair_keys[(file1, file2)]
                     writes = [
                         (f"{common_prefix}_R1_paired", paired_out_1),
                         (f"{common_prefix}_R2_paired", paired_out_2),
-                        (f"{common_prefix}_unpaired", singles_out)
+                        (f"{common_prefix}_R1_unpaired", R1_singles_out),
+                        (f"{common_prefix}_R2_unpaired", R2_singles_out)
                     ]
                     for handle_key, records in writes:
                         if records:
                             file_writing_handles[handle_key].write(records)
                     file_stats[common_prefix]["kept_pairs"] += num_paired
-                    file_stats[common_prefix]["kept_singletons"] += num_singles
-                    file_stats[common_prefix]["rejected"] += rejected
-                    tracker.update(num_paired * 2 + num_singles + rejected)
+                    file_stats[common_prefix]["kept_R1_singletons"] += num_R1_singles
+                    file_stats[common_prefix]["kept_R2_singletons"] += num_R2_singles
+                    file_stats[common_prefix]["rejected_R1"] += rejected_1
+                    file_stats[common_prefix]["rejected_R2"] += rejected_2
+                    tracker.update(num_paired * 2 + num_R1_singles + num_R2_singles + rejected_1 + rejected_2)
     finally:
         tracker.close()
         ACTIVE_PROGRESS_TRACKER = None
@@ -2184,26 +2260,34 @@ def parse_args():
         help="[FLAG] Compress filtered FASTQ files in gzip format. Default: off."
     )
     output_group.add_argument(
-        "--gzip-level", type=int, default = 1, metavar = "", choices=range(0, 3),
+        "--gzip-level", type=int, default = 1, metavar = "", choices=range(0, 4),
         help="Set gzip compression level. Higher compression decreases processing speed. Possible values: 0-3. Default: 1."
     )
 
     general_quality_group = parser.add_argument_group("General output filter options")
     general_quality_group.add_argument(
-        "--min-average-qual-pre", type=int, default = 0, metavar = "", choices=range(0, 127),
+        "--min-average-qual-pre", type=int, default = 0, metavar = "", choices=range(0, 128),
         help="Minimum average quality of input read. Default: 0."
     )
     general_quality_group.add_argument(
-        "--min-average-qual-post", type=int, default = 0, metavar = "", choices=range(0, 127),
+        "--min-average-qual-post", type=int, default = 0, metavar = "", choices=range(0, 128),
         help="Minimum average quality of output read. Default: 0."
     )
     general_quality_group.add_argument(
-        "--min-length", type=int, default = 0, metavar = "", 
-        help="Minimum length of output read. Note: raw read lengths may be n+1, for example: a 150 bp will probably have yielded 151 bp reads. Default: 0."
+        "--min-length-abs", type=int, default = 0, metavar = "", 
+        help="Minimum length of output read in absolute number of nucleotides. Note: raw read lengths may be n+1, for example: a 150 bp will probably have yielded 151 bp reads. Overrides --min-length-perc when both set. Default: 0."
     )
     general_quality_group.add_argument(
-        "--max-length", type = int, default = None, metavar = "", 
-        help="Maximum length of output read. Default: off."
+        "--min-length-perc", type=float, default = 0.0, metavar = "", 
+        help="Minimum length of output read as percentage of input read. Note: raw read lengths may be n+1, for example: a 150 bp will probably have yielded 151 bp reads. Overridden by --min-length-abs when both set. Default: 0."
+    )
+    general_quality_group.add_argument(
+        "--max-length-abs", type = int, default = None, metavar = "", 
+        help="Maximum length of output read in absolute number of nucleotides. Overrides --max-length-perc when both set. Default: off."
+    )
+    general_quality_group.add_argument(
+        "--max-length-perc", type = float, default = None, metavar = "", 
+        help="Maximum length of output read as percentage of input read. Overridden by --max-length-abs when both set. Default: off."
     )
     general_quality_group.add_argument(
         "--nucl-filter", action="store_true", default=False,
@@ -2309,7 +2393,7 @@ def parse_args():
     adapter_trimming = parser.add_argument_group("Adapter trimming",
                                                  "Trim reads for Illumina adapter sequences. Standard sequences included are TruSeq3 universal and index adapters, and Nextera adapters. Only exactly matching sequences are trimmed. Adapter trimming is performed independent of quality.")
     adapter_trimming.add_argument(
-        "--adapter-trim-flag", "-af", action="store_true", default = False,
+        "--adapter-filter-flag", "-af", action="store_true", default = False,
         help='[FLAG] Turn on adapter trimming module. Default: off.'
     )
     adapter_trimming.add_argument(
@@ -2366,7 +2450,7 @@ def parse_args():
                                                "Further options that can be specified to alter the behaviour of Readzor.")
     advanced_group.add_argument(
         "--threads", "-t", type = int, default = None, metavar="",
-        help="Number of threads to use (defaults: platform-dependent through auto-detection: detection of assigned CPUs on Slurm-managed systems, all-1 otherwise. Fallback: 1."
+        help="Number of threads to use. Default: platform-dependent through auto-detection: detection of assigned CPUs on HPC clusters, all-1 otherwise. Fallback: 1."
     )
     advanced_group.add_argument(
         "--reads-for-phred-offset", type = int, default = 500, metavar="",
@@ -2374,13 +2458,25 @@ def parse_args():
     )
     advanced_group.add_argument(
         "--chunk-size", type=int, default = None, metavar="",
-        help="Number of reads per chunk sent to each worker thread. Note: empirically set at 1000, changing can alter processing speed. Default: 1000."
+        help="Number of reads per chunk sent to each worker thread. Note: empirically set to either 20000 (for HPC clusters), or 1000, for optimal performance. Changing can alter processing speed. Default: 1000."
     )
     advanced_group.add_argument(
         "--phred-offset", type = int, choices=[33, 64], default = None, metavar="",
         help="Define phred offset for all FASTQ files. When set, per-file auto-detection will not be performed. Possible values: 33, 64. Default: off (auto-detection per file)."
     )
-
+    advanced_group.add_argument(
+        "--testrun", action="store_true", default=False,
+        help="[FLAG] Perform a test run according to specified settings. Implies --verbose. Default: off."
+    )
+    advanced_group.add_argument(
+        "--ordered-output", action="store_true", default=False,
+        help="[FLAG] Force writing output reads in the same order they appear in the input file. Default: off."
+    )
+    advanced_group.add_argument(
+        "--phred-out", type=int, choices=[33, 64], default=None, metavar="",
+        help="Convert Phred encoding from 33 to 64, and vice versa. Possible values: 33, 64. Default: off."
+    )
+    
     if len(sys.argv) == 1:
         parser.print_help(sys.stderr)
         sys.exit(1)
@@ -2431,12 +2527,15 @@ def parse_args():
 
     # --- Store parameters ---
     parameters = {}
+    parameters["testrun"] = args.testrun
     parameters["full_auto"] = args.full_auto
     parameters["unspecified_files"] = args.input_files
     parameters["unpaired_files"] = args.input_unpaired
     parameters["paired_files"] = group_paired_input_into_pairs(files = args.input_paired, parser = parser)
-    parameters["minimum_length"] = args.min_length
-    parameters["maximum_length"] = args.max_length
+    parameters["minimum_length_abs"] = args.min_length_abs
+    parameters["minimum_length_perc"] = args.min_length_perc
+    parameters["maximum_length_abs"] = args.max_length_abs
+    parameters["maximum_length_perc"] = args.max_length_perc
     parameters["min_quality_both"] = args.endqual_min_both
     parameters["endqual_min_start"] = args.endqual_min_start
     parameters["endqual_min_end"] = args.endqual_min_end
@@ -2452,7 +2551,7 @@ def parse_args():
     parameters["gzip_output"] = args.gzip
     parameters["gzip_level"] = args.gzip_level
     parameters["reads_for_phred_offset"] = args.reads_for_phred_offset
-    parameters["adapter_trim_flag"] = args.adapter_trim_flag
+    parameters["adapter_filter_flag"] = args.adapter_filter_flag
     parameters["adapter_fasta_add"] = args.adapter_fasta_add
     parameters["adapter_fasta_excl"] = args.adapter_fasta_excl
     parameters["nucl_filter"] = args.nucl_filter
@@ -2468,7 +2567,7 @@ def parse_args():
     parameters["kmer_filter_flag"] = args.kmer_filter_flag
     parameters["kmer_size"] = args.kmer_size
     parameters["kmer_cutoff"] = args.kmer_cutoff
-    parameters["allow_n_kmer"] = args.nucl_filter
+    parameters["allow_n_kmer"] = not args.nucl_filter
     parameters["cut_flag"] = args.cut_flag
     parameters["endqual_filter_flag"] = args.endqual_filter_flag
     parameters["slider_filter_flag"] = args.slider_filter_flag
@@ -2482,11 +2581,13 @@ def parse_args():
     parameters["show_progress"] = args.progress
     parameters["verbose"] = args.verbose
     parameters["adapter_mismatch"] = args.adapter_mismatch
-
+    parameters["ordered_output"] = args.ordered_output
+    parameters["phred_out"] = args.phred_out
+    
     if parameters["nucl_filter"]:
         parameters["n_trimming_flag"] = False
 
-    if parameters.get("adapter_trim_flag"):
+    if parameters.get("adapter_filter_flag"):
         if parameters.get("adapter_fasta_excl"):
             raw_adapters = load_adapters_from_fasta(parameters["adapter_fasta_excl"])
         elif parameters.get("adapter_fasta_add"):
@@ -2499,14 +2600,14 @@ def parse_args():
 
     parameters["threads"] = worker_determination(parameters["threads"])
     parameters["chunk_size"] = chunk_size_setter(parameters["chunk_size"])
-
+    
     return parameters
 
 ##### Wrap up functions #####
 def write_summary_and_statistics(summary_results, parameters, used_command, output_dir):
     """
     Write summary statistics and parameters to output text files.
-
+ 
     The function creates two files in the specified output directory:
     ``results_summary.txt`` containing per-file summary counts and
     ``parameters.txt`` containing the parameter key-value pairs used
@@ -2515,8 +2616,10 @@ def write_summary_and_statistics(summary_results, parameters, used_command, outp
     Args:
         summary_results (dict): Dictionary mapping file names to dictionaries
             of summary statistics. Entries may contain either ``kept`` and
-            ``rejected`` counts or ``kept_pairs``, ``kept_singletons``, and
-            ``rejected`` counts.
+            ``rejected`` counts, or ``kept_pairs``, ``kept_R1_singletons``,
+            ``kept_R2_singletons``, ``rejected_R1``, and ``rejected_R2``
+            counts for paired entries (R1/R2 rejects tracked separately
+            since the mates are filtered and split independently).
         used_command (str): The exact shell-quoted command line used to invoke
             this run.
         parameters (dict): Dictionary of parameter names and their values to
@@ -2531,25 +2634,31 @@ def write_summary_and_statistics(summary_results, parameters, used_command, outp
     unpaired_data = []
     for file_path, counts in summary_results.items():
         filename = os.path.basename(file_path)
-        rejected = counts["rejected"]
         if "kept" in counts:
-            unpaired_data.append((filename, counts["kept"], rejected))
+            unpaired_data.append((filename, counts["kept"], counts["rejected"]))
         else:
-            paired_data.append((filename, counts["kept_pairs"], counts["kept_singletons"], rejected))
+            paired_data.append((
+                filename,
+                counts["kept_pairs"],
+                counts["kept_R1_singletons"],
+                counts["kept_R2_singletons"],
+                counts["rejected_R1"],
+                counts["rejected_R2"],
+            ))
     summary_path = os.path.join(output_dir, "results_summary.txt")
     with open(summary_path, "w", encoding="utf-8") as f:
         if paired_data:
             f.write("[Paired Reads]\n")
-            f.write("Pair with common prefix\tKept_Pairs\tKept_Singletons\tRejected\n")
+            f.write("Pair with common prefix\tKept_Pairs\tKept_R1_Singletons\tKept_R2_Singletons\tRejected_R1\tRejected_R2\n")
             for item in paired_data:
-                f.write(f"{item[0]}\t{item[1]}\t{item[2]}\t{item[3]}\n")
+                f.write(f"{item[0]}\t{item[1]}\t{item[2]}\t{item[3]}\t{item[4]}\t{item[5]}\n")
             f.write("\n")
         if unpaired_data:
             f.write("[Unpaired Reads]\n")
             f.write("Filename\tKept\tRejected\n")
             for item in unpaired_data:
                 f.write(f"{item[0]}\t{item[1]}\t{item[2]}\n")
-
+  
 def log_parameters(parameters):
     """
     Log all run parameters to the logger, one per line, tagged [PARAMETER]
@@ -2630,6 +2739,9 @@ def main():
             except RuntimeError:
                 pass
     parameters = parse_args()
+    if parameters["testrun"]:
+        test_run(parameters)
+        return
     used_command = " ".join(map(shlex.quote, [sys.executable] + sys.argv))
     created_output_dir = create_folder_structure(parameters["output_dir"])
     setup_logging(output_dir = created_output_dir, verbose = parameters["verbose"], parameters = parameters)
@@ -2639,5 +2751,16 @@ def main():
     logger.info("Analysis successfully completed!")
     print_final_message()
 
+def test_run(parameters):
+    with tempfile.TemporaryDirectory(prefix="readzor_testrun_") as tmp_dir:
+        used_command = " ".join(map(shlex.quote, [sys.executable] + sys.argv))
+        created_output_dir = create_folder_structure(tmp_dir)
+        setup_logging(output_dir = created_output_dir, verbose = True, parameters = parameters)
+        log_parameters(parameters)
+        summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], parameters = parameters)
+        write_summary_and_statistics(summary_results, parameters, used_command, output_dir = created_output_dir)
+        logger.info("All files deleted.")
+        logger.info("Testrun completed!")
+    
 if __name__ == "__main__":
     main()

@@ -1,0 +1,6 @@
+readzor  \
+        --input-paired SRR2052337_1.fastq.gz SRR2052337_2.fastq.gz \ 
+        --adapter-trim-flag \
+        --endqual-filter-flag --endqual-min-both 25 \
+        --min-length 50 \
+        --gzip

@@ -1,0 +1,21 @@
+trimmomatic \
+    SE \
+    -phred33 \
+    -threads [THREAD_COUNT] \
+    SRR2052337_1.fastq.gz \
+    output_1.fastq.gz \
+    ILLUMINACLIP:TruSeq3-SE.fa:0:30:10 \
+    LEADING:25 \
+    TRAILING:25 \
+    MINLEN:50
+
+trimmomatic \
+    SE \
+    -phred33 \
+    -threads [THREAD_COUNT] \
+    SRR2052337_2.fastq.gz \
+    output_2.fastq.gz \
+    ILLUMINACLIP:TruSeq3-SE.fa:0:30:10 \
+    LEADING:25 \
+    TRAILING:25 \
+    MINLEN:50
