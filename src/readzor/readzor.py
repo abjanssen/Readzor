@@ -819,16 +819,25 @@ def qual_to_array(quality_list, phred_offset):
             (len(quality_list), read_length) with true quality scores.
     """
     quality_arr_lengths = np.array([len(q) for q in quality_list])
+    n_reads = len(quality_list)
     max_len = quality_arr_lengths.max()
+    min_len = quality_arr_lengths.min()
+    if max_len == min_len:
+        joined = b''.join(quality_list)
+        array = np.frombuffer(joined, dtype=np.int8).reshape(n_reads, max_len)
+        array = array - phred_offset
+        chunk_padding_bool = False
+        row_tilde_count = None
+        padding_mask_bool = None
+        return array, chunk_padding_bool, row_tilde_count, padding_mask_bool
     padded = [q.ljust(max_len, b'~') for q in quality_list]
     joined = b''.join(padded)
-    array = np.frombuffer(joined, dtype=np.int8).reshape(len(quality_list), max_len) 
+    array = np.frombuffer(joined, dtype=np.int8).reshape(n_reads, max_len) 
     padding_mask_bool = array == ord('~')
     row_tilde_count = np.sum(padding_mask_bool, axis=1)
-    row_padding_bool = row_tilde_count > 0
     chunk_padding_bool = bool(np.any(row_tilde_count > 0))
     array = np.where(padding_mask_bool, array, array - phred_offset)
-    return array, chunk_padding_bool, row_padding_bool, row_tilde_count, padding_mask_bool
+    return array, chunk_padding_bool, row_tilde_count, padding_mask_bool
 
 def seq_to_array(sequence_list):
     """
@@ -912,25 +921,25 @@ def build_pipeline(parameters):
     pipeline = []
     #sequence_based
     if parameters.get("kmer_filter_flag"):
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_padding_bool, row_tilde_count, padding_mask_bool: kmer_complexity_scan(seq, chunk_padding_bool, padding_mask_bool, kmer=parameters["kmer_size"], low_complex_cutoff=parameters["kmer_cutoff"], allow_n=parameters["allow_n_kmer"]))
+        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: kmer_complexity_scan(seq, chunk_padding_bool, padding_mask_bool, kmer=parameters["kmer_size"], low_complex_cutoff=parameters["kmer_cutoff"], allow_n=parameters["allow_n_kmer"]))
     if parameters.get("n_trimming_flag"):
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_padding_bool, row_tilde_count, padding_mask_bool: n_end_trimming(seq, padding_mask_bool, chunk_padding_bool))
+        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: n_end_trimming(seq, padding_mask_bool, chunk_padding_bool))
     if parameters.get("poly_filter_flag"):
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_padding_bool, row_tilde_count, padding_mask_bool: homopolymer_nucleotide_trimming(seq, padding_mask_bool, chunk_padding_bool, poly_length_both=parameters["poly_length_both"], poly_length_start=parameters["poly_length_start"], poly_length_end=parameters["poly_length_end"], poly_bases_both=parameters["poly_bases_both"], poly_bases_start=parameters["poly_bases_start"], poly_bases_end=parameters["poly_bases_end"]))
+        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: homopolymer_nucleotide_trimming(seq, padding_mask_bool, chunk_padding_bool, poly_length_both=parameters["poly_length_both"], poly_length_start=parameters["poly_length_start"], poly_length_end=parameters["poly_length_end"], poly_bases_both=parameters["poly_bases_both"], poly_bases_start=parameters["poly_bases_start"], poly_bases_end=parameters["poly_bases_end"]))
     if parameters.get("adapter_filter_flag"):
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_padding_bool, row_tilde_count, padding_mask_bool: adapter_trimming(seq, chunk_padding_bool, row_tilde_count, adapter_sequences=parameters["adapter_sequences"], mismatches=parameters["adapter_mismatch"]))
+        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: adapter_trimming(seq, chunk_padding_bool, row_tilde_count, adapter_sequences=parameters["adapter_sequences"], mismatches=parameters["adapter_mismatch"]))
 
     #quality_based
     if parameters.get("endqual_filter_flag"):
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_padding_bool, row_tilde_count, padding_mask_bool: trim_ends_quality(qual, chunk_padding_bool, padding_mask_bool, min_quality_both=parameters["min_quality_both"], endqual_min_start=parameters["endqual_min_start"], endqual_min_end=parameters["endqual_min_end"]))
+        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: trim_ends_quality(qual, chunk_padding_bool, padding_mask_bool, min_quality_both=parameters["min_quality_both"], endqual_min_start=parameters["endqual_min_start"], endqual_min_end=parameters["endqual_min_end"]))
     if parameters.get("minimum_average_qual_pre") > 0:
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_padding_bool, row_tilde_count, padding_mask_bool: average_quality_filter_wrapper(qual, chunk_padding_bool, row_tilde_count, min_avg_qual=parameters["minimum_average_qual_pre"]))
+        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: average_quality_filter_wrapper(qual, chunk_padding_bool, row_tilde_count, min_avg_qual=parameters["minimum_average_qual_pre"]))
     if parameters.get("slider_filter_flag"):
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_padding_bool, row_tilde_count, padding_mask_bool: sliding_window_quality(qual, chunk_padding_bool, padding_mask_bool, row_tilde_count, slider_quality=parameters["slider_quality"], slider_window=parameters["slider_window"], slider_step=parameters["slider_step"]))
+        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: sliding_window_quality(qual, chunk_padding_bool, padding_mask_bool, row_tilde_count, slider_quality=parameters["slider_quality"], slider_window=parameters["slider_window"], slider_step=parameters["slider_step"]))
 
     #length_based
     if parameters.get("cut_flag"):
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_padding_bool, row_tilde_count, padding_mask_bool: cut_set_ends(seq, chunk_padding_bool, row_tilde_count, cut_both=parameters["cut_both"], cut_start=parameters["cut_start"], cut_end=parameters["cut_end"]))
+        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: cut_set_ends(seq, chunk_padding_bool, row_tilde_count, cut_both=parameters["cut_both"], cut_start=parameters["cut_start"], cut_end=parameters["cut_end"]))
 
     return pipeline
 
@@ -1601,13 +1610,13 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
     if parameters["mgi_convert_flag"]:
         valid_pluses = [plus + b"_OriginalHeader:" + header for plus, header in zip(valid_pluses, valid_headers)]
         valid_headers = [header_mgi_to_illumina(header, parameters["mgi_bc5"], parameters["mgi_bc7"], parameters["mgi_instrument"], parameters["mgi_run"]) for header in valid_headers]
-    quality_arr, chunk_padding_bool, row_padding_bool, row_tilde_count, padding_mask_bool = qual_to_array(quality_list = valid_qualities, phred_offset = phred_offset)
+    quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool = qual_to_array(quality_list = valid_qualities, phred_offset = phred_offset)
     sequence_arr = seq_to_array(sequence_list = valid_sequences)
     n_reads, length = quality_arr.shape
     left_list = [np.zeros(n_reads, dtype=np.int16)]
     right_list = [np.full(n_reads, length, dtype=np.int16)]
     for step in build_pipeline(parameters):
-        left, right = step(sequence_arr, quality_arr, chunk_padding_bool, row_padding_bool, row_tilde_count, padding_mask_bool)
+        left, right = step(sequence_arr, quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool)
         left_list.append(left)
         right_list.append(right)
     lefts = np.maximum.reduce(left_list)
@@ -1886,13 +1895,13 @@ def trim_reads(records, phred_offset, minimum_average_qual_post, min_length_outp
     if parameters["mgi_convert_flag"]:
         valid_pluses = [plus + b"_OriginalHeader:" + header for plus, header in zip(valid_pluses, valid_headers)]
         valid_headers = [header_mgi_to_illumina(header, parameters["mgi_bc5"], parameters["mgi_bc7"], parameters["mgi_instrument"], parameters["mgi_run"]) for header in valid_headers]
-    quality_arr, chunk_padding_bool, row_padding_bool, row_tilde_count, padding_mask_bool = qual_to_array(quality_list = valid_qualities, phred_offset = phred_offset)
+    quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool = qual_to_array(quality_list = valid_qualities, phred_offset = phred_offset)
     sequence_arr = seq_to_array(sequence_list = valid_sequences)
     n_reads, length = sequence_arr.shape
     left_list = [np.zeros(n_reads, dtype=np.int16)]
     right_list = [np.full(n_reads, length, dtype=np.int16)]
     for step in build_pipeline(parameters):
-        left, right = step(sequence_arr, quality_arr, chunk_padding_bool, row_padding_bool, row_tilde_count, padding_mask_bool)
+        left, right = step(sequence_arr, quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool)
         left_list.append(left)
         right_list.append(right)
     lefts = np.maximum.reduce(left_list)
