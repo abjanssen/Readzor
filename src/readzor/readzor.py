@@ -73,7 +73,7 @@ class ProgressAwareStreamHandler(logging.StreamHandler):
             ACTIVE_PROGRESS_TRACKER.clear_line()
         super().emit(record)
 
-def setup_logging(output_dir=None, verbose = False, parameters = None):
+def setup_logging(output_dir = None, verbose = False, parameters = None):
     """
     Configure Readzor's logger.
     Called from parse_args() twice — once with no arguments, before parsing,
@@ -119,8 +119,8 @@ def setup_logging(output_dir=None, verbose = False, parameters = None):
         if parameters["full_auto"]:
             logger.warning("--full-auto/-GO specified; ignoring all other input parameters (except input file parameters).")
         if parameters["testrun"]:
-            logger.info("Testrun output directory temporarily created at %s", output_dir)
-            logger.info("Testrun log file temporarily initialized at %s", log_path)
+            logger.info("Test run output directory temporarily created at %s", output_dir)
+            logger.info("Test run log file temporarily initialized at %s", log_path)
         else:
             logger.info("Output directory created at %s", output_dir)
             logger.info("Log file initialized at %s", log_path)
@@ -131,8 +131,8 @@ def setup_logging(output_dir=None, verbose = False, parameters = None):
 ##### Progress tracker #####
 def estimate_bytes_per_read(filepath, sample_size=10):
     """
-    Estimates the average on-disk (uncompressed) bytes consumed by one FASTQ
-    record, by sampling the first record's header, sequence, plus-line, and
+    Estimates the average on-disk (uncompressed) bytes of a file's reads 
+    by sampling for header, sequence, plus-line, and
     quality lengths and adding back the newline stripped by `lazy_fastq`.
 
     Args:
@@ -203,12 +203,7 @@ def chunk_size_setter(chunk_size):
     """
     if chunk_size is not None:
         return chunk_size
-
-    scheduler_tools = (
-        'sinfo', 'sbatch',
-        'qsub', 'qstat',
-        'bsub', 'bjobs'
-    )
+    scheduler_tools = ('sinfo', 'sbatch','qsub', 'qstat','bsub', 'bjobs')
     if any(shutil.which(tool) is not None for tool in scheduler_tools):
         return 20000
     else:
@@ -221,7 +216,7 @@ def count_reads_estimated(filepath, default_gzip_ratio=4):
  
     For gzip files, estimates the uncompressed size via a sampled
     compression ratio (falls back to `default_gzip_ratio` if the file is
-    too small to sample reliably).
+    too small to sample reliably). Defaults to 1.
     """
     file_size = os.path.getsize(filepath)
     bytes_per_read = estimate_bytes_per_read(filepath)
@@ -237,7 +232,7 @@ def count_reads_estimated(filepath, default_gzip_ratio=4):
 
 class ProgressTracker:
     """
-    Tracks completed reads against a known total and renders a single-line
+    Tracks number of analysed reads against estimated total and renders a single-line
     progress bar to stderr. Dynamically scales bar width to fit screen size.
     """
     def __init__(self, total_reads, bar_width=50, min_interval=0.2):
@@ -250,8 +245,6 @@ class ProgressTracker:
 
     @staticmethod
     def _format_duration(seconds_val, concise=False):
-        if seconds_val == float('inf') or seconds_val < 0 or seconds_val is None:
-            return "?"
         total_seconds = int(round(seconds_val))
         hours, remainder = divmod(total_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
@@ -406,18 +399,15 @@ def worker_determination(threads=None):
     Returns:
         int: The number of worker processes to spawn, always >= 1.
     """
-    if isinstance(threads, int) and not isinstance(threads, bool):
+    if isinstance(threads, int):
         return max(1, threads)
-
-    for var in ("SLURM_CPUS_PER_TASK", "PBS_NCPUS", "NCPUS", "NSLOTS",
-                "LSB_DJOB_NUMPROC", "OMP_NUM_THREADS"):
+    for var in ("SLURM_CPUS_PER_TASK", "PBS_NCPUS", "NCPUS", "NSLOTS", "LSB_DJOB_NUMPROC", "OMP_NUM_THREADS"):
         val = os.environ.get(var)
         if val:
             try:
                 return max(1, int(val))
             except ValueError:
                 pass
-
     return max(1, (os.cpu_count() or 1) - 1)
 
 def common_name_parts(filenames):
@@ -461,26 +451,6 @@ def common_name_parts(filenames):
         common_tokens.append(token_lists[0][i])
     output = '_'.join(common_tokens) if common_tokens else stems[0]
     return output
-
-def query_read_length(filepath):
-    """
-    Retrieve the sequence length of the first read in a FASTQ file.
-    
-    Lazily reads the file and returns the length of the first read's sequence,
-    assuming all reads in the file have uniform length. Stops reading after
-    the first record, making this efficient even for large files.
-
-    Args:
-        filepath (str): Path to the FASTQ file to inspect.
-
-    Returns:
-        int | None: The sequence length of the first read, or None if the file
-        is empty or contains no valid records.
-    """
-    for record in lazy_fastq(filepath):
-        _, sequence, _, _ = record.split(FIELD_SEP)
-        return len(sequence)
-    return None
 
 def basename_file(filepath):
     """
@@ -577,9 +547,12 @@ def lazy_fastq(filepath):
             lines = iter(fastq_file)
             for header in lines:
                 header = header.strip()
-                sequence = next(lines).strip()
-                plus = next(lines).strip()
-                quality = next(lines).strip()
+                try:
+                    sequence = next(lines).strip()
+                    plus = next(lines).strip()
+                    quality = next(lines).strip()
+                except StopIteration:
+                    break
                 yield FIELD_SEP.join((header, sequence, plus, quality))
 
 def find_paired_files(filepaths):
@@ -644,29 +617,22 @@ def find_paired_files(filepaths):
                 dropped.add(file_2)
             elif read_1 == read_2:
                 logger.warning(
-                    "Files '%s' and '%s' share base ID '%s' and read number %s, "
-                    "and appear to be duplicate copies of the same file. "
-                    "Dropping both '%s' and '%s'.",
-                    file_1, file_2, base_id, read_1, file_1, file_2
+                    "Files '%s' and '%s' share base ID '%s', but also the same read number (%s). "
+                    "These files might be duplicate copies. Treating as unpaired files instead.",
+                    file_1, file_2, base_id.decode('utf-8', errors='replace'), read_1,
                 )
-                dropped.add(file_1)
-                dropped.add(file_2)
             else:
                 logger.warning(
                     "Files '%s' and '%s' share base ID '%s' but do not form a "
-                    "valid R1/R2 pair (read numbers: %s, %s). Dropping both.",
-                    file_1, file_2, base_id, read_1, read_2
+                    "valid R1/R2 pair (read numbers: %s, %s). Treating as unpaired files instead.",
+                    file_1, file_2, base_id.decode('utf-8', errors='replace'), read_1, read_2
                 )
-                dropped.add(file_1)
-                dropped.add(file_2)
         elif len(file_list) > 2:
             logger.warning(
                 "Found %s files matching base ID '%s' (expected max 2 for "
-                "paired-end data). Dropping all of these files.",
-                len(file_list), base_id
+                "paired-end data). Treating as unpaired files instead.",
+                len(file_list), base_id.decode('utf-8', errors='replace')
             )
-            for filepath, _ in file_list:
-                dropped.add(filepath)
     unpaired = [f for f in base_ids if f not in dropped]
     logger.info("Matched %s pair(s), %s file(s) left unpaired.", len(pairs), len(unpaired))
     if not len(pairs) == 0:
@@ -1388,7 +1354,6 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
         left_cutoffs[too_short] = 0
         right_cutoffs[too_short] = real_lengths[too_short].astype(np.int16)
 
-    return left_cutoffs, right_cutoffs
     return left_cutoffs, right_cutoffs
 
 def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_sequences, mismatches):
@@ -2791,7 +2756,7 @@ def parse_args():
     return parameters
 
 ##### Wrap up functions #####
-def write_summary_and_statistics(summary_results, parameters, used_command, output_dir):
+def write_summary_and_statistics(summary_results, parameters, output_dir):
     """
     Write summary statistics and parameters to output text files.
  
@@ -2929,23 +2894,21 @@ def main():
     if parameters["testrun"]:
         test_run(parameters)
         return
-    used_command = " ".join(map(shlex.quote, [sys.executable] + sys.argv))
     created_output_dir = create_folder_structure(parameters["output_dir"])
     setup_logging(output_dir = created_output_dir, verbose = parameters["verbose"], parameters = parameters)
     log_parameters(parameters)
     summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], parameters = parameters)
-    write_summary_and_statistics(summary_results, parameters, used_command, output_dir = created_output_dir)
+    write_summary_and_statistics(summary_results, parameters, output_dir = created_output_dir)
     logger.info("Analysis successfully completed!")
     print_final_message()
 
 def test_run(parameters):
     with tempfile.TemporaryDirectory(prefix="readzor_testrun_") as tmp_dir:
-        used_command = " ".join(map(shlex.quote, [sys.executable] + sys.argv))
         created_output_dir = create_folder_structure(tmp_dir)
         setup_logging(output_dir = created_output_dir, verbose = True, parameters = parameters)
         log_parameters(parameters)
         summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], parameters = parameters)
-        write_summary_and_statistics(summary_results, parameters, used_command, output_dir = created_output_dir)
+        write_summary_and_statistics(summary_results, parameters, output_dir = created_output_dir)
         logger.info("All files deleted.")
         logger.info("Testrun completed!")
     
