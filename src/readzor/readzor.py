@@ -25,6 +25,7 @@ import numpy as np
 WORKER_PARAMETERS = None
 ESTIMATED_ZIP_RATIO = {}
 ESTIMATED_READ_COUNTS = {}
+STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
 VERSION = "0.2.0"
@@ -336,6 +337,38 @@ class ProgressTracker:
         sys.stderr.flush()
 
 ##### Helper functions #####
+
+def resolve_stdin_input(filepath):
+    """
+    Resolve a '-' CLI input argument by spooling stdin to a temp file.
+ 
+    Args:
+        filepath (str): The raw CLI argument. If exactly '-', stdin is read
+            in full and written to a temp file; otherwise returned unchanged.
+ 
+    Returns:
+        str: A real filesystem path safe to pass through the rest of the
+        pipeline (file-size checks, gzip sniffing, multiple reads, etc.).
+    """
+    if filepath != "-":
+        return filepath
+    if sys.stdin.isatty():
+        raise SystemExit("Error: '-' was given for stdin input, but no data is being piped in.")
+    fd, tmp_path = tempfile.mkstemp(suffix=".fastq", prefix="readzor_stdin_")
+    with os.fdopen(fd, "wb") as tmp_file:
+        shutil.copyfileobj(sys.stdin.buffer, tmp_file, length=10 * 1024 * 1024)
+    STDIN_TEMP_FILES.append(tmp_path)
+    return tmp_path
+
+def cleanup_stdin_temp_files():
+    """Remove any temp files created by resolve_stdin_input(), ignoring ones already gone."""
+    for tmp_path in STDIN_TEMP_FILES:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+    STDIN_TEMP_FILES.clear()
+
 def group_paired_input_into_pairs(files, parser):
     """
     Group a flat list of paired-end FASTQ files into (R1, R2) tuples.
@@ -2849,6 +2882,12 @@ def parse_args():
         parser.error(
             "You must specify any combination of --input-files, --input-paired, --input_interleaved and/or --input-unpaired (unless using --full-auto)."
         )
+    
+    args.input_files = [resolve_stdin_input(f) for f in args.input_files] if args.input_files else args.input_files
+    args.input_unpaired = [resolve_stdin_input(f) for f in args.input_unpaired] if args.input_unpaired else args.input_unpaired
+    args.input_interleaved = [resolve_stdin_input(f) for f in args.input_interleaved] if args.input_interleaved else args.input_interleaved
+    if args.input_paired:
+        args.input_paired = [resolve_stdin_input(f) for f in args.input_paired]
 
     # --- Store parameters ---
     parameters = {}
@@ -3081,23 +3120,29 @@ def main():
     if parameters["testrun"]:
         test_run(parameters)
         return
-    created_output_dir = create_folder_structure(parameters["output_dir"])
-    setup_logging(output_dir = created_output_dir, verbose = parameters["verbose"], parameters = parameters)
-    log_parameters(parameters)
-    summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"] ,parameters = parameters)
-    write_summary_and_statistics(summary_results, parameters, output_dir = created_output_dir)
-    logger.info("Analysis successfully completed!")
-    print_final_message(stdout = parameters["stdout"])
+    try:
+        created_output_dir = create_folder_structure(parameters["output_dir"])
+        setup_logging(output_dir = created_output_dir, verbose = parameters["verbose"], parameters = parameters)
+        log_parameters(parameters)
+        summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"] ,parameters = parameters)
+        write_summary_and_statistics(summary_results, parameters, output_dir = created_output_dir)
+        logger.info("Analysis successfully completed!")
+        print_final_message(stdout = parameters["stdout"])
+    finally:
+        cleanup_stdin_temp_files()
 
 def test_run(parameters):
-    with tempfile.TemporaryDirectory(prefix="readzor_testrun_") as tmp_dir:
-        created_output_dir = create_folder_structure(tmp_dir)
-        setup_logging(output_dir = created_output_dir, verbose = True, parameters = parameters)
-        log_parameters(parameters)
-        summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"],parameters = parameters)
-        write_summary_and_statistics(summary_results, parameters, output_dir = created_output_dir)
-        logger.info("All files deleted.")
-        logger.info("Testrun completed!")
+    try:
+        with tempfile.TemporaryDirectory(prefix="readzor_testrun_") as tmp_dir:
+            created_output_dir = create_folder_structure(tmp_dir)
+            setup_logging(output_dir = created_output_dir, verbose = True, parameters = parameters)
+            log_parameters(parameters)
+            summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"],parameters = parameters)
+            write_summary_and_statistics(summary_results, parameters, output_dir = created_output_dir)
+            logger.info("All files deleted.")
+            logger.info("Testrun completed!")
+    finally:
+        cleanup_stdin_temp_files()
     
 if __name__ == "__main__":
     main()
