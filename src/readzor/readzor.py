@@ -2071,21 +2071,33 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
     num_R1_singles = len(singles_out_1)
     num_R2_singles = len(singles_out_2)
     num_paired = len(paired_out_1)
-    paired_out_1 = b"".join(paired_out_1)
-    paired_out_2 = b"".join(paired_out_2)
-    singles_out_1 = b"".join(singles_out_1)
-    singles_out_2 = b"".join(singles_out_2)
+    
+    interleave = parameters["stdout"] or parameters["interleaved_out"]
+    if interleave:
+        paired_out_1 = b"".join(r1 + r2 for r1, r2 in zip(paired_out_1, paired_out_2))
+        paired_out_1 += b"".join(singles_out_1) + b"".join(singles_out_2)
+        paired_out_2 = b""
+        singles_out_1 = b""
+        singles_out_2 = b""
+    else:
+        paired_out_1 = b"".join(paired_out_1)
+        paired_out_2 = b"".join(paired_out_2)
+        singles_out_1 = b"".join(singles_out_1)
+        singles_out_2 = b"".join(singles_out_2)
+    
     if gzip_output:
         isal_level = min(max(gzip_level, 0), 3)
         try:
             paired_out_1 = gzip.compress(paired_out_1, compresslevel=isal_level)
-            paired_out_2 = gzip.compress(paired_out_2, compresslevel=isal_level)
-            singles_out_1 = gzip.compress(singles_out_1, compresslevel=isal_level)
-            singles_out_2 = gzip.compress(singles_out_2, compresslevel=isal_level)
+            if paired_out_2:
+                paired_out_2 = gzip.compress(paired_out_2, compresslevel=isal_level)
+            if singles_out_1:
+                singles_out_1 = gzip.compress(singles_out_1, compresslevel=isal_level)
+            if singles_out_2:
+                singles_out_2 = gzip.compress(singles_out_2, compresslevel=isal_level)
         except Exception as e:
             raise RuntimeError(f"Compression failed inside worker: {str(e)}") from None
     return paired_out_1, paired_out_2, singles_out_1, singles_out_2, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2
-
 
 ##### Input handler functions #####
 def worker_initilizer(parameters):
@@ -2129,7 +2141,7 @@ def unified_worker(task):
     else:
         raise ValueError(f"Unknown or missing task type: {task_type}")
 
-def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_files, output_dir, threads, chunk_size, show_progress, parameters):
+def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_files, output_dir, threads, chunk_size, show_progress, stdout, interleaved_out, parameters):
     """
     Top-level orchestrator that separates input files into paired and
     unpaired groups, sets up file writers, and runs the multiprocessing pool
@@ -2167,14 +2179,14 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
     unpaired = auto_unpaired + (unpaired_files or [])
     paired = auto_paired + (paired_files or [])
     interleaved = auto_interleaved + (interleaved_files or [])
-    if show_progress:
-        for file in unpaired:
-            ESTIMATED_READ_COUNTS[file] = count_reads_estimated(file)
-        for file in interleaved:
-            ESTIMATED_READ_COUNTS[file] = count_reads_estimated(file)
-        for f1, f2 in paired:
-            ESTIMATED_READ_COUNTS[f1] = count_reads_estimated(f1)
-            ESTIMATED_READ_COUNTS[f2] = count_reads_estimated(f2)
+    for file in unpaired:
+        ESTIMATED_READ_COUNTS[file] = count_reads_estimated(file)
+    for file in interleaved:
+        ESTIMATED_READ_COUNTS[file] = count_reads_estimated(file)
+    for f1, f2 in paired:
+        ESTIMATED_READ_COUNTS[f1] = count_reads_estimated(f1)
+        ESTIMATED_READ_COUNTS[f2] = count_reads_estimated(f2)
+    if show_progress:    
         total_reads = sum(ESTIMATED_READ_COUNTS.values())
         tracker = ProgressTracker(total_reads)
     else:
@@ -2189,20 +2201,30 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
     file_writing_handles = {}
     for file in unpaired:
         file_stats[file] = {"kept": 0, "rejected": 0}
-        file_writing_handles[file] = open_fastq_writer(file, output_dir, gzip_output=parameters["gzip_output"])
+        if not stdout:
+            file_writing_handles[file] = open_fastq_writer(file, output_dir, gzip_output=parameters["gzip_output"])
     pair_keys = {}
     used_prefixes = set()
     for file in interleaved:
         base_prefix = common_name_parts([os.path.basename(file), os.path.basename(file)])
         pair_keys[(file, file)] = base_prefix
         file_stats[base_prefix] = {"kept_pairs": 0, "kept_R1_singletons": 0, "kept_R2_singletons": 0, "rejected_R1": 0, "rejected_R2": 0}
-        for suffix in ["_R1_paired", "_R2_paired", "_R1_unpaired", "_R2_unpaired"]:
-            key = f"{base_prefix}{suffix}"
-            file_writing_handles[key] = open_fastq_writer(
-                key,
-                output_dir,
-                gzip_output=parameters["gzip_output"]
-                )
+        if not stdout:
+            if interleaved_out:
+                key = f"{base_prefix}"
+                file_writing_handles[key] = open_fastq_writer(
+                    key,
+                    output_dir,
+                    gzip_output=parameters["gzip_output"]
+                    )
+            else:
+                for suffix in ["_R1_paired", "_R2_paired", "_R1_unpaired", "_R2_unpaired"]:
+                    key = f"{base_prefix}{suffix}"
+                    file_writing_handles[key] = open_fastq_writer(
+                        key,
+                        output_dir,
+                        gzip_output=parameters["gzip_output"]
+                        )
     for pair in paired:
         file1, file2 = pair
         base_prefix = common_name_parts([os.path.basename(file1), os.path.basename(file2)])
@@ -2214,40 +2236,61 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
         used_prefixes.add(common_prefix)
         pair_keys[(file1, file2)] = common_prefix
         file_stats[common_prefix] = {"kept_pairs": 0, "kept_R1_singletons": 0, "kept_R2_singletons": 0, "rejected_R1": 0, "rejected_R2": 0}
-        for suffix in ["_R1_paired", "_R2_paired", "_R1_unpaired", "_R2_unpaired"]:
-            key = f"{common_prefix}{suffix}"
-            file_writing_handles[key] = open_fastq_writer(
-                key,
-                output_dir,
-                gzip_output=parameters["gzip_output"]
-                )
+        if not stdout:
+            if interleaved_out:
+                key = f"{common_prefix}"
+                file_writing_handles[key] = open_fastq_writer(
+                    key,
+                    output_dir,
+                    gzip_output=parameters["gzip_output"]
+                    )
+            else:
+                for suffix in ["_R1_paired", "_R2_paired", "_R1_unpaired", "_R2_unpaired"]:
+                    key = f"{base_prefix}{suffix}"
+                    file_writing_handles[key] = open_fastq_writer(
+                        key,
+                        output_dir,
+                        gzip_output=parameters["gzip_output"]
+                        )
+
     def unified_chunk_streamer():
         chunks_per_file = threads if parameters["testrun"] else None
-        if unpaired is not None:
+        if unpaired:
             logger.info("Started processing unpaired files.")
             for file in unpaired:
-                gen = generate_unpaired_tasks(filepaths=[file], chunk_size=chunk_size, parameters=parameters, filetype = "unpaired")
+                gen = generate_unpaired_tasks(
+                    filepaths=[file],
+                    chunk_size=chunk_size,
+                    parameters=parameters,
+                    filetype="unpaired",
+                )
                 if chunks_per_file is not None:
                     gen = itertools.islice(gen, chunks_per_file)
                 yield from gen
             logger.info("Finished processing unpaired files.")
-        if interleaved is not None:
+        if interleaved:
             logger.info("Started processing interleaved files.")
             for file in interleaved:
-                gen = generate_unpaired_tasks(filepaths=[file], chunk_size=chunk_size, parameters=parameters, filetype = "interleaved")
+                gen = generate_unpaired_tasks(
+                    filepaths=[file],
+                    chunk_size=chunk_size,
+                    parameters=parameters,
+                    filetype="interleaved",
+                )
                 if chunks_per_file is not None:
                     gen = itertools.islice(gen, chunks_per_file)
                 yield from gen
             logger.info("Finished processing interleaved files.")
-        if paired is not None:
+        if paired:
             logger.info("Started processing paired files.")
             for pair in paired:
-                gen = generate_paired_tasks(files=[pair], chunk_size=chunk_size, parameters=parameters)
+                gen = generate_paired_tasks(
+                    files=[pair], chunk_size=chunk_size, parameters=parameters
+                )
                 if chunks_per_file is not None:
                     gen = itertools.islice(gen, chunks_per_file)
                 yield from gen
             logger.info("Finished processing paired files.")
-    
     chunk_stream = unified_chunk_streamer()
 
     backpressure = threading.Semaphore(threads * 5)
@@ -2264,22 +2307,33 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
                 if result[0] == "unpaired":
                     _, filepath, chunk_results, kept, rejected = result
                     if chunk_results:
-                        file_writing_handles[filepath].write(chunk_results)
+                        if parameters["stdout"]:
+                            sys.stdout.write(chunk_results)
+                        else:
+                            file_writing_handles[filepath].write(chunk_results)
                     file_stats[filepath]["kept"] += kept
                     file_stats[filepath]["rejected"] += rejected
                     tracker.update(kept + rejected)
                 elif result[0] == "paired":
                     _, file1, file2, paired_out_1, paired_out_2, R1_singles_out, R2_singles_out, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2 = result
                     common_prefix = pair_keys[(file1, file2)]
-                    writes = [
-                        (f"{common_prefix}_R1_paired", paired_out_1),
-                        (f"{common_prefix}_R2_paired", paired_out_2),
-                        (f"{common_prefix}_R1_unpaired", R1_singles_out),
-                        (f"{common_prefix}_R2_unpaired", R2_singles_out)
-                    ]
-                    for handle_key, records in writes:
-                        if records:
-                            file_writing_handles[handle_key].write(records)
+                    if parameters["stdout"]:
+                        if paired_out_1:
+                            sys.stdout.buffer.write(paired_out_1)
+                    else:
+                        if interleaved_out:
+                            if paired_out_1:
+                                file_writing_handles[common_prefix].write(paired_out_1)
+                        else:
+                            writes = [
+                                (f"{common_prefix}_R1_paired", paired_out_1),
+                                (f"{common_prefix}_R2_paired", paired_out_2),
+                                (f"{common_prefix}_R1_unpaired", R1_singles_out),
+                                (f"{common_prefix}_R2_unpaired", R2_singles_out)
+                            ]
+                            for handle_key, records in writes:
+                                if records:
+                                    file_writing_handles[handle_key].write(records)
                     file_stats[common_prefix]["kept_pairs"] += num_paired
                     file_stats[common_prefix]["kept_R1_singletons"] += num_R1_singles
                     file_stats[common_prefix]["kept_R2_singletons"] += num_R2_singles
@@ -2498,7 +2552,7 @@ def parse_args():
     )
     input_group.add_argument(
         "--input-interleaved", "-ii", nargs='+', default = None, metavar = "",
-        help="Interleaved FASTQ files."
+        help="Interleaved FASTQ files. Note: these files will be split in forward and reverse reads."
     )
     input_group.add_argument(
         "--input-unpaired", "-iu", nargs='+', default = None, metavar = "",
@@ -2518,6 +2572,14 @@ def parse_args():
         "--gzip-level", type=int, default = 1, metavar = "", choices=range(0, 4),
         help="Set gzip compression level. Higher compression decreases processing speed. Possible values: 0-3. Default: 1."
     )
+    output_group.add_argument(
+        "--stdout", action="store_true", default=False,
+        help="Stream resulting FASTQ reads to stdout. Forces --interleaved-out for paired and interleaved files. Overrides --verbose and --progress. Overridden to 'off' by --gzip. Note: all files will be streamed on end, without any seperators."
+    )
+    output_group.add_argument(
+        "--interleaved-out", action="store_true", default=False,
+        help="Interleave surviving FASTQ reads of paired and interleaved input files, resulting in one output file."
+    )    
 
     general_quality_group = parser.add_argument_group("General output filter options")
     general_quality_group.add_argument(
@@ -2849,7 +2911,16 @@ def parse_args():
     parameters["max_length_output"] = args.max_length_output
     parameters["min_length_output_perc"] = args.min_length_output_perc
     parameters["max_length_output_perc"] = args.max_length_output_perc
-       
+    parameters["stdout"] = args.stdout
+    parameters["interleaved_out"] = args.interleaved_out
+    
+    if parameters["gzip_output"]:
+        parameters["stdout"] = False
+        
+    if parameters["stdout"]:
+        parameters["verbose"] = False
+        parameters["progress"] = False
+    
     if parameters["n_filter"]:
         parameters["n_trimming_flag"] = False
 
@@ -2950,7 +3021,7 @@ def log_parameters(parameters):
         logger.info("[PARAMETER] %s: %s", key, _format_value(value))
     logger.info("---- End of run parameters ----")
         
-def print_final_message():
+def print_final_message(stdout):
     """
     Prints Readzor's completion message to the console and logs it to file only,
     including a citation request and a randomly selected sign-off phrase.
@@ -2958,6 +3029,8 @@ def print_final_message():
     Returns:
         None
     """
+    if stdout:
+        return
     sign_off_messages = [
     "Please come again!",
     "Thanks for trimming with Readzor!",
@@ -3011,17 +3084,17 @@ def main():
     created_output_dir = create_folder_structure(parameters["output_dir"])
     setup_logging(output_dir = created_output_dir, verbose = parameters["verbose"], parameters = parameters)
     log_parameters(parameters)
-    summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], parameters = parameters)
+    summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"] ,parameters = parameters)
     write_summary_and_statistics(summary_results, parameters, output_dir = created_output_dir)
     logger.info("Analysis successfully completed!")
-    print_final_message()
+    print_final_message(stdout = parameters["stdout"])
 
 def test_run(parameters):
     with tempfile.TemporaryDirectory(prefix="readzor_testrun_") as tmp_dir:
         created_output_dir = create_folder_structure(tmp_dir)
         setup_logging(output_dir = created_output_dir, verbose = True, parameters = parameters)
         log_parameters(parameters)
-        summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], parameters = parameters)
+        summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"],parameters = parameters)
         write_summary_and_statistics(summary_results, parameters, output_dir = created_output_dir)
         logger.info("All files deleted.")
         logger.info("Testrun completed!")
