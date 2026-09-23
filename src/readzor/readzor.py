@@ -12,12 +12,13 @@ import random
 import re
 import shlex
 import shutil
+import signal
 import sys
 import tempfile
 import time
 import threading
 
-from fuzzysearch import find_near_matches
+from numpy.lib.stride_tricks import sliding_window_view
 from isal import igzip as gzip
 import numpy as np
 
@@ -1332,29 +1333,35 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
     n_reads, length = quality_arr.shape
 
     if not chunk_padding_bool:
-        # --- original logic, untouched ---
         if length < slider_window:
             return np.zeros(n_reads, dtype=np.int16), np.full(n_reads, length, dtype=np.int16)
+
+        last_possible_start = length - slider_window
+        window_starts = np.arange(0, last_possible_start + 1, slider_step)
+        if window_starts[-1] != last_possible_start:
+            window_starts = np.append(window_starts, last_possible_start)
+
         cumsum = np.cumsum(quality_arr, axis=1, dtype=np.int32)
         cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int32), cumsum], axis=1)
-        window_starts = np.arange(0, length - slider_window + 1, slider_step)
         window_sums = cumsum[:, window_starts + slider_window] - cumsum[:, window_starts]
         failed_mask = window_sums < (slider_quality * slider_window)
+
         bad_positions = np.zeros((n_reads, length), dtype=bool)
         n_windows = len(window_starts)
+
         if slider_step == 1:
             for offset in range(slider_window):
                 bad_positions[:, offset:offset + n_windows] |= failed_mask
         else:
             for j, start in enumerate(window_starts):
                 bad_positions[:, start:start + slider_window] |= failed_mask[:, j:j + 1]
+
         real_lengths = np.full(n_reads, length, dtype=np.int32)
     else:
         real_lengths = length - row_tilde_count
         too_short = real_lengths < slider_window
 
         if length < slider_window:
-            # window can never fit anywhere, regardless of padding
             left_cutoffs = np.zeros(n_reads, dtype=np.int16)
             right_cutoffs = real_lengths.astype(np.int16)
             return left_cutoffs, right_cutoffs
@@ -1364,13 +1371,15 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
         pad_cumsum = np.cumsum(padding_mask_bool.astype(np.int32), axis=1)
         pad_cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int32), pad_cumsum], axis=1)
 
-        window_starts = np.arange(0, length - slider_window + 1, slider_step)
+        last_possible_start = length - slider_window
+        window_starts = np.arange(0, last_possible_start + 1, slider_step)
+        if window_starts[-1] != last_possible_start:
+            window_starts = np.append(window_starts, last_possible_start)
+
         window_sums = cumsum[:, window_starts + slider_window] - cumsum[:, window_starts]
         window_pad_counts = pad_cumsum[:, window_starts + slider_window] - pad_cumsum[:, window_starts]
         window_has_pad = window_pad_counts > 0
 
-        # a window touching padding can never be trusted as "good" -
-        # its sum may be inflated by fake padding quality bytes
         failed_mask = (window_sums < (slider_quality * slider_window)) | window_has_pad
 
         bad_positions = np.zeros((n_reads, length), dtype=bool)
@@ -1382,8 +1391,6 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
             for j, start in enumerate(window_starts):
                 bad_positions[:, start:start + slider_window] |= failed_mask[:, j:j + 1]
 
-        # belt-and-suspenders: no padded position can ever be "good",
-        # even if window coverage/alignment missed it
         bad_positions |= padding_mask_bool
 
     good_positions = ~bad_positions
@@ -1406,36 +1413,18 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
     _, end_cols = np.where(diffs == -1)
     global_rows = np.where(needs_stretch_search)[0][local_rows]
     run_lengths = end_cols - start_cols
-    order = np.lexsort((-run_lengths, global_rows))
+    
+    run_sums = cumsum[global_rows, end_cols] - cumsum[global_rows, start_cols]
+    run_means = run_sums / run_lengths
+    order = np.lexsort((-run_means, -run_lengths, global_rows))
     sorted_rows = global_rows[order]
-    sorted_lengths = run_lengths[order]
     first_in_group = np.concatenate([[0], np.flatnonzero(sorted_rows[1:] != sorted_rows[:-1]) + 1])
     best_idx = order[first_in_group]
-    if len(first_in_group) < len(sorted_rows):
-        second_in_group = first_in_group[first_in_group + 1 < len(sorted_rows)] + 1
-        tied_mask = (sorted_rows[second_in_group] == sorted_rows[second_in_group - 1]) & \
-                    (sorted_lengths[second_in_group] == sorted_lengths[second_in_group - 1])
-        if np.any(tied_mask):
-            tied_global_rows = np.unique(sorted_rows[second_in_group[tied_mask]])
-            is_tied_run = np.isin(global_rows, tied_global_rows)
-            t_rows = global_rows[is_tied_run]
-            t_starts = start_cols[is_tied_run]
-            t_ends = end_cols[is_tied_run]
-            t_lengths = run_lengths[is_tied_run]
-            t_sums = cumsum[t_rows, t_ends] - cumsum[t_rows, t_starts]
-            t_means = t_sums / t_lengths
-            t_order = np.lexsort((-t_means, -t_lengths, t_rows))
-            t_sorted_rows = t_rows[t_order]
-            t_first_in_group = np.concatenate([[0], np.flatnonzero(t_sorted_rows[1:] != t_sorted_rows[:-1]) + 1])
-            t_best_idx = t_order[t_first_in_group]
-            untied_mask = ~np.isin(global_rows[best_idx], tied_global_rows)
-            best_idx = np.concatenate([best_idx[untied_mask], np.flatnonzero(is_tied_run)[t_best_idx]])
+
     left_cutoffs[global_rows[best_idx]] = start_cols[best_idx]
     right_cutoffs[global_rows[best_idx]] = end_cols[best_idx]
 
     if chunk_padding_bool:
-        # rows too short for even one full window never entered the
-        # window/stretch logic meaningfully - pass them through untrimmed
         left_cutoffs[too_short] = 0
         right_cutoffs[too_short] = real_lengths[too_short].astype(np.int16)
 
@@ -1466,7 +1455,6 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
     n_reads, length = sequence_arr.shape
     all_bytes = sequence_arr.tobytes()
     right_cutoffs = np.zeros(n_reads, dtype=np.int16)
-
     if mismatches == 0:
         if not chunk_padding_bool:
             for i in range(n_reads):
@@ -1490,30 +1478,40 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
                         best = pos
                 right_cutoffs[i] = best
     else:
+        right_cutoffs[:] = length if not chunk_padding_bool else (length - row_tilde_count)
+
         if not chunk_padding_bool:
-            for i in range(n_reads):
-                best = length
-                row_bytes = all_bytes[i*length:(i+1)*length]
-                for adapter_bytes in adapter_sequences:
-                    matches = find_near_matches(adapter_bytes, row_bytes, max_substitutions=mismatches, max_insertions=0, max_deletions=0)
-                    for matched in matches:
-                        if matched.start < best:
-                            best = matched.start
-                right_cutoffs[i] = best
+            for adapter_bytes in adapter_sequences:
+                adapter_arr = np.frombuffer(adapter_bytes, dtype=np.uint8)
+                windows = sliding_window_view(sequence_arr, window_shape=len(adapter_arr), axis=1)
+                mismatch_matrix = (windows != adapter_arr).sum(axis=2)
+                valid_mask = mismatch_matrix <= mismatches
+                has_match = valid_mask.any(axis=1)
+
+                if has_match.any():
+                    first_match_col = valid_mask.argmax(axis=1)
+                    right_cutoffs[has_match] = np.minimum(
+                        right_cutoffs[has_match],
+                        first_match_col[has_match].astype(np.int16)
+                    )
         else:
             real_lengths = length - row_tilde_count
-            for i in range(n_reads):
-                real_len = real_lengths[i]
-                row_bytes = all_bytes[i*length:(i+1)*length]
-                row_bytes_real = row_bytes[:real_len]
-                best = real_len
-                for adapter_bytes in adapter_sequences:
-                    matches = find_near_matches(adapter_bytes, row_bytes_real, max_substitutions=mismatches, max_insertions=0, max_deletions=0)
-                    for matched in matches:
-                        if matched.start < best:
-                            best = matched.start
-                right_cutoffs[i] = best
+            for adapter_bytes in adapter_sequences:
+                adapter_arr = np.frombuffer(adapter_bytes, dtype=np.uint8)
+                length_adapter = len(adapter_arr)
+                windows = sliding_window_view(sequence_arr, window_shape=length_adapter, axis=1)
+                mismatch_matrix = (windows != adapter_arr).sum(axis=2)
+                window_ends = np.arange(length_adapter, length + 1)
+                within_bounds = window_ends <= real_lengths[:, None]
+                valid_mask = (mismatch_matrix <= mismatches) & within_bounds
+                has_match = valid_mask.any(axis=1)
 
+                if has_match.any():
+                    first_match_col = valid_mask.argmax(axis=1)
+                    right_cutoffs[has_match] = np.minimum(
+                        right_cutoffs[has_match],
+                        first_match_col[has_match].astype(np.int16)
+                    )
     return np.zeros(n_reads, dtype=np.int16), right_cutoffs
     
 def average_quality_batch(quality_arr, lefts, rights):
@@ -1672,6 +1670,8 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
             - Count of kept reads.
             - Count of rejected reads.
     """
+    if not chunk or len(chunk) == 0:
+        return b""
     valid_headers = []
     valid_sequences = []
     valid_pluses = []
@@ -2176,6 +2176,7 @@ def worker_initilizer(parameters):
         parameters (dict): Configuration parameters, pickled and sent to
             each worker exactly once when the pool spins it up.
     """
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     global WORKER_PARAMETERS
     WORKER_PARAMETERS = parameters
 
@@ -3221,6 +3222,9 @@ def main():
         write_summary_and_statistics(summary_results, parameters, output_dir = created_output_dir)
         logger.info("Analysis successfully completed!")
         print_final_message(stdout = parameters["stdout"])
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user — shutting down.")
+        sys.exit(130)
     finally:
         cleanup_stdin_temp_files()
 

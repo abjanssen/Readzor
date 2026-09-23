@@ -231,7 +231,6 @@ Further options that can be specified to alter the behavior of Readzor.\
 
 ## Software version
 Readzor depends on the following software packages:
-* Fuzzysearch (version required: 0.8.1)
 * NumPy (version required: 2.5.2)
 * Python (no version requirement)
 * Python-isal (version required: 1.8.0)
