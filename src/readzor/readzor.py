@@ -338,22 +338,19 @@ class ProgressTracker:
 
 ##### Helper functions #####
 
-def resolve_stdin_input(filepath):
+def resolve_stdin_input():
     """
-    Resolve a '-' CLI input argument by spooling stdin to a temp file.
- 
-    Args:
-        filepath (str): The raw CLI argument. If exactly '-', stdin is read
-            in full and written to a temp file; otherwise returned unchanged.
- 
+    Auto-detects piped stdin data and spools it to a temporary file.
+
     Returns:
-        str: A real filesystem path safe to pass through the rest of the
-        pipeline (file-size checks, gzip sniffing, multiple reads, etc.).
+        str: A real filesystem path safe to pass through the rest of the pipeline.
+
+    Raises:
+        SystemExit: If no data is being piped into stdin.
     """
-    if filepath != "-":
-        return filepath
     if sys.stdin.isatty():
-        raise SystemExit("Error: '-' was given for stdin input, but no data is being piped in.")
+        raise SystemExit("Error: No input file specified and no piped data detected on stdin.")
+
     fd, tmp_path = tempfile.mkstemp(suffix=".fastq", prefix="readzor_stdin_")
     with os.fdopen(fd, "wb") as tmp_file:
         shutil.copyfileobj(sys.stdin.buffer, tmp_file, length=10 * 1024 * 1024)
@@ -633,9 +630,6 @@ def find_paired_files(filepaths):
         except (IOError, OSError) as e:
             logger.warning("Could not read '%s', skipping: %s", filepath, e)
             continue
-
-        # headers sit at every 4th line (0, 4); drop trailing empty
-        # reads from a file with fewer than 2 records.
         headers = [lines[i] for i in (0, 4) if lines[i]]
         if not headers:
             logger.warning("File '%s' has an empty or missing header, skipping.", filepath)
@@ -644,9 +638,6 @@ def find_paired_files(filepaths):
         header_1 = headers[0].strip().lstrip(b'@')
         base_id, read_num = read_info_from_header(header_1)
         base_ids[filepath] = (base_id, read_num)
-
-        # Interleaved check: does this file's own record #1 and record #2
-        # form a valid R1/R2 pair by base ID?
         if len(headers) == 2:
             header_2 = headers[1].strip().lstrip(b'@')
             base_id_2, read_num_2 = read_info_from_header(header_2)
@@ -735,9 +726,9 @@ def read_info_from_header(header):
     read_num = None
     header = header.strip()
     if b' ' in header:
-        parts = header.split(b' ', 1)
+        parts = header.split(b' ')
         base_id = parts[0]
-        m = re.match(rb'([12]):', parts[1])
+        m = re.match(rb'([12]):?', parts[1])
         if m:
             read_num = int(m.group(1))
     else:
@@ -1041,7 +1032,10 @@ def open_fastq_writer(filepath, output_dir, gzip_output):
     """
     basename_for_write = basename_file(filepath)
     extension = "_filtered.fastq.gz" if gzip_output else "_filtered.fastq"
-    out_filepath = os.path.join(output_dir, basename_for_write + extension)
+    filename = basename_for_write + extension
+    if "rejected" in filename:
+        filename = filename.replace("_filtered", "")
+    out_filepath = os.path.join(output_dir, filename)
     return open(out_filepath, "xb")
 
 ##### Processing reads functions #####
@@ -1106,7 +1100,7 @@ def trim_ends_quality(quality_arr, chunk_padding_bool, padding_mask_bool, min_qu
         zero_rows = start_cutoffs == 0
         if zero_rows.any():
             start_good_pos = qual_mask[:, 0] | ~zero_rows
-            start_cutoffs = np.where(start_good_pos, start_cutoffs, 0)
+            start_cutoffs = np.where(start_good_pos, start_cutoffs, length)
 
         quality_arr_rev = quality_arr[:, ::-1]
         qual_mask = quality_arr_rev >= endqual_min_end
@@ -1121,7 +1115,7 @@ def trim_ends_quality(quality_arr, chunk_padding_bool, padding_mask_bool, min_qu
         zero_rows = start_cutoffs == 0
         if zero_rows.any():
             start_good_pos = qual_mask[:, 0] | ~zero_rows
-            start_cutoffs = np.where(start_good_pos, start_cutoffs, 0)
+            start_cutoffs = np.where(start_good_pos, start_cutoffs, length)
 
         quality_arr_rev = quality_arr[:, ::-1]
         pad_mask_rev = padding_mask_bool[:, ::-1]
@@ -1180,14 +1174,23 @@ def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, chunk_paddi
     
     start_bases = []
     end_bases = []
+    
     if poly_bases_both is not None:
         bases = [b.strip().upper() for b in poly_bases_both.split(",") if b.strip()]
+        if any(len(b) != 1 for b in bases):
+            raise ValueError(f"Invalid base entry in '{poly_bases_both}': All bases must be single characters.")
         start_bases = bases
         end_bases = bases
+    
     if poly_bases_start is not None:
         start_bases = [b.strip().upper() for b in poly_bases_start.split(",") if b.strip()]
+        if any(len(b) != 1 for b in start_bases):
+            raise ValueError(f"Invalid base entry in '{poly_bases_start}': All bases must be single characters.")
+    
     if poly_bases_end is not None:
         end_bases = [b.strip().upper() for b in poly_bases_end.split(",") if b.strip()]
+        if any(len(b) != 1 for b in end_bases):
+            raise ValueError(f"Invalid base entry in '{poly_bases_end}': All bases must be single characters.")
     
     poly_length_start = poly_length_start if poly_length_start != 0 else poly_length_both
     poly_length_end = poly_length_end if poly_length_end != 0 else poly_length_both
@@ -1594,9 +1597,13 @@ def kmer_complexity_scan(sequence_arr, chunk_padding_bool, padding_mask_bool, km
             break
         if k > length:
             raise ValueError(f"k-mer length {k} is greater than sequence length {length}")
+            
         max_kmers = length - k + 1
+        alphabet_size = 5 if allow_n else 4
+        max_possible_unique = min(max_kmers, alphabet_size**k)
+        
         kmer_ints = np.zeros((n_reads, max_kmers), dtype=np.int64)
-
+        
         if not chunk_padding_bool:
             for i in range(k):
                 kmer_ints = (kmer_ints << bits_per_base) | int_matrix_full[:, i:i+max_kmers]
@@ -1607,7 +1614,7 @@ def kmer_complexity_scan(sequence_arr, chunk_padding_bool, padding_mask_bool, km
             np.not_equal(sorted_kmers[:, 1:], sorted_kmers[:, :-1], out=is_new[:, 1:])
             unique_counts = is_new.sum(axis=1)
 
-            ratio = unique_counts / max_kmers
+            ratio = unique_counts / max_possible_unique
             global_passed &= (ratio >= (low_complex_cutoff / 100))
         else:
             window_has_pad = np.zeros((n_reads, max_kmers), dtype=bool)
@@ -1626,16 +1633,17 @@ def kmer_complexity_scan(sequence_arr, chunk_padding_bool, padding_mask_bool, km
             any_pad_in_row = window_has_pad.any(axis=1)
             unique_counts = unique_counts - any_pad_in_row.astype(np.int64)
 
-            ratio = np.where(valid_kmer_counts > 0,
-                              unique_counts / np.maximum(valid_kmer_counts, 1),
-                              0.0)
+            # Cap the valid k-mer denominator per read by alphabet_size**k
+            denom = np.minimum(valid_kmer_counts, alphabet_size**k)
+
+            ratio = np.where(denom > 0, unique_counts / denom, 0.0)
             global_passed &= (ratio >= (low_complex_cutoff / 100))
 
     second_array = np.where(global_passed, length, 0).astype(np.int16)
     return np.zeros(n_reads, dtype=np.int16), second_array
 
 ##### Unpaired reads workflow functions #####
-def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_output, gzip_level, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, parameters):
+def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_output, gzip_level, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, parameters):
     """
     Validates, quality-trims, and length/quality-filters a chunk of unpaired
     FASTQ reads.
@@ -1668,6 +1676,8 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
     valid_sequences = []
     valid_pluses = []
     valid_qualities = []
+    rejected_reads = []
+    rejected = 0
     for r in chunk:
         header, sequence, plus, quality = r.split(FIELD_SEP)
         if validate_fastq(header, sequence, plus, quality, n_filter = parameters["n_filter"], min_length_input = parameters["min_length_input"], max_length_input = parameters["max_length_input"]):
@@ -1675,7 +1685,10 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
             valid_sequences.append(sequence)
             valid_pluses.append(plus)
             valid_qualities.append(quality)
-    rejected = len(chunk) - len(valid_headers)
+        else:
+            rejected += 1
+            if write_rejected:
+                rejected_reads.append(b"\n".join((header, sequence, plus, quality)) + b"\n")
     if not valid_headers:
         return [], 0, rejected
     if parameters["mgi_convert_flag"]:
@@ -1728,6 +1741,8 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
             valid_headers, valid_sequences, valid_pluses, valid_qualities, lefts, rights, keep_mask):
         if not keep:
             rejected += 1
+            if write_rejected:
+                rejected_reads.append(b"\n".join((header, sequence, plus_line, quality)) + b"\n")
             continue
         qual_out = quality[left:right]
         if qual_table is not None:
@@ -1735,12 +1750,16 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
         results.append(b"\n".join((header, sequence[left:right], plus_line, qual_out)) + b"\n")
     len_results = len(results)
     results = b"".join(results)
+    if write_rejected:
+        rejected_reads = b"".join(rejected_reads)
     if gzip_output:
         try:
             results = gzip.compress(results, compresslevel=gzip_level)
+            if write_rejected:
+                rejected_reads = gzip.compress(rejected_reads, compresslevel=gzip_level)
         except Exception as e:
             raise RuntimeError(f"Compression failed inside worker: {str(e)}") from None
-    return results, len_results, rejected
+    return results, len_results, rejected, rejected_reads
 
 def generate_unpaired_tasks(filepaths, chunk_size, parameters, filetype = None):
     """
@@ -1838,7 +1857,7 @@ def process_unpaired_task_flat(task, parameters):
     Returns:
         tuple: A tuple containing (type, filepath, chunk_results, kept, rejected).
     """
-    chunk_results, kept, rejected = process_unpaired_chunk(
+    chunk_results, kept, rejected, rejected_reads = process_unpaired_chunk(
         chunk=task["chunk"],
         phred_offset=task["phred_offset"],
         minimum_average_qual_post=parameters["minimum_average_qual_post"],
@@ -1848,9 +1867,10 @@ def process_unpaired_task_flat(task, parameters):
         max_length_output = parameters["max_length_output"],
         min_length_output_perc = parameters["min_length_output_perc"],
         max_length_output_perc =parameters["max_length_output_perc"],
+        write_rejected= parameters["write_rejected"],
         parameters=parameters
     )
-    return task["type"], task["filepath"], chunk_results, kept, rejected
+    return task["type"], task["filepath"], chunk_results, kept, rejected, rejected_reads
 
 ##### Paired reads workflow funtions #####
 def process_paired_task_flat(task, parameters):
@@ -1870,7 +1890,7 @@ def process_paired_task_flat(task, parameters):
     """
     file1 = task["file1"]
     file2 = task["file2"]
-    paired_out_1, paired_out_2, R1_singles_out, R2_singles_out, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2 = process_paired_chunk(
+    paired_out_1, paired_out_2, R1_singles_out, R2_singles_out, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2, rejected_R1, rejected_R2 = process_paired_chunk(
         chunks = (task["chunk1"],task["chunk2"] ),
         phred_offset_1=task["phred_offset_1"],
         phred_offset_2=task["phred_offset_2"],
@@ -1878,7 +1898,7 @@ def process_paired_task_flat(task, parameters):
         gzip_level = task["gzip_level"],
         parameters=parameters
     )
-    return task["type"], file1, file2, paired_out_1, paired_out_2, R1_singles_out, R2_singles_out, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2
+    return task["type"], file1, file2, paired_out_1, paired_out_2, R1_singles_out, R2_singles_out, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2, rejected_R1, rejected_R2
 
 def generate_paired_tasks(files, chunk_size, parameters):
     """
@@ -1956,7 +1976,7 @@ def generate_paired_tasks(files, chunk_size, parameters):
                 "gzip_level": parameters["gzip_level"]
             }
 
-def trim_reads(records, phred_offset, minimum_average_qual_post, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, parameters):
+def trim_reads(records, phred_offset, minimum_average_qual_post, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, parameters):
     """
     Validates, quality-trims, and length/quality-filters a batch of FASTQ
     reads, keyed by their base (mate-independent) read ID.
@@ -1984,6 +2004,7 @@ def trim_reads(records, phred_offset, minimum_average_qual_post, min_length_outp
     valid_sequences = []
     valid_pluses = []
     valid_qualities = []
+    rejected_reads = []
     rejected = 0
     for r in records:
         header, sequence, plus, quality = r.split(FIELD_SEP)
@@ -1994,6 +2015,8 @@ def trim_reads(records, phred_offset, minimum_average_qual_post, min_length_outp
             valid_qualities.append(quality)
         else:
             rejected += 1
+            if write_rejected:
+                rejected_reads.append(b"\n".join((header, sequence, plus, quality)) + b"\n")
     if not valid_headers:
         return {}, len(records)
     if parameters["mgi_convert_flag"]:
@@ -2047,6 +2070,8 @@ def trim_reads(records, phred_offset, minimum_average_qual_post, min_length_outp
     for i, keep in enumerate(keep_mask):
         if not keep:
             rejected += 1
+            if write_rejected:
+                rejected_reads.append(b"\n".join((valid_headers[i], valid_sequences[i], valid_pluses[i], valid_qualities[i])) + b"\n")
             continue
         left, right = int(lefts[i]), int(rights[i])
         seq_out = valid_sequences[i][left:right]
@@ -2055,7 +2080,7 @@ def trim_reads(records, phred_offset, minimum_average_qual_post, min_length_outp
             qual_out = qual_out.translate(qual_table)
         base_id, _ = read_info_from_header(valid_headers[i])
         survivors[base_id] = b"\n".join((valid_headers[i], seq_out, valid_pluses[i], qual_out)) + b"\n"
-    return survivors, rejected
+    return survivors, rejected, rejected_reads
         
 def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gzip_level, parameters):
     """
@@ -2087,8 +2112,8 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
             - Count of R2 reads rejected during trimming.
     """
     chunk1, chunk2 = chunks
-    survivors_1, rejected_1 = trim_reads(chunk1, phred_offset_1, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], parameters = parameters)
-    survivors_2, rejected_2 = trim_reads(chunk2, phred_offset_2, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], parameters = parameters)
+    survivors_1, rejected_1, rejected_R1 = trim_reads(chunk1, phred_offset_1, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], parameters = parameters)
+    survivors_2, rejected_2, rejected_R2 = trim_reads(chunk2, phred_offset_2, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], parameters = parameters)
     paired_out_1 = []
     paired_out_2 = []
     singles_out_1 = []
@@ -2109,28 +2134,36 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
     if interleave:
         paired_out_1 = b"".join(r1 + r2 for r1, r2 in zip(paired_out_1, paired_out_2))
         paired_out_1 += b"".join(singles_out_1) + b"".join(singles_out_2)
+        rejected_R1 = b"".join(rejected_R1) + b"".join(rejected_R2)
+        rejected_R2 = b""
         paired_out_2 = b""
         singles_out_1 = b""
         singles_out_2 = b""
     else:
         paired_out_1 = b"".join(paired_out_1)
         paired_out_2 = b"".join(paired_out_2)
+        rejected_R1 = b"".join(x.encode("utf-8") if isinstance(x, str) else x for x in rejected_R1)
+        rejected_R2 = b"".join(x.encode("utf-8") if isinstance(x, str) else x for x in rejected_R2)
         singles_out_1 = b"".join(singles_out_1)
         singles_out_2 = b"".join(singles_out_2)
     
     if gzip_output:
-        isal_level = min(max(gzip_level, 0), 3)
         try:
-            paired_out_1 = gzip.compress(paired_out_1, compresslevel=isal_level)
+            if paired_out_1:
+                paired_out_1 = gzip.compress(paired_out_1, compresslevel=gzip_level)
             if paired_out_2:
-                paired_out_2 = gzip.compress(paired_out_2, compresslevel=isal_level)
+                paired_out_2 = gzip.compress(paired_out_2, compresslevel=gzip_level)
+            if rejected_R1:
+                rejected_R1 = gzip.compress(rejected_R1, compresslevel=gzip_level)
+            if rejected_R2:
+                rejected_R2 = gzip.compress(rejected_R2, compresslevel=gzip_level)
             if singles_out_1:
-                singles_out_1 = gzip.compress(singles_out_1, compresslevel=isal_level)
+                singles_out_1 = gzip.compress(singles_out_1, compresslevel=gzip_level)
             if singles_out_2:
-                singles_out_2 = gzip.compress(singles_out_2, compresslevel=isal_level)
+                singles_out_2 = gzip.compress(singles_out_2, compresslevel=gzip_level)
         except Exception as e:
             raise RuntimeError(f"Compression failed inside worker: {str(e)}") from None
-    return paired_out_1, paired_out_2, singles_out_1, singles_out_2, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2
+    return paired_out_1, paired_out_2, singles_out_1, singles_out_2, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2, rejected_R1, rejected_R2
 
 ##### Input handler functions #####
 def worker_initilizer(parameters):
@@ -2174,7 +2207,7 @@ def unified_worker(task):
     else:
         raise ValueError(f"Unknown or missing task type: {task_type}")
 
-def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_files, output_dir, threads, chunk_size, show_progress, stdout, interleaved_out, parameters):
+def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_files, output_dir, threads, chunk_size, show_progress, stdout, interleaved_out, write_rejected, parameters):
     """
     Top-level orchestrator that separates input files into paired and
     unpaired groups, sets up file writers, and runs the multiprocessing pool
@@ -2236,6 +2269,8 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
         file_stats[file] = {"kept": 0, "rejected": 0}
         if not stdout:
             file_writing_handles[file] = open_fastq_writer(file, output_dir, gzip_output=parameters["gzip_output"])
+        if write_rejected:
+            file_writing_handles[f"{file}_rejected"] = open_fastq_writer(file, output_dir, gzip_output=parameters["gzip_output"])
     pair_keys = {}
     used_prefixes = set()
     for file in interleaved:
@@ -2250,6 +2285,14 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
                     output_dir,
                     gzip_output=parameters["gzip_output"]
                     )
+                if write_rejected:
+                    for suffix in ["_rejected"]:
+                        key = f"{base_prefix}{suffix}"
+                        file_writing_handles[key] = open_fastq_writer(
+                            key,
+                            output_dir,
+                            gzip_output=parameters["gzip_output"]
+                            )
             else:
                 for suffix in ["_R1_paired", "_R2_paired", "_R1_unpaired", "_R2_unpaired"]:
                     key = f"{base_prefix}{suffix}"
@@ -2258,6 +2301,14 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
                         output_dir,
                         gzip_output=parameters["gzip_output"]
                         )
+                if write_rejected:
+                    for suffix in ["_R1_rejected", "_R2_rejected"]:
+                        key = f"{base_prefix}{suffix}"
+                        file_writing_handles[key] = open_fastq_writer(
+                            key,
+                            output_dir,
+                            gzip_output=parameters["gzip_output"]
+                            )
     for pair in paired:
         file1, file2 = pair
         base_prefix = common_name_parts([os.path.basename(file1), os.path.basename(file2)])
@@ -2277,6 +2328,14 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
                     output_dir,
                     gzip_output=parameters["gzip_output"]
                     )
+                if write_rejected:
+                    for suffix in ["_rejected"]:
+                        key = f"{common_prefix}{suffix}"
+                        file_writing_handles[key] = open_fastq_writer(
+                            key,
+                            output_dir,
+                            gzip_output=parameters["gzip_output"]
+                            )
             else:
                 for suffix in ["_R1_paired", "_R2_paired", "_R1_unpaired", "_R2_unpaired"]:
                     key = f"{base_prefix}{suffix}"
@@ -2285,6 +2344,14 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
                         output_dir,
                         gzip_output=parameters["gzip_output"]
                         )
+                if write_rejected:
+                    for suffix in ["_R1_rejected", "_R2_rejected"]:
+                        key = f"{base_prefix}{suffix}"
+                        file_writing_handles[key] = open_fastq_writer(
+                            key,
+                            output_dir,
+                            gzip_output=parameters["gzip_output"]
+                            )
 
     def unified_chunk_streamer():
         chunks_per_file = threads if parameters["testrun"] else None
@@ -2338,17 +2405,21 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
             for result in submit(unified_worker, bounded_chunk_stream(), chunksize=1):
                 backpressure.release()
                 if result[0] == "unpaired":
-                    _, filepath, chunk_results, kept, rejected = result
-                    if chunk_results:
-                        if parameters["stdout"]:
+                    _, filepath, chunk_results, kept, rejected, rejected_reads = result
+                    if parameters["stdout"]:
+                        if chunk_results:
                             sys.stdout.write(chunk_results)
-                        else:
+                    else:
+                        if chunk_results:
                             file_writing_handles[filepath].write(chunk_results)
+                        if write_rejected and rejected_reads:
+                            file_writing_handles[f"{filepath}_rejected"].write(rejected_reads)
+                
                     file_stats[filepath]["kept"] += kept
                     file_stats[filepath]["rejected"] += rejected
                     tracker.update(kept + rejected)
                 elif result[0] == "paired":
-                    _, file1, file2, paired_out_1, paired_out_2, R1_singles_out, R2_singles_out, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2 = result
+                    _, file1, file2, paired_out_1, paired_out_2, R1_singles_out, R2_singles_out, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2, rejected_R1, rejected_R2 = result
                     common_prefix = pair_keys[(file1, file2)]
                     if parameters["stdout"]:
                         if paired_out_1:
@@ -2357,6 +2428,9 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
                         if interleaved_out:
                             if paired_out_1:
                                 file_writing_handles[common_prefix].write(paired_out_1)
+                            if write_rejected:
+                                if rejected_R1:
+                                    file_writing_handles[f"{common_prefix}_rejected"].write(rejected_R1)
                         else:
                             writes = [
                                 (f"{common_prefix}_R1_paired", paired_out_1),
@@ -2364,6 +2438,11 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
                                 (f"{common_prefix}_R1_unpaired", R1_singles_out),
                                 (f"{common_prefix}_R2_unpaired", R2_singles_out)
                             ]
+                            if write_rejected:
+                                writes.extend([
+                                    (f"{common_prefix}_R1_rejected", rejected_R1),
+                                    (f"{common_prefix}_R2_rejected", rejected_R2)
+                                ])
                             for handle_key, records in writes:
                                 if records:
                                     file_writing_handles[handle_key].write(records)
@@ -2574,10 +2653,11 @@ def parse_args():
         "Input options",
         "Specify input FASTQ files using any combination of --input-files, --input-paired, and --input-unpaired. "
         "Lists with any combination of regular (fastq/fq), and gzipped (fastq.gz/fq.gz) files accepted."
+        "If no input flags are provided, data will be read directly from standard input (stdin)."
     )
     input_group.add_argument(
         "--input-files", "-i", nargs='+', default = None, metavar = "",
-        help="FASTQ files of unspecified pairing. Paired and unpaired files will be auto-detected."
+        help="FASTQ files of unspecified pairing (or data from stdin). Paired and unpaired files will be auto-detected."
     )
     input_group.add_argument(
         "--input-paired", "-ip", nargs='+', default=None, metavar = "",
@@ -2613,6 +2693,10 @@ def parse_args():
         "--interleaved-out", action="store_true", default=False,
         help="Interleave surviving FASTQ reads of paired and interleaved input files, resulting in one output file."
     )    
+    output_group.add_argument(
+        "--write-rejected", action="store_true", default=False,
+        help="Write rejected reads to file. Either one (for unpaired and when --interleaved-out is set), or two (for forward and reverse reads) are produced. Overridden to 'off' when --stdout is set."
+    )  
 
     general_quality_group = parser.add_argument_group("General output filter options")
     general_quality_group.add_argument(
@@ -2779,7 +2863,7 @@ def parse_args():
     )
     low_complexity_group.add_argument(
         "--kmer-cutoff", "-kc", type = int, default = 50, metavar="",
-        help="Minimum percentage of unique k-mers (relative to the maximum possible for the read) required to pass the complexity filter. Higher values are stricter. Default: 50."
+        help="Minimum percentage of unique k-mers (relative to the maximum possible) required to pass the complexity filter. Higher values are stricter. Default: 50."
     )
     mgi_convert_group = parser.add_argument_group("MGI header conversion",
                                                   "Convert read header from MGI (BGI) format to Illumina format. Original header will be stored in the placeholder line. Conversion is necessary for downstream analysis with tools such as samtools")
@@ -2857,8 +2941,17 @@ def parse_args():
         print_adapters()
         sys.exit()
 
-    if args.full_auto:
-        if not (args.input_files or args.input_paired or args.input_unpaired or args.input_interleaved):
+    has_inputs = bool(
+        args.input_files or 
+        args.input_paired or 
+        args.input_unpaired or 
+        args.input_interleaved
+    )
+    
+    if not has_inputs:
+        if not sys.stdin.isatty():
+            args.input_files = [resolve_stdin_input()]
+        elif args.full_auto:
             cwd = os.getcwd()
             pattern = re.compile(r'\.(fastq|fq)(\.gz|\.gzip)?$', re.IGNORECASE)
             args.input_files = [
@@ -2870,24 +2963,22 @@ def parse_args():
                 parser.error(
                     f"--full-auto was set but no FASTQ files were detected in {cwd}."
                 )
+        else:
+            parser.error(
+                "You must specify input files (--input-files, --input-paired, etc.), "
+                "pipe data via stdin, or use --full-auto."
+            )
+    
+    if args.full_auto:
         for action in parser._actions:
             dest = action.dest
             if dest == "help" or dest in FULL_AUTO_PRESERVED_DESTS:
                 continue
             reset_value = FULL_AUTO_OVERRIDES.get(dest, action.default)
             setattr(args, dest, reset_value)
+            
         if not args.verbose:
             print("[WARNING] --full-auto/-GO specified; ignoring all other input parameters (except input file parameters).")
-    elif not (args.input_files or args.input_paired or args.input_unpaired or args.input_interleaved):
-        parser.error(
-            "You must specify any combination of --input-files, --input-paired, --input_interleaved and/or --input-unpaired (unless using --full-auto)."
-        )
-    
-    args.input_files = [resolve_stdin_input(f) for f in args.input_files] if args.input_files else args.input_files
-    args.input_unpaired = [resolve_stdin_input(f) for f in args.input_unpaired] if args.input_unpaired else args.input_unpaired
-    args.input_interleaved = [resolve_stdin_input(f) for f in args.input_interleaved] if args.input_interleaved else args.input_interleaved
-    if args.input_paired:
-        args.input_paired = [resolve_stdin_input(f) for f in args.input_paired]
 
     # --- Store parameters ---
     parameters = {}
@@ -2952,6 +3043,7 @@ def parse_args():
     parameters["max_length_output_perc"] = args.max_length_output_perc
     parameters["stdout"] = args.stdout
     parameters["interleaved_out"] = args.interleaved_out
+    parameters["write_rejected"] = args.write_rejected
     
     if parameters["gzip_output"]:
         parameters["stdout"] = False
@@ -2959,6 +3051,7 @@ def parse_args():
     if parameters["stdout"]:
         parameters["verbose"] = False
         parameters["progress"] = False
+        parameters["write_rejected"] = False
     
     if parameters["n_filter"]:
         parameters["n_trimming_flag"] = False
@@ -3124,7 +3217,7 @@ def main():
         created_output_dir = create_folder_structure(parameters["output_dir"])
         setup_logging(output_dir = created_output_dir, verbose = parameters["verbose"], parameters = parameters)
         log_parameters(parameters)
-        summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"] ,parameters = parameters)
+        summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"], write_rejected = parameters["write_rejected"], parameters = parameters)
         write_summary_and_statistics(summary_results, parameters, output_dir = created_output_dir)
         logger.info("Analysis successfully completed!")
         print_final_message(stdout = parameters["stdout"])
