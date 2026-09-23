@@ -1059,12 +1059,12 @@ def average_quality_filter_wrapper(quality_arr, chunk_padding_bool, row_tilde_co
     """
     n_reads, length = quality_arr.shape
     if not chunk_padding_bool:
-        real_lengths = np.full(n_reads, length, dtype=np.int16)
+        real_lengths = np.full(n_reads, length, dtype=np.int64)
     else:
         real_lengths = length - row_tilde_count
     avg_quals = average_quality_batch(quality_arr, lefts=0, rights=real_lengths)
     passed = avg_quals >= min_avg_qual
-    right_cutoffs = np.where(passed, real_lengths, 0).astype(np.int16)
+    right_cutoffs = np.where(passed, real_lengths, 0).astype(np.int64)
     return np.zeros(n_reads, dtype=np.int16), right_cutoffs
 
 def trim_ends_quality(quality_arr, chunk_padding_bool, padding_mask_bool, min_quality_both, endqual_min_start, endqual_min_end):
@@ -1133,7 +1133,7 @@ def trim_ends_quality(quality_arr, chunk_padding_bool, padding_mask_bool, min_qu
             end_good_pos = qual_mask[:, 0] | ~zero_end_rows
             end_cutoffs = np.where(end_good_pos, end_cutoffs, 0)
 
-    return start_cutoffs.astype(np.int16), end_cutoffs.astype(np.int16)
+    return start_cutoffs.astype(np.int64), end_cutoffs.astype(np.int64)
 
 def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, chunk_padding_bool, poly_length_both, poly_length_start, poly_length_end, poly_bases_both, poly_bases_start, poly_bases_end):
     """
