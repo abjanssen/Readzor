@@ -1065,7 +1065,7 @@ def average_quality_filter_wrapper(quality_arr, chunk_padding_bool, row_tilde_co
     avg_quals = average_quality_batch(quality_arr, lefts=0, rights=real_lengths)
     passed = avg_quals >= min_avg_qual
     right_cutoffs = np.where(passed, real_lengths, 0).astype(np.int64)
-    return np.zeros(n_reads, dtype=np.int16), right_cutoffs
+    return np.zeros(n_reads, dtype=np.int8), right_cutoffs
 
 def trim_ends_quality(quality_arr, chunk_padding_bool, padding_mask_bool, min_quality_both, endqual_min_start, endqual_min_end):
     """
@@ -1169,9 +1169,9 @@ def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, chunk_paddi
     """
     n_reads, length = sequence_arr.shape
     if not poly_bases_start and not poly_bases_end and not poly_bases_both:
-        return np.zeros(n_reads, dtype=np.int16), np.full(n_reads, length, dtype=np.int16)
+        return np.zeros(n_reads, dtype=np.int8), np.full(n_reads, length, dtype=np.int64)
     if poly_length_both == poly_length_start == poly_length_end == 0:
-        return np.zeros(n_reads, dtype=np.int16), np.full(n_reads, length, dtype=np.int16)
+        return np.zeros(n_reads, dtype=np.int8), np.full(n_reads, length, dtype=np.int64)
     
     start_bases = []
     end_bases = []
@@ -1196,8 +1196,8 @@ def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, chunk_paddi
     poly_length_start = poly_length_start if poly_length_start != 0 else poly_length_both
     poly_length_end = poly_length_end if poly_length_end != 0 else poly_length_both
     
-    right_cutoffs = np.full(n_reads, length, dtype=np.int16)
-    left_cutoffs = np.zeros(n_reads, dtype=np.int16)
+    right_cutoffs = np.full(n_reads, length, dtype=np.int64)
+    left_cutoffs = np.zeros(n_reads, dtype=np.int8)
     
     for base in start_bases:
         base_code = ord(base)
@@ -1299,12 +1299,12 @@ def cut_set_ends(sequence_arr, chunk_padding_bool, row_tilde_count, cut_both, cu
         cut_end_pos = max(cut_end_pos, 0)
         cut_start_pos = min(cut_start, cut_end_pos)
         cut_start_pos = max(cut_start_pos, 0)
-        return np.full(n_reads, cut_start_pos, dtype=np.int16), np.full(n_reads, cut_end_pos, dtype=np.int16)
+        return np.full(n_reads, cut_start_pos, dtype=np.int64), np.full(n_reads, cut_end_pos, dtype=np.int64)
     else:
         real_length = length - row_tilde_count
         end_positions = real_length - cut_end
         cut_start_pos = np.where(cut_start > end_positions, end_positions, cut_start)
-        return np.full(n_reads, cut_start_pos, dtype=np.int16), end_positions
+        return np.full(n_reads, cut_start_pos, dtype=np.int64), end_positions
 
 def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, row_tilde_count, slider_quality, slider_window, slider_step):
     """
@@ -1341,8 +1341,8 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
         if window_starts[-1] != last_possible_start:
             window_starts = np.append(window_starts, last_possible_start)
 
-        cumsum = np.cumsum(quality_arr, axis=1, dtype=np.int32)
-        cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int32), cumsum], axis=1)
+        cumsum = np.cumsum(quality_arr, axis=1, dtype=np.int64)
+        cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int64), cumsum], axis=1)
         window_sums = cumsum[:, window_starts + slider_window] - cumsum[:, window_starts]
         failed_mask = window_sums < (slider_quality * slider_window)
 
@@ -1356,20 +1356,20 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
             for j, start in enumerate(window_starts):
                 bad_positions[:, start:start + slider_window] |= failed_mask[:, j:j + 1]
 
-        real_lengths = np.full(n_reads, length, dtype=np.int32)
+        real_lengths = np.full(n_reads, length, dtype=np.int64)
     else:
         real_lengths = length - row_tilde_count
         too_short = real_lengths < slider_window
 
         if length < slider_window:
             left_cutoffs = np.zeros(n_reads, dtype=np.int16)
-            right_cutoffs = real_lengths.astype(np.int16)
+            right_cutoffs = real_lengths.astype(np.int64)
             return left_cutoffs, right_cutoffs
 
-        cumsum = np.cumsum(quality_arr, axis=1, dtype=np.int32)
-        cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int32), cumsum], axis=1)
-        pad_cumsum = np.cumsum(padding_mask_bool.astype(np.int32), axis=1)
-        pad_cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int32), pad_cumsum], axis=1)
+        cumsum = np.cumsum(quality_arr, axis=1, dtype=np.int64)
+        cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int64), cumsum], axis=1)
+        pad_cumsum = np.cumsum(padding_mask_bool.astype(np.int64), axis=1)
+        pad_cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int64), pad_cumsum], axis=1)
 
         last_possible_start = length - slider_window
         window_starts = np.arange(0, last_possible_start + 1, slider_step)
@@ -1396,14 +1396,14 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
     good_positions = ~bad_positions
     no_bad = ~bad_positions.any(axis=1)
     all_bad = bad_positions.all(axis=1)
-    left_cutoffs = np.zeros(n_reads, dtype=np.int16)
-    right_cutoffs = np.zeros(n_reads, dtype=np.int16)
-    right_cutoffs[no_bad] = real_lengths[no_bad].astype(np.int16)
+    left_cutoffs = np.zeros(n_reads, dtype=np.int64)
+    right_cutoffs = np.zeros(n_reads, dtype=np.int64)
+    right_cutoffs[no_bad] = real_lengths[no_bad].astype(np.int64)
     needs_stretch_search = ~no_bad & ~all_bad
     if not needs_stretch_search.any():
         if chunk_padding_bool:
             left_cutoffs[too_short] = 0
-            right_cutoffs[too_short] = real_lengths[too_short].astype(np.int16)
+            right_cutoffs[too_short] = real_lengths[too_short].astype(np.int64)
         return left_cutoffs, right_cutoffs
 
     padded = np.zeros((needs_stretch_search.sum(), length + 2), dtype=bool)
@@ -1454,7 +1454,7 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
     """
     n_reads, length = sequence_arr.shape
     all_bytes = sequence_arr.tobytes()
-    right_cutoffs = np.zeros(n_reads, dtype=np.int16)
+    right_cutoffs = np.zeros(n_reads, dtype=np.int64)
     if mismatches == 0:
         if not chunk_padding_bool:
             for i in range(n_reads):
@@ -1637,7 +1637,7 @@ def kmer_complexity_scan(sequence_arr, chunk_padding_bool, padding_mask_bool, km
             ratio = np.where(denom > 0, unique_counts / denom, 0.0)
             global_passed &= (ratio >= (low_complex_cutoff / 100))
 
-    second_array = np.where(global_passed, length, 0).astype(np.int16)
+    second_array = np.where(global_passed, length, 0).astype(np.int64)
     return np.zeros(n_reads, dtype=np.int16), second_array
 
 ##### Unpaired reads workflow functions #####
@@ -1697,8 +1697,8 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
     quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool, raw_lengths, max_len, n_reads = qual_to_array(quality_list = valid_qualities, phred_offset = phred_offset)
     sequence_arr = seq_to_array(sequence_list = valid_sequences, chunk_padding_bool = chunk_padding_bool, max_len = max_len, n_reads = n_reads)
     n_reads, length = quality_arr.shape
-    left_list = [np.zeros(n_reads, dtype=np.int16)]
-    right_list = [np.full(n_reads, length, dtype=np.int16) - row_tilde_count]
+    left_list = [np.zeros(n_reads, dtype=np.int64)]
+    right_list = [np.full(n_reads, length, dtype=np.int64) - row_tilde_count]
     for step in build_pipeline(parameters):
         left, right = step(sequence_arr, quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool)
         left_list.append(left)
@@ -2025,8 +2025,8 @@ def trim_reads(records, phred_offset, minimum_average_qual_post, min_length_outp
     quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool, raw_lengths, max_len, n_reads = qual_to_array(quality_list = valid_qualities, phred_offset = phred_offset)
     sequence_arr = seq_to_array(sequence_list = valid_sequences, chunk_padding_bool = chunk_padding_bool, max_len = max_len, n_reads = n_reads)
     n_reads, length = sequence_arr.shape
-    left_list = [np.zeros(n_reads, dtype=np.int16)]
-    right_list = [np.full(n_reads, length, dtype=np.int16) - row_tilde_count]
+    left_list = [np.zeros(n_reads, dtype=np.int64)]
+    right_list = [np.full(n_reads, length, dtype=np.int64) - row_tilde_count]
     for step in build_pipeline(parameters):
         left, right = step(sequence_arr, quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool)
         left_list.append(left)
