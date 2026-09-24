@@ -32,12 +32,22 @@ GZIP_DETECTION = {}
 VERSION = "0.2.0"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
-    ("TruSeq3_full_R1_short", "AGATCGGAAGAGCACA"), #first 16 of full seq
-    ("TruSeq3_full_R2_short", "AGATCGGAAGAGCGTC"),  #first 16 of full seq
-    ("TruSeq2", "AGATCGGAAGAGCGGTTCAG"),
-    ("Nextera", "CTGTCTCTTATACACATCT"),
-    ("TruSeq_small_RNA","TGGAATTCTCGGGTGCCAAGG"),
-    ("Illumina_RNA","ACTGTCTCTTATACACATCT")
+    ["TruSeq3", [
+        ["TruSeq3_R1_short", "AGATCGGAAGAGCACA"],  # first 16 of full seq
+        ["TruSeq3_R2_short", "AGATCGGAAGAGCGTC"],  # first 16 of full seq
+    ]],
+    ["TruSeq2", [
+        ["TruSeq2", "AGATCGGAAGAGCGGTTCAG"],
+    ]],
+    ["TruSeq_small_RNA", [
+        ["TruSeq_small_RNA", "TGGAATTCTCGGGTGCCAAGG"],
+    ]],
+    ["Nextera", [
+        ["Nextera", "CTGTCTCTTATACACATCT"],
+    ]],
+    ["Illumina_RNA", [
+        ["Illumina_RNA", "ACTGTCTCTTATACACATCT"],
+    ]],
 ]
 FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "full_auto"}
 FIELD_SEP = b"\x1f"
@@ -892,10 +902,10 @@ def qual_to_array(quality_list, phred_offset):
         padding_mask_bool = None
         return array, chunk_padding_bool, row_tilde_count, padding_mask_bool, quality_arr_lengths, max_len, n_reads
     else:
-        padded = [q.ljust(max_len, b'~') for q in quality_list]
+        padded = [q.ljust(max_len, b'\x00') for q in quality_list]
         joined = b''.join(padded)
         array = np.frombuffer(joined, dtype=np.int8).reshape(n_reads, max_len) 
-        padding_mask_bool = array == ord('~')
+        padding_mask_bool = array == ord('\x00')
         row_tilde_count = np.sum(padding_mask_bool, axis=1)
         chunk_padding_bool = bool(np.any(row_tilde_count > 0))
         array = np.where(padding_mask_bool, array, array - phred_offset)
@@ -921,7 +931,7 @@ def seq_to_array(sequence_list, chunk_padding_bool, max_len, n_reads):
         array = np.frombuffer(joined, dtype=np.int8).reshape(n_reads, max_len)
         return array
     else:
-        padded = [s.ljust(max_len, b'~') for s in sequence_list]
+        padded = [s.ljust(max_len, b'\x00') for s in sequence_list]
         joined = b''.join(padded)
         array = np.frombuffer(joined, dtype=np.int8).reshape(n_reads, max_len)
         return array
@@ -1222,7 +1232,7 @@ def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, chunk_paddi
             tilde_count_per_row = np.sum(padding_mask_bool, axis=1)
             real_length = length - tilde_count_per_row
             for base in end_bases:
-                non_base_mask = (rev_seq != ord(base)) & (rev_seq != ord('~'))
+                non_base_mask = (rev_seq != ord(base)) & (rev_seq != ord('\x00'))
                 padded_mask = np.column_stack([non_base_mask, np.ones(n_reads, dtype=bool)])
                 first_non_pos = padded_mask.argmax(axis=1)
                 run_length = first_non_pos - tilde_count_per_row
@@ -1571,6 +1581,15 @@ def kmer_complexity_scan(sequence_arr, chunk_padding_bool, padding_mask_bool, km
     else:
         kmer_list = [int(kmer)]
 
+    for k in kmer_list:
+        if k > length:
+            raise ValueError(f"k-mer length {k} is greater than sequence length {length}")
+        if k > 21:
+            raise ValueError(
+                f"Chosen k-mer length {k} is too big, maximum safe k-mer is 21. "
+            )
+
+
     global_passed = np.ones(n_reads, dtype=bool)
     mapping = np.zeros(256, dtype=np.int8)
     if allow_n:
@@ -1579,14 +1598,14 @@ def kmer_complexity_scan(sequence_arr, chunk_padding_bool, padding_mask_bool, km
         mapping[ord('G')] = 2
         mapping[ord('T')] = 3
         mapping[ord('N')] = 4
-        mapping[ord('~')] = 5
+        mapping[ord('\x00')] = 5
         bits_per_base = 3
     else:
         mapping[ord('A')] = 0
         mapping[ord('C')] = 1
         mapping[ord('G')] = 2
         mapping[ord('T')] = 3
-        mapping[ord('~')] = 4
+        mapping[ord('\x00')] = 4
         bits_per_base = 3
     int_matrix_full = mapping[sequence_arr]
 
@@ -2518,15 +2537,14 @@ class CleanHelpFormatter(argparse.HelpFormatter):
         return help_text
 
 def print_adapters():
-    """
-    Prints the name and sequence of every built-in adapter available for
-    --adapter-trim, for the user to query before choosing one.
-    """
-    print("\nBuilt-in adapter sequences (use with --adapter-trim/-at <name>):\n")
-    name_width = max(len(name) for name, _ in DEFAULT_ADAPTERS) + 2
-    for name, sequence in DEFAULT_ADAPTERS:
-        print(f"    {name:<{name_width}} {sequence}")
-    print()
+    print("\nBuilt-in adapter groups and sequences:\n")
+    all_entries = [entry for _, entries in DEFAULT_ADAPTERS for entry in entries]
+    name_width = max(len(name) for name, _ in all_entries) + 2
+    for group_name, entries in DEFAULT_ADAPTERS:
+        print(f"  [{group_name}]")
+        for name, sequence in entries:
+            print(f"    {name:<{name_width}} {sequence}")
+        print()
 
 def print_full_auto_help(parser):
     """
@@ -2840,6 +2858,10 @@ def parse_args():
         help='[FLAG] Turn on adapter trimming module. Default: off.'
     )
     adapter_trimming.add_argument(
+        "--adapter-group", "-ag", nargs = "+", default = "Nextera", choices = [name for name, _ in DEFAULT_ADAPTERS], metavar="",
+        help='Specify the group(s) of adapters to be used. Ignored if --adapter-fasta-excl is set. Choices: Illumina_RNA, Nextera, TruSeq2, TruSeq3, TruSeq_small_RNA. Default: Nextera.'
+    )
+    adapter_trimming.add_argument(
         "--adapter-mismatch", "-am", type = int, default = 0, metavar="",
         help="Number of mismatches allowed in adapter finding. Note: setting mismatches to > 0, infers significant processing constrains. Default: 0."
     )
@@ -2860,7 +2882,7 @@ def parse_args():
     )
     low_complexity_group.add_argument(
         "--kmer-size", "-ks", default = 4, metavar="",
-        help="Kmer length for kmer-based complexity filtering. Comma-separated values are checked independently. Default: 4."
+        help="Kmer length for kmer-based complexity filtering. Comma-separated values are checked independently. Maximum value: 21. Default: 4."
     )
     low_complexity_group.add_argument(
         "--kmer-cutoff", "-kc", type = int, default = 50, metavar="",
@@ -3045,6 +3067,7 @@ def parse_args():
     parameters["stdout"] = args.stdout
     parameters["interleaved_out"] = args.interleaved_out
     parameters["write_rejected"] = args.write_rejected
+    parameters["adapter_group"] = args.adapter_group
     
     if parameters["gzip_output"]:
         parameters["stdout"] = False
@@ -3062,10 +3085,17 @@ def parse_args():
             raw_adapters = load_adapters_from_fasta(parameters["adapter_fasta_excl"])
             if raw_adapters == []:
                 raise ValueError(f"No sequences in file '{parameters['adapter_fasta_excl']}' detected.")
-        elif parameters.get("adapter_fasta_add"):
-            raw_adapters = DEFAULT_ADAPTERS + load_adapters_from_fasta(parameters["adapter_fasta_add"])
         else:
-            raw_adapters = DEFAULT_ADAPTERS
+            selected_groups = parameters.get("adapter_group")
+            if selected_groups:
+                selected_groups = set(selected_groups)
+                flat_default_adapters = [entry for name, entries in DEFAULT_ADAPTERS if name in selected_groups for entry in entries]
+            else:
+                flat_default_adapters = [entry for _, entries in DEFAULT_ADAPTERS for entry in entries]
+            if parameters.get("adapter_fasta_add"):
+                raw_adapters = flat_default_adapters + load_adapters_from_fasta(parameters["adapter_fasta_add"])
+            else:
+                raw_adapters = flat_default_adapters
         parameters["adapter_sequences"] = list({seq.encode('utf-8') for _, seq in raw_adapters})
     else:
         parameters["adapter_sequences"] = []
