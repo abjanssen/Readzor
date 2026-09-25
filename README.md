@@ -16,11 +16,11 @@ All processing modules are off by default, giving you full control over your wor
 By design, each filter will indepedently assess each raw read. Outcomes are merged, and the most stringent trimming result per end is applied.\
 For example, if the quality trimmer determines 5 bases should be removed from the 3' end, but the adapter trimmer identifies 12 bases to remove from that same end, Readzor will merge these outcomes and trim the most restrictive amount (12 bases) to ensure high-quality output.
 *   Quality-dependent end trimming.
-*   Sliding windowquality trimming.
+*   Sliding window quality trimming.
 *   Homopolymer trimming, from both read ends.
-*   Adapter trimming for TruSeq, Nextera, and Illumina RNA-seq adapters.
-*   N-base trimming from both read ends, and overall N-filtering.
-*   K-mer based Low complexity filtering.
+*   Adapter trimming with built-in TruSeq, Nextera, and Illumina RNA-seq adapters.
+*   N-base trimming from both read ends, and overall N-base filtering.
+*   K-mer based low complexity filtering.
 *   Set-length read end trimming.
 *   Average output quality threshold.
 *   Overall length thresholds.
@@ -44,7 +44,7 @@ Equipped with a number of other features, like built-in validation and seamless 
 *   Test run: Perform a short test run according to specified settings, printing verbose output to screen, to catch config errors before committing to a full run.
 
 ## Input data requirements
-*  Readzor can handle a mix of gzipped or normal text files as input simultaneously, different file types will be handled dynamically.\
+*  Readzor can handle a mix of gzipped or normal text files as input simultaneously, different file types will be handled dynamically.
 *  For auto-detection of FASTQ files, the files should either in either fastq/fq (when in text) or gzip/gz (when gzipped).
 *  Additional adapter sequences should be specified as a fasta file.
 
@@ -76,16 +76,16 @@ python readzor.py --version
 
 ### Pip
 ```python
-pip install Readzor
-import Readzor
-print(Readzor.VERSION)
+pip install readzor
+import readzor
+print(readzor.VERSION)
 ```
 
 ## Using Readzor 
 
 ### Beginner
 ```
-# Use predetermined settings, and let Readzor detect the files (and their pairing) in your current working directory
+# Use predetermined settings, and let Readzor detect the files (and their pairing) in your current working directory:
 % Readzor -GO
 ```
 
@@ -102,21 +102,21 @@ print(Readzor.VERSION)
 # Specify unpaired files:
 % Readzor -GO --input-unpaired /path/to/unpaired/files
 
-# Or a combination of both: 
+# Specify a combination: 
 % Readzor -GO --input-unpaired /path/to/unpaired/files --input-paired /path/to/paired/files
 ```
 
 ### Novice
 ```
-# Adapt the workflow according to your need by specifying specific trimming modules
+# Adapt the workflow according to your needs by specifying specific trimming modules
 
-# Turn on quality-dependent end trimming, use its default settings
+# Turn on quality-dependent end trimming, use its default settings:
 % Readzor --input-files /path/to/input/files --endqual-filter-flag
 
-# Turn on adapter trimming, use its default settings
+# Turn on adapter trimming, use its default settings:
 % Readzor --input-files /path/to/input/files --adapter-filter-flag
 
-# Or use a combination
+# Turn on multiple trimming modules:
 % Readzor --input-files /path/to/input/files --adapter-filter-flag --endqual-filter-flag
 ```
 
@@ -124,11 +124,11 @@ print(Readzor.VERSION)
 ```
 # Detail the module settings according to your needs by specifying trimming parameters
 
-# Turn on quality-dependent end trimming, use custom settings
+# Turn on quality-dependent end trimming, use custom settings:
 % Readzor --input-files /path/to/input/files --endqual-filter-flag --endqual-min-start 25 --endqual-min-end 25
 
-# Turn on adapter trimming, add custom sequences
-% Readzor --input-files /path/to/input/files --adapter-filter-flag --adapter-fasta /path/to/fasta/file
+# Turn on adapter trimming, add custom sequences:
+% Readzor --input-files /path/to/input/files --adapter-filter-flag --adapter-fasta-add /path/to/fasta/file
 ```
 
 ## Command line options 
@@ -155,7 +155,8 @@ Specify input FASTQ files using any combination of --input-files, --input-paired
 `--interleaved-out`: Interleave surviving FASTQ reads of paired and interleaved input files, resulting in one output file. \
 `--output, -o`: Path to directory in which the timestamped results folder will be created. Default: current working directory.\
 `--stdout`: Stream resulting FASTQ reads to stdout. Forces --interleaved-out for paired and interleaved files. Overrides --verbose, --progress, and --write-rejected to off. Overridden to 'off' by --gzip. Note: all files will be streamed on end, without any seperators.\
-`--write-rejected`: Write rejected reads to file. Either one (for unpaired and when --interleaved-out is set), or two (for forward and reverse reads) are produced. Overridden to 'off' when --stdout is set.\
+`--write-rejected`: Write rejected reads to file. Either one (for unpaired and when --interleaved-out is set), or two (for forward and reverse reads) are produced. Overridden to 'off' when --stdout is set. Default: off.\
+`--discard-singletons`: Discard singletons. For paired and interleaved reads, single surviving reads will be discarded instead of written to a seperate file. No effect on unpaired read filtering. Default: off.\
              
 ### General quality filters
 `--min-average-qual-pre <int>`: Minimum average quality of input read. Default: 0.\
@@ -208,7 +209,7 @@ Trim reads for Illumina adapter sequences. Standard sequences included are TruSe
 `--adapter-filter-flag, -af`: [FLAG] Turn on adapter trimming module. Default: off.\
 `--adapter-group, -ag`: Specify the group(s) of adapters to be used. Ignored if --adapter-fasta-excl is set. Choices: Illumina_RNA, Nextera, TruSeq2, TruSeq3, TruSeq_small_RNA. Default: Nextera. \
 `--adapter-mismatch, -am`: Number of mismatches allowed in adapter finding. Default: 0.\
-`--adapter-fasta-add, -ad`: FASTA file with adapter sequences to trim for, in addition to predefined sequences.\
+`--adapter-fasta-add, -ad`: FASTA file with adapter sequences to trim for, in addition to defined sequences from --adapter-group.\
 `--adapter-fasta-excl, -ax`: Fasta file with adapter sequences to trim for, excluding predefined and additional sequences specified.
     
 ### Low complexity filtering
