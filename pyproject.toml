@@ -22,7 +22,6 @@ classifiers = [
 ]
 
 dependencies = [
-  "fuzzysearch==0.8.1",
   "numpy==2.5.2",
   "isal==1.8.0"
 ]
