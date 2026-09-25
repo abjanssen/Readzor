@@ -29,7 +29,7 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.2.3"
+VERSION = "0.2.4"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq3", [
@@ -2099,7 +2099,8 @@ def generate_paired_tasks(files, chunk_size, parameters):
                 "phred_offset_1": phred_offset_1,
                 "phred_offset_2": phred_offset_2,
                 "gzip_output": parameters["gzip_output"], 
-                "gzip_level": parameters["gzip_level"]
+                "gzip_level": parameters["gzip_level"],
+                "discard_singles": parameters["discard_singles"]
             }
 
 def trim_reads(records, phred_offset, minimum_average_qual_post, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, parameters):
