@@ -156,7 +156,7 @@ Specify input FASTQ files using any combination of --input-files, --input-paired
 `--output, -o`: Path to directory in which the timestamped results folder will be created. Default: current working directory.\
 `--stdout`: Stream resulting FASTQ reads to stdout. Forces --interleaved-out for paired and interleaved files. Overrides --verbose, --progress, and --write-rejected to off. Overridden to 'off' by --gzip. Note: all files will be streamed on end, without any seperators.\
 `--write-rejected`: Write rejected reads to file. Either one (for unpaired and when --interleaved-out is set), or two (for forward and reverse reads) are produced. Overridden to 'off' when --stdout is set. Default: off.\
-`--discard-singletons`: Discard singletons. For paired and interleaved reads, single surviving reads will be discarded instead of written to a seperate file. No effect on unpaired read filtering. Default: off.\
+`--discard-singles`: Discard single leftover reads. For paired and interleaved reads, single surviving reads will be discarded instead of written to a seperate file. No effect on unpaired read filtering. Default: off.\
              
 ### General quality filters
 `--min-average-qual-pre <int>`: Minimum average quality of input read. Default: 0.\
