@@ -31,7 +31,7 @@ def test_readzor(tmp_path):
 
     result = subprocess.run(
         ["readzor", "--input-files", *input_files,
-         "--gzip", "--nucl-filter",
+         "--gzip", "--n-filter",
          "--cut-flag", "--endqual-filter-flag",
          "--n-trimming-flag", "--slider-filter-flag",
          "--poly-filter-flag", "--adapter-filter-flag",
