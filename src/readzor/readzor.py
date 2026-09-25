@@ -29,7 +29,7 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.2.1"
+VERSION = "0.2.3"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq3", [
@@ -1966,7 +1966,7 @@ def generate_unpaired_tasks(filepaths, chunk_size, parameters, filetype = None):
                     "phred_offset_2": phred_offset,
                     "gzip_output": parameters["gzip_output"], 
                     "gzip_level": parameters["gzip_level"],
-                    "discard_singletons": parameters["discard_singletons"]
+                    "discard_singles": parameters["discard_singles"]
                 }
         else:
             raise TypeError(f"file {filepath} returned filetype {filetype}, which is not recognized.")                
@@ -2021,7 +2021,7 @@ def process_paired_task_flat(task, parameters):
         phred_offset_2=task["phred_offset_2"],
         gzip_output = task["gzip_output"],
         gzip_level = task["gzip_level"],
-        discard_singletons=task["discard_singletons"],
+        discard_singles=task["discard_singles"],
         parameters=parameters
     )
     return task["type"], file1, file2, paired_out_1, paired_out_2, R1_singles_out, R2_singles_out, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2, rejected_R1, rejected_R2
@@ -2226,7 +2226,7 @@ def trim_reads(records, phred_offset, minimum_average_qual_post, min_length_outp
         survivors[base_id] = b"\n".join((valid_headers[i], seq_out, valid_pluses[i], qual_out)) + b"\n"
     return survivors, rejected, rejected_reads
         
-def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gzip_level, discard_singletons, parameters):
+def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gzip_level, discard_singles, parameters):
     """
     Trims and filters one paired chunk of R1/R2 reads, then reconciles the
     two mates by base read ID to determine which reads survive as intact
@@ -2275,7 +2275,7 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
     num_R2_singles = len(singles_out_2)
     num_paired = len(paired_out_1)
     
-    if discard_singletons:
+    if discard_singles:
         singles_out_1 = b""
         singles_out_2 = b""
         
@@ -2357,7 +2357,7 @@ def unified_worker(task):
     else:
         raise ValueError(f"Unknown or missing task type: {task_type}")
 
-def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_files, output_dir, threads, chunk_size, show_progress, stdout, interleaved_out, write_rejected, discard_singletons, parameters):
+def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_files, output_dir, threads, chunk_size, show_progress, stdout, interleaved_out, write_rejected, discard_singles, parameters):
     """
     Top-level orchestrator that separates input files into paired and
     unpaired groups, sets up file writers, and runs the multiprocessing pool
@@ -2453,7 +2453,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
                             )
             else:
                 suffixes = ["_R1_paired", "_R2_paired"]
-                if not discard_singletons:
+                if not discard_singles:
                     suffixes += ["_R1_unpaired", "_R2_unpaired"]
                 for suffix in suffixes:
                     key = f"{base_prefix}{suffix}"
@@ -2499,7 +2499,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
                             )
             else:
                 suffixes = ["_R1_paired", "_R2_paired"]
-                if not discard_singletons:
+                if not discard_singles:
                     suffixes += ["_R1_unpaired", "_R2_unpaired"]
                 for suffix in suffixes:
                     key = f"{base_prefix}{suffix}"
@@ -2600,7 +2600,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
                                 (f"{common_prefix}_R1_paired", paired_out_1),
                                 (f"{common_prefix}_R2_paired", paired_out_2),
                             ]
-                            if not discard_singletons:
+                            if not discard_singles:
                                 writes.extend([
                                     (f"{common_prefix}_R1_unpaired", R1_singles_out),
                                     (f"{common_prefix}_R2_unpaired", R2_singles_out)
@@ -2844,8 +2844,8 @@ def parse_args():
         help="Write rejected reads to file. Either one (for unpaired and when --interleaved-out is set), or two (for forward and reverse reads) are produced. Overridden to 'off' when --stdout is set. Default: off."
     )  
     output_group.add_argument(
-        "--discard-singletons", action="store_true", default=False,
-        help="Discard singletons. For paired and interleaved reads, single surviving reads will be discarded instead of written to a seperate file. No effect on unpaired read filtering. Default: off."
+        "--discard-singles", action="store_true", default=False,
+        help="Discard single leftover reads. For paired and interleaved reads, single surviving reads will be discarded instead of written to a seperate file. No effect on unpaired read filtering. Default: off."
     )  
 
     general_quality_group = parser.add_argument_group("General output filter options")
@@ -3380,7 +3380,7 @@ def main():
         created_output_dir = create_folder_structure(parameters["output_dir"])
         setup_logging(output_dir = created_output_dir, verbose = parameters["verbose"], parameters = parameters)
         log_parameters(parameters)
-        summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"], discard_singletons = parameters["discard_singletons"], write_rejected = parameters["write_rejected"], parameters = parameters)
+        summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"], discard_singles = parameters["discard_singles"], write_rejected = parameters["write_rejected"], parameters = parameters)
         write_summary_and_statistics(summary_results, parameters, output_dir = created_output_dir)
         logger.info("Analysis successfully completed!")
         print_final_message(stdout = parameters["stdout"])
@@ -3407,7 +3407,7 @@ def test_run(parameters):
             created_output_dir = create_folder_structure(tmp_dir)
             setup_logging(output_dir = created_output_dir, verbose = True, parameters = parameters)
             log_parameters(parameters)
-            summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"],discard_singletons = parameters["discard_singletons"], parameters = parameters)
+            summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"],discard_singles = parameters["discard_singles"], parameters = parameters)
             write_summary_and_statistics(summary_results, parameters, output_dir = created_output_dir)
             logger.info("All files deleted.")
             logger.info("Testrun completed!")
