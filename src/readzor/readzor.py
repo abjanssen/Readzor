@@ -29,7 +29,7 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.2.4"
+VERSION = "0.2.5"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq3", [
@@ -367,7 +367,7 @@ class ProgressTracker:
 
 ##### Helper functions #####
 
-def resolve_stdin_input():
+def resolve_stdin_input(parser=None):
     """
     Auto-detects piped stdin data and spools it to a temporary file.
 
@@ -375,7 +375,7 @@ def resolve_stdin_input():
         str: A real filesystem path safe to pass through the rest of the pipeline.
 
     Raises:
-        SystemExit: If no data is being piped into stdin.
+        SystemExit: If no data is being piped into stdin, or stdin is empty.
     """
     if sys.stdin.isatty():
         raise SystemExit("Error: No input file specified and no piped data detected on stdin.")
@@ -384,6 +384,16 @@ def resolve_stdin_input():
     with os.fdopen(fd, "wb") as tmp_file:
         shutil.copyfileobj(sys.stdin.buffer, tmp_file, length=10 * 1024 * 1024)
     STDIN_TEMP_FILES.append(tmp_path)
+
+    if os.path.getsize(tmp_path) == 0:
+        cleanup_stdin_temp_files()
+        message = ("No input files were given and stdin is empty. Specify input with "
+                   "--input-files/--input-paired/--input-unpaired/--input-interleaved, "
+                   "pipe FASTQ data into Readzor, or use --full-auto.")
+        if parser is not None:
+            parser.error(message)
+        raise SystemExit(f"Error: {message}")
+
     return tmp_path
 
 def cleanup_stdin_temp_files():
@@ -425,26 +435,29 @@ def group_paired_input_into_pairs(files, parser):
 
 def create_folder_structure(output_dir):
     """
-    Create a timestamped results folder inside a specified output directory.
-    
-    Generates a new subfolder named "Readzor_results_<YYYY-MM-DD_HH-MM-SS>"
-    based on the current date and time. This ensures each run's outputs are
-    isolated and prevents accidental overwrites of results from previous runs.
+    Create a new, uniquely named results folder inside output_dir.
+
+    The folder is named Readzor_results_<YYYY-MM-DD_HH-MM-SS>. If that name is
+    already taken (e.g. several runs started in the same second with the same -o,
+    as with SLURM array jobs), a numeric suffix is added: _2, _3, ...
+    Each run therefore always gets its own folder, log and summary.
 
     Args:
-        output_dir (str): Path to the parent directory where the timestamped
-            results folder will be created. Created if it does not exist.
+        output_dir (str): Parent directory. Created if it does not exist.
 
     Returns:
-        str: The absolute path to the newly created timestamped results folder.
-    
-    Raises:
-        OSError: If the folder cannot be created due to permission issues or
-            invalid path.
+        str: Absolute path to the newly created results folder.
     """
-    created_output_dir = os.path.join(output_dir, "Readzor_results_" + datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
-    os.makedirs(created_output_dir, exist_ok=True)
-    return created_output_dir
+    os.makedirs(output_dir, exist_ok=True)
+    base = os.path.join(output_dir, "Readzor_results_" + datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+    created_output_dir, n = base, 2
+    while True:
+        try:
+            os.mkdir(created_output_dir)
+            return os.path.abspath(created_output_dir)
+        except FileExistsError:
+            created_output_dir = f"{base}_{n}"
+            n += 1
 
 def worker_determination(threads=None):
     """
@@ -467,7 +480,7 @@ def worker_determination(threads=None):
     """
     if isinstance(threads, int):
         return max(1, threads)
-    for var in ("SLURM_CPUS_PER_TASK", "PBS_NCPUS", "NCPUS", "NSLOTS", "LSB_DJOB_NUMPROC", "OMP_NUM_THREADS"):
+    for var in ("SLURM_CPUS_PER_TASK", "PBS_NCPUS", "NCPUS", "NSLOTS", "LSB_DJOB_NUMPROC"):
         val = os.environ.get(var)
         if val:
             try:
@@ -587,8 +600,13 @@ def lazy_fastq(filepath):
                 chunk = fastq_file.read(buffer_size)
                 if not chunk:
                     if leftover:
-                        lines = leftover.rstrip(b"\r").split(b"\n")
+                        lines = leftover.replace(b"\r", b"").rstrip(b"\n").split(b"\n")
                         usable = len(lines) - (len(lines) % 4)
+                        if usable != len(lines):
+                            logger.warning(
+                                "%s: last record is incomplete (%d trailing line(s)); it was skipped. "
+                                "The file may be truncated.",
+                                os.path.basename(filepath), len(lines) - usable)
                         it = iter(lines[:usable])
                         for group in zip(it, it, it, it):
                             yield FIELD_SEP.join(group)
@@ -598,7 +616,7 @@ def lazy_fastq(filepath):
                 if last_newline == -1:
                     leftover = data
                     continue
-                lines = data[:last_newline].split(b"\n")
+                lines = data[:last_newline].replace(b"\r", b"").split(b"\n")
                 usable = len(lines) - (len(lines) % 4)
                 it = iter(lines[:usable])
                 for group in zip(it, it, it, it):
@@ -1420,7 +1438,7 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
 
     if not chunk_padding_bool:
         if length < slider_window:
-            return np.zeros(n_reads, dtype=np.int16), np.full(n_reads, length, dtype=np.int16)
+            return np.zeros(n_reads, dtype=np.int16), np.full(n_reads, length, dtype=np.int64)
 
         last_possible_start = length - slider_window
         window_starts = np.arange(0, last_possible_start + 1, slider_step)
@@ -1512,7 +1530,7 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
 
     if chunk_padding_bool:
         left_cutoffs[too_short] = 0
-        right_cutoffs[too_short] = real_lengths[too_short].astype(np.int16)
+        right_cutoffs[too_short] = real_lengths[too_short].astype(np.int64)
 
     return left_cutoffs, right_cutoffs
 
@@ -1574,6 +1592,8 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
         if not chunk_padding_bool:
             for adapter_bytes in adapter_sequences:
                 adapter_arr = np.frombuffer(adapter_bytes, dtype=np.uint8)
+                if len(adapter_arr) > length:
+                   continue
                 windows = sliding_window_view(sequence_arr, window_shape=len(adapter_arr), axis=1)
                 mismatch_matrix = (windows != adapter_arr).sum(axis=2)
                 valid_mask = mismatch_matrix <= mismatches
@@ -1590,6 +1610,8 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
             for adapter_bytes in adapter_sequences:
                 adapter_arr = np.frombuffer(adapter_bytes, dtype=np.uint8)
                 length_adapter = len(adapter_arr)
+                if length_adapter > length:
+                   continue
                 windows = sliding_window_view(sequence_arr, window_shape=length_adapter, axis=1)
                 mismatch_matrix = (windows != adapter_arr).sum(axis=2)
                 window_ends = np.arange(length_adapter, length + 1)
@@ -1811,9 +1833,12 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
             if write_rejected:
                 rejected_reads.append(b"\n".join((header, sequence, plus, quality)) + b"\n")
     if not valid_headers:
-        return [], 0, rejected
+        rejected_blob = b"".join(rejected_reads) if write_rejected else []
+        if gzip_output and rejected_blob:
+            rejected_blob = gzip.compress(rejected_blob, compresslevel=gzip_level)
+        return b"", 0, rejected, rejected_blob
     if parameters["mgi_convert_flag"]:
-        valid_pluses = [plus + b"_OriginalHeader:" + header for plus, header in zip(valid_pluses, valid_headers)]
+        valid_pluses = [b"+"] * len(valid_headers)
         valid_headers = [header_mgi_to_illumina(header, parameters["mgi_bc5"], parameters["mgi_bc7"], parameters["mgi_instrument"], parameters["mgi_run"]) for header in valid_headers]
     quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool, raw_lengths, max_len, n_reads = qual_to_array(quality_list = valid_qualities, phred_offset = phred_offset)
     sequence_arr = seq_to_array(sequence_list = valid_sequences, chunk_padding_bool = chunk_padding_bool, max_len = max_len, n_reads = n_reads)
@@ -2163,7 +2188,7 @@ def trim_reads(records, phred_offset, minimum_average_qual_post, min_length_outp
             if write_rejected:
                 rejected_reads.append(b"\n".join((header, sequence, plus, quality)) + b"\n")
     if not valid_headers:
-        return {}, len(records)
+        return {}, rejected, rejected_reads
     if parameters["mgi_convert_flag"]:
         valid_pluses = [plus + b"_OriginalHeader:" + header for plus, header in zip(valid_pluses, valid_headers)]
         valid_headers = [header_mgi_to_illumina(header, parameters["mgi_bc5"], parameters["mgi_bc7"], parameters["mgi_instrument"], parameters["mgi_run"]) for header in valid_headers]
@@ -2429,94 +2454,46 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
         if not stdout:
             file_writing_handles[file] = open_fastq_writer(file, output_dir, gzip_output=parameters["gzip_output"])
         if write_rejected:
-            file_writing_handles[f"{file}_rejected"] = open_fastq_writer(file, output_dir, gzip_output=parameters["gzip_output"])
+            suffix = basename_file(file) + "_rejected"
+            file_writing_handles[f"{file}_rejected"] = open_fastq_writer(f"{suffix}", output_dir, gzip_output=parameters["gzip_output"])
     pair_keys = {}
     used_prefixes = set()
+
+    def unique_prefix(base_prefix):
+        prefix, n = base_prefix, 2
+        while prefix in used_prefixes:
+            prefix = f"{base_prefix}_{n}"
+            n += 1
+        used_prefixes.add(prefix)
+        return prefix
+
+    def open_pair_outputs(prefix):
+        if stdout:
+            return
+        if interleaved_out:
+            suffixes = [""]
+            if write_rejected:
+                suffixes.append("_rejected")
+        else:
+            suffixes = ["_R1_paired", "_R2_paired"]
+            if not discard_singles:
+                suffixes += ["_R1_unpaired", "_R2_unpaired"]
+            if write_rejected:
+                suffixes += ["_R1_rejected", "_R2_rejected"]
+        for suffix in suffixes:
+            key = f"{prefix}{suffix}"
+            file_writing_handles[key] = open_fastq_writer(key, output_dir, gzip_output=parameters["gzip_output"])
+
     for file in interleaved:
-        base_prefix = common_name_parts([os.path.basename(file), os.path.basename(file)])
-        pair_keys[(file, file)] = base_prefix
-        file_stats[base_prefix] = {"kept_pairs": 0, "kept_R1_singletons": 0, "kept_R2_singletons": 0, "rejected_R1": 0, "rejected_R2": 0}
-        if not stdout:
-            if interleaved_out:
-                key = f"{base_prefix}"
-                file_writing_handles[key] = open_fastq_writer(
-                    key,
-                    output_dir,
-                    gzip_output=parameters["gzip_output"]
-                    )
-                if write_rejected:
-                    for suffix in ["_rejected"]:
-                        key = f"{base_prefix}{suffix}"
-                        file_writing_handles[key] = open_fastq_writer(
-                            key,
-                            output_dir,
-                            gzip_output=parameters["gzip_output"]
-                            )
-            else:
-                suffixes = ["_R1_paired", "_R2_paired"]
-                if not discard_singles:
-                    suffixes += ["_R1_unpaired", "_R2_unpaired"]
-                for suffix in suffixes:
-                    key = f"{base_prefix}{suffix}"
-                    file_writing_handles[key] = open_fastq_writer(
-                        key,
-                        output_dir,
-                        gzip_output=parameters["gzip_output"]
-                        )
-                if write_rejected:
-                    for suffix in ["_R1_rejected", "_R2_rejected"]:
-                        key = f"{base_prefix}{suffix}"
-                        file_writing_handles[key] = open_fastq_writer(
-                            key,
-                            output_dir,
-                            gzip_output=parameters["gzip_output"]
-                            )
-    for pair in paired:
-        file1, file2 = pair
-        base_prefix = common_name_parts([os.path.basename(file1), os.path.basename(file2)])
-        common_prefix = base_prefix
-        suffix_n = 2
-        while common_prefix in used_prefixes:
-            common_prefix = f"{base_prefix}_{suffix_n}"
-            suffix_n += 1
-        used_prefixes.add(common_prefix)
-        pair_keys[(file1, file2)] = common_prefix
-        file_stats[common_prefix] = {"kept_pairs": 0, "kept_R1_singletons": 0, "kept_R2_singletons": 0, "rejected_R1": 0, "rejected_R2": 0}
-        if not stdout:
-            if interleaved_out:
-                key = f"{common_prefix}"
-                file_writing_handles[key] = open_fastq_writer(
-                    key,
-                    output_dir,
-                    gzip_output=parameters["gzip_output"]
-                    )
-                if write_rejected:
-                    for suffix in ["_rejected"]:
-                        key = f"{common_prefix}{suffix}"
-                        file_writing_handles[key] = open_fastq_writer(
-                            key,
-                            output_dir,
-                            gzip_output=parameters["gzip_output"]
-                            )
-            else:
-                suffixes = ["_R1_paired", "_R2_paired"]
-                if not discard_singles:
-                    suffixes += ["_R1_unpaired", "_R2_unpaired"]
-                for suffix in suffixes:
-                    key = f"{base_prefix}{suffix}"
-                    file_writing_handles[key] = open_fastq_writer(
-                        key,
-                        output_dir,
-                        gzip_output=parameters["gzip_output"]
-                        )
-                if write_rejected:
-                    for suffix in ["_R1_rejected", "_R2_rejected"]:
-                        key = f"{base_prefix}{suffix}"
-                        file_writing_handles[key] = open_fastq_writer(
-                            key,
-                            output_dir,
-                            gzip_output=parameters["gzip_output"]
-                            )
+        prefix = unique_prefix(basename_file(file))
+        pair_keys[(file, file)] = prefix
+        file_stats[prefix] = {"kept_pairs": 0, "kept_R1_singletons": 0, "kept_R2_singletons": 0, "rejected_R1": 0, "rejected_R2": 0}
+        open_pair_outputs(prefix)
+    for file1, file2 in paired:
+        prefix = unique_prefix(common_name_parts([os.path.basename(file1), os.path.basename(file2)]))
+        pair_keys[(file1, file2)] = prefix
+        file_stats[prefix] = {"kept_pairs": 0, "kept_R1_singletons": 0, "kept_R2_singletons": 0, "rejected_R1": 0, "rejected_R2": 0}
+        open_pair_outputs(prefix)
 
     def unified_chunk_streamer():
         chunks_per_file = threads if parameters["testrun"] else None
@@ -2573,7 +2550,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
                     _, filepath, chunk_results, kept, rejected, rejected_reads = result
                     if parameters["stdout"]:
                         if chunk_results:
-                            sys.stdout.write(chunk_results)
+                            sys.stdout.buffer.write(chunk_results)
                     else:
                         if chunk_results:
                             file_writing_handles[filepath].write(chunk_results)
@@ -2624,8 +2601,10 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
         tracker.close()
         ACTIVE_PROGRESS_TRACKER = None
         for handle in file_writing_handles.values():
-                if not handle.closed:
-                    handle.close()
+            if not handle.closed:
+                if parameters["gzip_output"] and handle.tell() == 0:
+                    handle.write(gzip.compress(b""))
+                handle.close()
     return file_stats
 
 ##### Input handling #####
@@ -2984,13 +2963,13 @@ def parse_args():
     )
 
     adapter_trimming = parser.add_argument_group("Adapter trimming",
-                                                 "Trim reads for Illumina adapter sequences. Standard sequences included are TruSeq3 universal and index adapters, and Nextera adapters. Only exactly matching sequences are trimmed. Adapter trimming is performed independent of quality.")
+                                                 "Trim reads for adapter sequences. Standard sequences included are TruSeq3, Nextera, and Illumina adapters. Adapter trimming is performed independent of quality.")
     adapter_trimming.add_argument(
         "--adapter-filter-flag", "-af", action="store_true", default = False,
         help='[FLAG] Turn on adapter trimming module. Default: off.'
     )
     adapter_trimming.add_argument(
-        "--adapter-group", "-ag", nargs = "+", default = "Nextera", choices = [name for name, _ in DEFAULT_ADAPTERS], metavar="",
+        "--adapter-group", "-ag", nargs = "+", default = ["Nextera"], choices = [name for name, _ in DEFAULT_ADAPTERS], metavar="",
         help='Specify the group(s) of adapters to be used. Ignored if --adapter-fasta-excl is set. Choices: Illumina_RNA, Nextera, TruSeq2, TruSeq3, TruSeq_small_RNA. Default: Nextera.'
     )
     adapter_trimming.add_argument(
@@ -3021,7 +3000,7 @@ def parse_args():
         help="Minimum percentage of unique k-mers (relative to the maximum possible) required to pass the complexity filter. Higher values are stricter. Default: 50."
     )
     mgi_convert_group = parser.add_argument_group("MGI header conversion",
-                                                  "Convert read header from MGI (BGI) format to Illumina format. Original header will be stored in the placeholder line. Conversion is necessary for downstream analysis with tools such as samtools")
+                                                  "Convert read header from MGI (BGI) format to Illumina format. Original header will be discarded.")
     mgi_convert_group.add_argument(
         "--mgi-convert-flag", "-mf", action="store_true", default=False,
         help="[FLAG] Turn on the MGI-to-Illumina header conversion module. Default: off."
@@ -3104,9 +3083,7 @@ def parse_args():
     )
     
     if not has_inputs:
-        if not sys.stdin.isatty():
-            args.input_files = [resolve_stdin_input()]
-        elif args.full_auto:
+        if args.full_auto:
             cwd = os.getcwd()
             pattern = re.compile(r'\.(fastq|fq)(\.gz|\.gzip)?$', re.IGNORECASE)
             args.input_files = [
@@ -3118,6 +3095,8 @@ def parse_args():
                 parser.error(
                     f"--full-auto was set but no FASTQ files were detected in {cwd}."
                 )
+        elif not sys.stdin.isatty():
+            args.input_files = [resolve_stdin_input(parser)]
         else:
             parser.error(
                 "You must specify input files (--input-files, --input-paired, etc.), "
@@ -3207,7 +3186,7 @@ def parse_args():
         
     if parameters["stdout"]:
         parameters["verbose"] = False
-        parameters["progress"] = False
+        parameters["show_progress"] = False
         parameters["write_rejected"] = False
     
     if parameters["n_filter"]:
@@ -3408,7 +3387,7 @@ def test_run(parameters):
             created_output_dir = create_folder_structure(tmp_dir)
             setup_logging(output_dir = created_output_dir, verbose = True, parameters = parameters)
             log_parameters(parameters)
-            summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"],discard_singles = parameters["discard_singles"], parameters = parameters)
+            summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"],discard_singles = parameters["discard_singles"], write_rejected = parameters["write_rejected"], parameters = parameters)
             write_summary_and_statistics(summary_results, parameters, output_dir = created_output_dir)
             logger.info("All files deleted.")
             logger.info("Testrun completed!")
