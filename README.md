@@ -8,8 +8,8 @@
 
 # Welcome to Readzor 
 
-Readzor is a fast, modular, and fully-featured FASTQ quality trimming and filtering pipeline. \
-By default, **<ins>all processing modules are off</ins>**, leaving you the explicit ability to adapt the workflow according to your needs and wishes.
+**Readzor** is a fast, modular, fully-featured FASTQ quality trimming and filtering pipeline. \
+All processing modules are off by default, giving you full control over your workflow.
 
 ## Feature overview
 **Modular trimming approach**:
@@ -27,8 +27,8 @@ For example, if the quality trimmer determines 5 bases should be removed from th
     
 **Auto-detection**:
 Using auto-detection methods, Readzor provides an easy-to-use platform for novice users, enabling high quality read trimming with minimal inputs.
-*   File Pairing: paired vs. unpaired FASTQ files detection using internal header information, independent of file names.
-*   Read Numbering: read numbers detection, directly from headers.
+*   File Pairing: paired vs. unpaired vs. interleaved FASTQ files detection using internal header information, independent of file names.
+*   Read Numbering: read numbers detection when needed, directly from headers.
 *   Compression: Gzip compression detection via magic bytes, regardless of the file extension.
 *   Phred Offsets: per-file Phred quality offsets detection (i.e., Phred33 vs. Phred64) based on quality string symbols.
 
@@ -41,12 +41,12 @@ Equipped with a number of other features, like built-in validation and seamless 
 *   Live progress monitoring: Features a dynamic progress tracker to accurately provide real-time feedback on processing speed, completion, and estimated time remaining.
 *   Real-time record validation: Readzor detects malformed or corrupted FASTQ records on the fly, ensuring high-quality output.
 *   Gzip compression: Compress your output files and control the compression depth to optimize storage size.
-*   Dry-run: Perform a dry run according to specified settings, printing verbose output to screen, to catch config errors before committing to a full run.
+*   Test run: Perform a short test run according to specified settings, printing verbose output to screen, to catch config errors before committing to a full run.
 
 ## Input data requirements
-*  Due to the pipeline design of Readzor, it is **<ins>required</ins>** that all (paired) reads in a file are the same length. If different length reads are found, Readzor will quit and throw an error. Independent FASTQ files may have different read lengths.\
-*  It is **<ins>not</ins>** required that all files are either gzipped or normal text, different file types will be handled dynamically.\
+*  Readzor can handle a mix of gzipped or normal text files as input simultaneously, different file types will be handled dynamically.\
 *  For auto-detection of FASTQ files, the files should either in either fastq/fq (when in text) or gzip/gz (when gzipped).
+*  Additional adapter sequences should be specified as a fasta file.
 
 ## Installation and testing
 Installation of Readzor is made easy through pip and conda, but you can also clone this repository:
@@ -67,7 +67,6 @@ docker run --rm ghcr.io/abjanssen/readzor:latest --version
 ### Github 
 ```bash
 git clone https://github.com/abjanssen/Readzor.git
-pip install fuzzysearch==0.8.1
 pip install numpy==2.5.2
 pip install isal==1.8.0
 cd Readzor/src/readzor
@@ -144,24 +143,30 @@ All modules are off by default. To use a module, specify a module flag. Further 
 `--verbose` [FLAG] Write verbose output to terminal, in addition to the log file. Default: off.
     
 ### Input options
-Specify input FASTQ files using any combination of --input-files, --input-paired, and --input-unpaired. Lists with any combination of regular (fastq/fq) and gzipped (fastq.gz/fq.gz) files accepted.\
-`--input-files, -i`: FASTQ files of unspecified pairing. Paired and unpaired files will be auto-detected.\
+Specify input FASTQ files using any combination of --input-files, --input-paired, --input-unpaired, and --input-interleaved. Lists with any combination of regular (fastq/fq) and gzipped (fastq.gz/fq.gz) files accepted. If no input flags are provided, data will be read directly from standard input (stdin)."\
+`--input-files, -i`: FASTQ files of unspecified pairing. Paired, in terleaved, unpaired files will be auto-detected.\
+`--input-interleaved, -ii`: Interleaved FASTQ files. Note: these files will be split in forward and reverse reads.\
 `--input-paired, -ip `: Paired-end FASTQ files, given as one or more R1/R2 pairs, e.g. --input-paired sample1_R1 sample1_R2 sample2_R1 sample2_R2.\
 `--input-unpaired, -iu`: Unpaired FASTQ files.
 
 ### Output options
-`--output, -o`: Path to directory in which the timestamped results folder will be created. Default: current working directory.\
 `--gzip` [FLAG]: Compress filtered FASTQ files in gzip format using isal. Default: off.\
-`--gzip-level`: Set gzip compression level. Higher compression decreases processing speed. Possible values: 0-3. Default: 1.
+`--gzip-level`: Set gzip compression level. Higher compression decreases processing speed. Possible values: 0-3. Default: 1.\
+`--interleaved-out`: Interleave surviving FASTQ reads of paired and interleaved input files, resulting in one output file. \
+`--output, -o`: Path to directory in which the timestamped results folder will be created. Default: current working directory.\
+`--stdout`: Stream resulting FASTQ reads to stdout. Forces --interleaved-out for paired and interleaved files. Overrides --verbose, --progress, and --write-rejected to off. Overridden to 'off' by --gzip. Note: all files will be streamed on end, without any seperators.\
+`--write-rejected`: Write rejected reads to file. Either one (for unpaired and when --interleaved-out is set), or two (for forward and reverse reads) are produced. Overridden to 'off' when --stdout is set.\
              
 ### General quality filters
 `--min-average-qual-pre <int>`: Minimum average quality of input read. Default: 0.\
 `--min-average-qual-post <int>`: Minimum average quality of output read. Default: 0.\
-`--min-length-abs <int>`: Minimum length of output read in absolute number of nucleotides. Overrides --min-length-perc when both set. Default: 0.\
-`--min-length-perc <float>`: Minimum length of output read as percentage of input read. Overridden by --min-length-abs when both set. Default: 0.\
-`--max-length-abs <int>`: Maximum length of output read in absolute number of nucleotides. Overrides --max-length-perc when both set. Default: off.\
-`--max-length-perc <float>`: Maximum length of output read as percentage of input read. Overridden by --max-length-abs when both set. Default: off.\
-`--nucl-filter` [FLAG]: Reject reads containing `N` bases anywhere in read. Default: off.
+`--min-length-input <int>`: Minimum length for input read. Default: off.\
+`--max-length-input <int>`: Maximum length for input read. Default: off.\
+`--min-length-output <int>`: Minimum length of output read in absolute number of nucleotides. Overrides --min-length-output-perc when both set. Default: 0.\
+`--min-length-output-perc <float>`: Minimum length of output read as percentage of input read. Overridden by --min-length-output when both set. Default: 0.\
+`--max-length-output <int>`: Maximum length of output read in absolute number of nucleotides. Overrides --max-length-output-perc when both set. Default: off.\
+`--max-length-output-perc <float>`: Maximum length of output read as percentage of input read. Overridden by --max-length-output when both set. Default: off.\
+`--n-filter` [FLAG]: Reject reads containing `N` bases anywhere in read. Default: off.
 
 ### Set-Length end trimming
 Trim a set number of bases of the ends of each read, independent of sequence or quality.\
@@ -178,7 +183,7 @@ Trim the ends of each read, dependent on quality. Ends of reads will be trimmed 
 `--endqual-min-both, -emb`: Phred score threshold for the quality trimming of read ends. Overwritten by --endqual-min-start and --endqual-min-end. Default: 25.
                                
 ### N-Nucleotide end trimming
-Trim the ends of each read for N bases. Redundant when --nucl-filter is set.\
+Trim the ends of each read for N bases. Redundant when --n-filter is set.\
 `--n-trimming-flag, -ntf`: [FLAG]: Turn on the N nucleotide end trimming module. Default: off.
 
 ### Sliding window quality trimming
@@ -201,6 +206,7 @@ Illumina NovaSeq, NextSeq, and MiniSeq use a two-color chemistry, in which guani
 ### Adapter trimming
 Trim reads for Illumina adapter sequences. Standard sequences included are TruSeq3 universal and index adapters, and Nextera adapters. Only exactly matching sequences are trimmed. Adapter trimming is performed independent of quality.\
 `--adapter-filter-flag, -af`: [FLAG] Turn on adapter trimming module. Default: off.\
+`--adapter-group, -ag`: Specify the group(s) of adapters to be used. Ignored if --adapter-fasta-excl is set. Choices: Illumina_RNA, Nextera, TruSeq2, TruSeq3, TruSeq_small_RNA. Default: Nextera. \
 `--adapter-mismatch, -am`: Number of mismatches allowed in adapter finding. Default: 0.\
 `--adapter-fasta-add, -ad`: FASTA file with adapter sequences to trim for, in addition to predefined sequences.\
 `--adapter-fasta-excl, -ax`: Fasta file with adapter sequences to trim for, excluding predefined and additional sequences specified.
@@ -223,7 +229,7 @@ Convert read header from MGI (BGI) format to Illumina format. Original header wi
 Further options that can be specified to alter the behavior of Readzor.\
 `--threads, -t`: Number of threads to use. Default: platform-dependent through auto-detection (assigned CPUs on HPC cluster systems, all-1 otherwise. Fallback: 1).\
 `--reads-for-phred-offset`: Number of reads to sample per file for detection of Phred quality encoding offset. Default: 500.\
-`--chunk-size`: Number of reads per chunk sent to each worker. Default: platform-dependent (empiricallyset to 20,000 for HPC cluster systems, 1000 otherwise). Default: 1000.\
+`--chunk-size`: Number of reads per chunk sent to each worker. Default: platform-dependent (empirically set to 20,000 for HPC cluster systems, 1000 otherwise). Changing can alter processing speed\
 `--phred-offset`: Define phred offset for all FASTQ files. When set, per-file auto-detection will not be performed. Possible values: 33, 64. Default: off (auto-detection per file). \
 `--testrun`: [FLAG] Perform a limited test run according to specified settings. Also sets --verbose. Default: off. \
 `--ordered-output`: [FLAG] Force writing output reads in the same order as the input reads, with the exception of filtered reads. Default: off. \
@@ -247,27 +253,10 @@ This project is provded under the GNU General Public License v3.0 (GPLv3).
 Axel B. Janssen ([Google Scholar](https://scholar.google.com/citations?user=TWi-ysEAAAAJ&hl)/[GitHub](https://github.com/abjanssen/))
 
 ## Reference
-Please use the DOI (https://doi.org/10.5281/zenodo.22336649) for your references. A more detailed manuscript for Readzor will be available soon. 
+Please use the DOI (https://doi.org/10.5281/zenodo.22336649) for your references. 
 
 ## Performance benchmarking
-Benchmarking for HPC clusters was performed on the Curnagl HPC cluster of the University of Lausanne, Switzerland. All runs were performed on Zen3 CPUs.\
-Curnagl is a 96 node HPC cluster based on AMD Zen2/3 CPUs providing a total of 4608 compute cores and 54TB of memory. 8 machines are equipped with 2 A100 GPUs and all nodes have 100Gb/s HDR Infiniband and 100Gb/s Ethernet network connections in a fat-tree topology. The principal storage is a 2PB disk backed filesystem and a 150TB SSD based scratch system. Additionally all nodes have 1.6 TB local NVMe drives.
-
-Benchmarking was performed using the following package versions, installed according to specified instructions in dedicated micromamba environments:
-* Fastp v1.3.6
-* Readzor v0.1.22
-* Trimmomatic v0.41
-
-For benchmarking, a public humane Genome-in-a-Bottle dataset was obtained from the NCBI Sequence Read Archive (SRR2052337). This dataset contains 36.4 million paired-end 150 bp reads, from an Illumina HiSeq 2500 machine.
-This dataset was processed as paired, and unpaired files using all software packages.
-Commands were adapted to perform the same tasks where possible, and are available from the [benchmarking folder](/docs/benchmarking). For Fastp and Trimmomatic, successive commands were run in the same job to simulate consecutive processing.
-All measurements were performed in triplicate and averaged, except for the 32-core and all Trimmomatic benchmarks, which are are single measurements.
-
-![Paired_curnagl_memoryusage](/docs/benchmarking/Paired_curnagl_memoryusage.png)
-![Paired_curnagl_processingtime](/docs/benchmarking/Paired_curnagl_processingtime.png)
-![Unpaired_curnagl_memoryusage](/docs/benchmarking/Unpaired_curnagl_memoryusage.png)
-![Unpaired_curnagl_processingtime](/docs/benchmarking/Unpaired_curnagl_processingtime.png)
-
+Readzor will soon be benchmarked against other read sequencing trimmers.
 
 ## Legal
 The oligonucleotide sequences used for adapter trimming, included in this work, are copyrighted and protected by intellectual property, including issued or pending patents, copyright, and trade secrets.\

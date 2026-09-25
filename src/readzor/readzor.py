@@ -102,6 +102,9 @@ def setup_logging(output_dir = None, verbose = False, parameters = None):
             (re)configured.
         verbose (bool): If True, console output includes DEBUG-level
             messages. The log file always captures DEBUG and above.
+        parameters (dict | None): Run parameters. Required (and only
+            consulted) when output_dir is given, to log whether full-auto
+            and/or test-run mode is active.
     """
     logger.setLevel(logging.DEBUG)
     formatter = logging.Formatter(
@@ -150,6 +153,7 @@ def estimate_bytes_per_read(filepath, sample_size=10):
 
     Args:
         filepath (str): Path to the FASTQ file (.fastq, .fq, or gzip-compressed).
+        sample_size (int): Maximum number of records to sample. Defaults to 10.
 
     Returns:
         int: Estimated number of bytes one record occupies on disk,
@@ -180,10 +184,16 @@ def estimate_gzip_ratio(filepath, sample_bytes=50 * 1024 * 1024):
     """
     Estimate a gzip file's compression ratio (uncompressed / compressed) by
     decompressing a leading sample, rather than the whole file.
- 
-    Returns None if the sample is too small to give a stable ratio
-    (e.g. the whole file is tiny) -- caller should fall back to a fixed
-    default ratio in that case.
+
+    Args:
+        filepath (str): Path to the gzip-compressed file.
+        sample_bytes (int): Target number of uncompressed bytes to sample
+            before stopping. Defaults to 50 MiB.
+
+    Returns:
+        float | None: The uncompressed/compressed ratio, or None if the
+        sample is too small to give a stable ratio (e.g. the whole file is
+        tiny) -- caller should fall back to a fixed default ratio in that case.
     """
     compressed_read = 0
     uncompressed_read = 0
@@ -229,7 +239,15 @@ def count_reads_estimated(filepath, default_gzip_ratio=4):
  
     For gzip files, estimates the uncompressed size via a sampled
     compression ratio (falls back to `default_gzip_ratio` if the file is
-    too small to sample reliably). Defaults to 1.
+    too small to sample reliably).
+
+    Args:
+        filepath (str): Path to the FASTQ file (.fastq, .fq, or gzip-compressed).
+        default_gzip_ratio (float): Fallback compression ratio to use when
+            the file is too small to sample a stable ratio. Defaults to 4.
+
+    Returns:
+        int: Estimated number of reads in the file, always >= 1.
     """
     file_size = os.path.getsize(filepath)
     bytes_per_read = estimate_bytes_per_read(filepath)
@@ -557,7 +575,8 @@ def lazy_fastq(filepath):
     Args:
         filepath (str): Path to the FASTQ file (.fastq, .fq, or gzip-compressed).
     Yields:
-        tuple[str, str, str, str]: (header, sequence, plus, quality) for each read.
+        bytes: One record's (header, sequence, plus, quality) lines joined
+            by FIELD_SEP into a single bytes object, line endings stripped.
     """
     buffer_size = 10 * 1024 * 1024
     if GZIP_DETECTION[filepath]:
@@ -615,9 +634,12 @@ def find_paired_files(filepaths):
     Args:
         filepaths (list[str]): Paths to FASTQ files to inspect and pair.
     Returns:
-        tuple[list[tuple[str, str]], list[str]]:
+        tuple[list[tuple[str, str]], list[str], list[str]]:
             - A list of (file_1, file_2) tuples representing matched pairs (ordered R1, R2).
-            - A list of filepaths that could not be matched with a valid pair.
+            - A list of filepaths whose first two records share a base ID
+              (i.e. are interleaved R1/R2 reads within a single file).
+            - A list of remaining filepaths that could not be matched with
+              a valid pair and aren't interleaved.
     """
     base_ids = {}
     interleaved_flag = {}
@@ -806,6 +828,28 @@ def detect_phred_offset(filepath, reads_for_phred_offset, phred_offset):
 def validate_fastq(header, sequence, plus, quality, n_filter, min_length_input, max_length_input):
     """
     Validates that a single FASTQ record is well-formed.
+
+    Checks that the header starts with '@' and the plus-line starts with
+    '+', that the sequence and quality lines are the same length and
+    within the given length bounds, that the sequence contains only
+    allowed nucleotide bytes (ACTG, or ACTGN if `n_filter` is off), and
+    that the quality string contains only printable Phred-range bytes.
+
+    Args:
+        header (bytes): The header line.
+        sequence (bytes): The nucleotide sequence line.
+        plus (bytes): The plus-separator line.
+        quality (bytes): The quality-score line.
+        n_filter (bool): If True, reject reads containing any 'N' base;
+            if False, 'N' is allowed alongside A/C/T/G.
+        min_length_input (int | None): Minimum acceptable sequence length,
+            or None to skip this check.
+        max_length_input (int | None): Maximum acceptable sequence length,
+            or None to skip this check.
+
+    Returns:
+        bool: True if the record is well-formed and passes all checks,
+            False otherwise.
     """
     if len(header) <= 1 or header[0] != 64:
         return False
@@ -920,11 +964,16 @@ def seq_to_array(sequence_list, chunk_padding_bool, max_len, n_reads):
     for vectorized downstream processing.
 
     Args:
-        sequence_list (list[str]): Sequence strings, all of equal length.
+        sequence_list (list[bytes]): Sequence byte-strings; equal length
+            unless chunk_padding_bool is True.
+        chunk_padding_bool (bool): If True, sequences differ in length and
+            are right-padded with null bytes to max_len before conversion.
+        max_len (int): Length to pad/reshape each sequence to.
+        n_reads (int): Number of sequences (rows) in sequence_list.
 
     Returns:
         numpy.ndarray: Signed 8-bit integer array of shape
-            (len(sequence_list), read_length) of ASCII character codes.
+            (n_reads, max_len) of ASCII character codes.
     """
     if not chunk_padding_bool:
         joined = b''.join(sequence_list)
@@ -1062,6 +1111,11 @@ def average_quality_filter_wrapper(quality_arr, chunk_padding_bool, row_tilde_co
     Args:
         quality_arr (numpy.ndarray): (n_reads, read_length) array of
             per-base quality scores.
+        chunk_padding_bool (bool): Whether quality_arr contains padded
+            (unequal-length) reads.
+        row_tilde_count (numpy.ndarray | None): (n_reads,) count of padding
+            bytes per read, used to recover each read's real length when
+            chunk_padding_bool is True.
         min_avg_qual (float): Minimum average quality required to keep a read.
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
@@ -1089,10 +1143,14 @@ def trim_ends_quality(quality_arr, chunk_padding_bool, padding_mask_bool, min_qu
 
     Args:
         quality_arr (numpy.ndarray): (n_reads, read_length) array of per-base quality scores.
+        chunk_padding_bool (bool): Whether quality_arr contains padded
+            (unequal-length) reads.
+        padding_mask_bool (numpy.ndarray | None): (n_reads, read_length)
+            boolean mask marking right-padding positions, or None if the
+            chunk isn't padded. Padded positions are excluded from the scan.
         min_quality_both (int | None): Minimum quality fallback to keep bases from both ends.
         endqual_min_start (int | None): Minimum quality to keep bases from the start of the read.
         endqual_min_end (int | None): Minimum quality to keep bases from the end of the read.
-        endqual_filter_flag (bool): Flag to enable or disable end quality trimming.
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: A tuple of `(start_cutoffs, end_cutoffs)` 
@@ -1158,6 +1216,11 @@ def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, chunk_paddi
     Args:
         sequence_arr (numpy.ndarray): (n_reads, read_length) array of
             per-base ASCII sequence codes.
+        padding_mask_bool (numpy.ndarray | None): (n_reads, read_length)
+            boolean mask marking right-padding positions, or None if the
+            chunk isn't padded.
+        chunk_padding_bool (bool): Whether sequence_arr contains padded
+            (unequal-length) reads.
         poly_length_both (int): Fallback minimum run length to trigger 
             trimming on either end.
         poly_length_start (int): Minimum run length to trigger trimming 
@@ -1170,7 +1233,6 @@ def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, chunk_paddi
             at the start.
         poly_bases_end (str | None): Comma-separated bases to check independently 
             at the end.
-        poly_filter_flag (bool): Flag to enable or disable homopolymer trimming.
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
@@ -1254,14 +1316,15 @@ def n_end_trimming(sequence_arr, padding_mask_bool, chunk_padding_bool):
     Args:
         sequence_arr (numpy.ndarray): (n_reads, read_length) array of
             per-base ASCII sequence codes.
-        n_trimming_flag (bool): Whether N-end trimming is enabled. If False, returns
-            boundaries that trim nothing (left=0, right=read_length) for
-            every read.
+        padding_mask_bool (numpy.ndarray | None): (n_reads, read_length)
+            boolean mask marking right-padding positions, or None if the
+            chunk isn't padded.
+        chunk_padding_bool (bool): Whether sequence_arr contains padded
+            (unequal-length) reads.
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
-            each of shape (n_reads,) and dtype int32, giving the trim
-            boundaries per read.
+            each of shape (n_reads,), giving the trim boundaries per read.
     """
     lefts, rights = homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool = padding_mask_bool, chunk_padding_bool = chunk_padding_bool, poly_length_both = 1, poly_length_start = 0, poly_length_end = 0, poly_bases_both = "N", poly_bases_start = None, poly_bases_end = None)
     return lefts, rights
@@ -1285,6 +1348,13 @@ def cut_set_ends(sequence_arr, chunk_padding_bool, row_tilde_count, cut_both, cu
     floored at 0 instead.
 
     Args:
+        sequence_arr (numpy.ndarray): (n_reads, read_length) array of
+            per-base ASCII sequence codes, used only for its shape.
+        chunk_padding_bool (bool): Whether sequence_arr contains padded
+            (unequal-length) reads.
+        row_tilde_count (numpy.ndarray): (n_reads,) count of padding bytes
+            per read, used to recover each read's real length when
+            chunk_padding_bool is True.
         cut_both (int): Number of bases to trim off both ends. Used as a
             fallback for any side left at 0 (i.e. not given explicitly)
             via cut_start/cut_end.
@@ -1292,9 +1362,6 @@ def cut_set_ends(sequence_arr, chunk_padding_bool, row_tilde_count, cut_both, cu
             priority over cut_both if nonzero.
         cut_end (int): Number of bases to trim from the 3' end. Takes
             priority over cut_both if nonzero.
-        array_lengths (numpy.ndarray): (n_reads,) array giving the length
-            of each read, used to convert `cut_end` into an absolute
-            right-boundary position.
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
@@ -1330,13 +1397,22 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
     Args:
         quality_arr (numpy.ndarray): (n_reads, read_length) array of
             per-base quality scores.
+        chunk_padding_bool (bool): Whether quality_arr contains padded
+            (unequal-length) reads.
+        padding_mask_bool (numpy.ndarray | None): (n_reads, read_length)
+            boolean mask marking right-padding positions, or None if the
+            chunk isn't padded. Padded positions are always treated as
+            failing windows.
+        row_tilde_count (numpy.ndarray | None): (n_reads,) count of padding
+            bytes per read, used to recover each read's real length when
+            chunk_padding_bool is True.
         slider_quality (int): Minimum acceptable mean quality within a window.
         slider_window (int): Number of bases per sliding window.
         slider_step (int): Step size between successive window start positions.
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
-            each of shape (n_reads,) and dtype int16, giving the best surviving
+            each of shape (n_reads,), giving the best surviving
             [left, right) region per read. Reads with no failing windows keep
             their full length; reads that fail everywhere get a zero-length region.
     """
@@ -1451,6 +1527,11 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
     Args:
         sequence_arr (numpy.ndarray): (n_reads, read_length) array of
             per-base ASCII sequence codes (uint8).
+        chunk_padding_bool (bool): Whether sequence_arr contains padded
+            (unequal-length) reads.
+        row_tilde_count (numpy.ndarray | None): (n_reads,) count of padding
+            bytes per read, used to keep matches within each read's real
+            length when chunk_padding_bool is True.
         adapter_sequences (list[bytes]): List of adapter byte-sequences to
             search for. 
         mismatches (int): Number of allowed mismatches (substitutions) when
@@ -1557,6 +1638,11 @@ def kmer_complexity_scan(sequence_arr, chunk_padding_bool, padding_mask_bool, km
     Args:
         sequence_arr (numpy.ndarray): A 2D array of ASCII sequence codes
             of shape (n_reads, length).
+        chunk_padding_bool (bool): Whether sequence_arr contains padded
+            (unequal-length) reads.
+        padding_mask_bool (numpy.ndarray | None): (n_reads, length) boolean
+            mask marking right-padding positions, or None if the chunk
+            isn't padded. K-mer windows overlapping padding are excluded.
         kmer (int | str | iterable): The length or lengths of the k-mers to evaluate.
         low_complex_cutoff (float): The percentage threshold of unique k-mers 
             relative to the maximum possible windows. If the ratio falls below 
@@ -1673,21 +1759,37 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
     average-quality range after trimming.
 
     Args:
-        chunk (list[tuple]): A list of (header, sequence, plus, quality) record tuples.
+        chunk (list[bytes]): FIELD_SEP-joined (header, sequence, plus,
+            quality) records, as yielded by `lazy_fastq`.
         phred_offset (int): Phred encoding offset (33 or 64).
-        minimum_length (int): Minimum acceptable read length after trimming.
-        maximum_length (int): Maximum acceptable read length after trimming.
-        minimum_average_qual_post (float): Minimum acceptable mean quality after trimming.
-        read_length (int): Expected original read length (for validation).
+        minimum_average_qual_post (float): Minimum acceptable mean quality
+            after trimming. 0 disables this filter.
         gzip_output (bool): If True, compresses output records with Isal gzip.
         gzip_level (int): Isal gzip compression level (0-3).
-        parameters (dict): Dictionary of configuration parameters.
+        min_length_output (int | None): Minimum acceptable read length
+            after trimming, as an absolute count.
+        max_length_output (int | None): Maximum acceptable read length
+            after trimming, as an absolute count.
+        min_length_output_perc (int | None): Minimum acceptable read length
+            after trimming, as a percentage of the read's input length.
+            Ignored if min_length_output is given.
+        max_length_output_perc (int | None): Maximum acceptable read length
+            after trimming, as a percentage of the read's input length.
+            Ignored if max_length_output is given.
+        write_rejected (bool): If True, also collect rejected/discarded
+            records (invalid on input or filtered out after trimming).
+        parameters (dict): Dictionary of configuration parameters, used to
+            build the trimming pipeline and to resolve N-filtering,
+            MGI-to-Illumina header conversion, and Phred re-encoding.
 
     Returns:
-        tuple[bytes | str, int, int]: A tuple containing:
+        tuple[bytes, int, int, bytes | list]: A tuple containing:
             - Formatted and optionally gzipped FASTQ records for surviving reads.
             - Count of kept reads.
-            - Count of rejected reads.
+            - Count of rejected reads (invalid input records plus records
+              filtered out after trimming).
+            - Rejected records: optionally gzipped bytes if write_rejected
+              is True, otherwise an empty list.
     """
     if not chunk or len(chunk) == 0:
         return b""
@@ -1785,9 +1887,12 @@ def generate_unpaired_tasks(filepaths, chunk_size, parameters, filetype = None):
     Lazily yields individual chunks alongside their filepaths and precomputed parameters,
     allowing a single global pool to process chunks from multiple files concurrently.
     Args:
-        filepaths (list[str]): List of paths to unpaired FASTQ files.
-        chunk_size (int): Number of reads per chunk.
+        filepaths (list[str]): List of paths to unpaired or interleaved FASTQ files.
+        chunk_size (int): Number of reads per chunk (record pairs for
+            interleaved files, so 2*chunk_size records are read at once).
         parameters (dict): Dictionary of configuration parameters.
+        filetype (str | None): Either "unpaired" or "interleaved", selecting
+            how records are chunked and tagged in the yielded tasks.
     Yields:
         dict: A task dictionary containing the task type, filepath, chunk data,
             and precomputed metadata.
@@ -2006,18 +2111,36 @@ def trim_reads(records, phred_offset, minimum_average_qual_post, min_length_outp
     by ID.
 
     Args:
-        records (list[tuple]): (header, sequence, plus, quality) tuples.
+        records (list[bytes]): FIELD_SEP-joined (header, sequence, plus,
+            quality) records, as yielded by `lazy_fastq`.
         phred_offset (int): Phred encoding offset (33 or 64).
-        minimum_length (int): Minimum acceptable read length after trimming.
-        maximum_length (int): Maximum acceptable read length after trimming.
-        read_length (int): Expected original read length (for validation).
-        minimum_average_qual_post (float): Minimum acceptable mean quality after trimming.
-        parameters (dict): Dictionary of configuration parameters.
+        minimum_average_qual_post (float): Minimum acceptable mean quality
+            after trimming. 0 disables this filter.
+        min_length_output (int | None): Minimum acceptable read length
+            after trimming, as an absolute count.
+        max_length_output (int | None): Maximum acceptable read length
+            after trimming, as an absolute count.
+        min_length_output_perc (int | None): Minimum acceptable read length
+            after trimming, as a percentage of the read's input length.
+            Ignored if min_length_output is given.
+        max_length_output_perc (int | None): Maximum acceptable read length
+            after trimming, as a percentage of the read's input length.
+            Ignored if max_length_output is given.
+        write_rejected (bool): If True, also collect rejected/discarded
+            records (invalid on input or filtered out after trimming).
+        parameters (dict): Dictionary of configuration parameters, used to
+            build the trimming pipeline and to resolve N-filtering,
+            MGI-to-Illumina header conversion, and Phred re-encoding.
 
     Returns:
-        tuple[dict[str, str], int]: A tuple containing:
-            - A dictionary mapping each surviving read's base ID to its formatted FASTQ record string.
-            - Total count of rejected reads.
+        tuple[dict[bytes, bytes], int, list[bytes]]: A tuple containing:
+            - A dictionary mapping each surviving read's base ID to its
+              formatted FASTQ record (not gzip-compressed; compression, if
+              any, happens later once R1/R2 mates are reconciled).
+            - Total count of rejected reads (invalid input records plus
+              records filtered out after trimming).
+            - A list of rejected record strings, populated only if
+              write_rejected is True.
     """
     valid_headers = []
     valid_sequences = []
@@ -2110,13 +2233,14 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
     Args:
         chunks (tuple[list, list]): (chunk1, chunk2) — record lists for R1
             and R2 respectively, covering the same reads in the same order.
-        phred_offset (int): Phred encoding offset (33 or 64).
-        read_length (int): Expected original read length (for validation).
-        minimum_length (int): Minimum acceptable read length after trimming.
-        maximum_length (int): Maximum acceptable read length after trimming.
+        phred_offset_1 (int): Phred encoding offset (33 or 64) for R1.
+        phred_offset_2 (int): Phred encoding offset (33 or 64) for R2.
         gzip_output (bool): If True, compresses output records with Isal gzip.
         gzip_level (int): Isal gzip compression level (0-3).
-        parameters (dict): Dictionary of configuration parameters.
+        parameters (dict): Dictionary of configuration parameters, including
+            `stdout`/`interleaved_out` (which route both mates' surviving
+            reads into the R1 output as interleaved records) and
+            `write_rejected`.
 
     Returns:
         tuple[bytes, bytes, bytes, bytes, int, int, int, int, int]: A tuple containing:
@@ -2237,9 +2361,17 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
         unspecified_files (list[str]): Files with unknown pairing status to auto-detect.
         unpaired_files (list[str]): Explicitly provided unpaired input FASTQ files.
         paired_files (list[tuple[str, str]]): Explicitly provided paired FASTQ file pairs.
+        interleaved_files (list[str]): Explicitly provided interleaved FASTQ files.
         output_dir (str): Directory to write output files to.
         threads (int | None): Number of worker threads/processes for the pool.
         chunk_size (int): Number of reads per processing chunk.
+        show_progress (bool): If True, renders a live progress bar to stderr.
+        stdout (bool): If True, streams surviving reads to stdout instead
+            of writing output files.
+        interleaved_out (bool): If True, interleaves surviving paired reads
+            into a single output file per pair instead of separate R1/R2 files.
+        write_rejected (bool): If True, also writes rejected/discarded reads
+            to file (ignored when stdout is True).
         parameters (dict): Dictionary of configuration parameters.
 
     Returns:
@@ -2537,6 +2669,10 @@ class CleanHelpFormatter(argparse.HelpFormatter):
         return help_text
 
 def print_adapters():
+    """
+    Prints all built-in adapter groups and their sequences to stdout,
+    formatted and aligned by group. Called for --list-adapters.
+    """
     print("\nBuilt-in adapter groups and sequences:\n")
     all_entries = [entry for _, entries in DEFAULT_ADAPTERS for entry in entries]
     name_width = max(len(name) for name, _ in all_entries) + 2
@@ -2591,44 +2727,20 @@ def parse_args():
     or Slurm detection) rather than being hardcoded here.
     
     Returns:
-        dict: A parameters dictionary with the following keys:
-            - full_auto (bool): Whether full-auto mode was requested.
-            - paired (bool): Whether --paired was used (vs --files).
-            - files (list[str] or None): Resolved input file(s), or None
-              if full-auto (to be autodetected downstream).
-            - minimum_length, maximum_length (int or None): Read length bounds.
-            - min_quality_both (int or None): Phred score for end trimming
-              (applied to both ends unless overridden).
-            - endqual_min_start, endqual_min_end (int or None): Phred score
-              thresholds for trimming the 5' and 3' ends specifically;
-              override min_quality_trim for their respective end if given.
-            - minimum_average_qual_post (int or None): Minimum average read quality.
-            - cut_start, cut_end (int or None): Fixed number of bases to trim
-              from the start and end of the read specifically.
-            - cut_both (int or None): Fixed number of bases to trim from both
-              ends; mutually exclusive with cut_start/cut_end.
-            - slider_window (int): Sliding window size for quality trimming.
-              Defaults to 5.
-            - slider_step (int): Step size between successive sliding windows.
-              Defaults to 1.
-            - poly_bases (str): Base to check for a trailing homopolymer run
-              (e.g. poly-G trimming). Defaults to "G".
-            - poly_length_start (int): Minimum homopolymer run length of poly_bases
-              required to trigger trimming. Defaults to 10.
-            - reads_for_phred_offset (int): Number of reads to sample when
-              auto-detecting the Phred quality encoding offset. Defaults to 1000.
-            - gzip_output (bool): Whether to gzip-compress the output file(s).
-            - gzip_level (int): Isal gzip compression level (0-3). Defaults to 1.
-            - threads (int or None): Requested CPU count.
-            - chunk_size (int or None): Requested chunk size.
-            - output_dir (str): Resolved output directory (defaults to the
-              current working directory if not specified).
- 
+        dict: A parameters dictionary, keyed one-for-one with the resolved
+            CLI options (input files/pairing, all trimming/filtering module
+            flags and their thresholds, output/gzip/threading/chunking
+            settings, and run-mode flags such as `testrun` and `full_auto`).
+            See the "--- Store parameters ---" block below this docstring
+            for the authoritative, up-to-date list of keys.
+
     Side Effects:
-        If --version is passed, prints the version string and exits the
-        program immediately (via `exit()`). If neither --files nor --paired
-        nor --full-auto is given, calls `parser.error(...)`, which prints a
-        usage message to stderr and exits with a non-zero status.
+        If --version, --list-adapters, or --help is passed, prints the
+        corresponding output and exits the program immediately (via
+        `sys.exit()`). If neither --input-files, --input-paired,
+        --input-unpaired, --input-interleaved, piped stdin, nor --full-auto
+        provides input, calls `parser.error(...)`, which prints a usage
+        message to stderr and exits with a non-zero status.
     """
     setup_logging()
 
@@ -2652,7 +2764,7 @@ def parse_args():
         help="[FLAG] Show Readzor version and exit."
     )
     general_group.add_argument(
-        "--list-adapters", "-LA", action = "store_true", default = False,
+        "--list-adapters", action = "store_true", default = False,
         help="[FLAG] Show all built-in adapter sequences and exit."
     )
     general_group.add_argument(
@@ -2693,16 +2805,16 @@ def parse_args():
 
     output_group = parser.add_argument_group("Output options")
     output_group.add_argument(
-        "--output", "-o", type=str, default = None, metavar = "",
-        help="Path to directory in which the timestamped results folder will be created. Default: current working directory."
-    )
-    output_group.add_argument(
         "--gzip", action="store_true", default = False,
         help="[FLAG] Compress filtered FASTQ files in gzip format. Default: off."
     )
     output_group.add_argument(
         "--gzip-level", type=int, default = 1, metavar = "", choices=range(0, 4),
         help="Set gzip compression level. Higher compression decreases processing speed. Possible values: 0-3. Default: 1."
+    )
+    output_group.add_argument(
+        "--output", "-o", type=str, default = None, metavar = "",
+        help="Path to directory in which the timestamped results folder will be created. Default: current working directory."
     )
     output_group.add_argument(
         "--stdout", action="store_true", default=False,
@@ -2923,7 +3035,7 @@ def parse_args():
     )
     advanced_group.add_argument(
         "--chunk-size", type=int, default = None, metavar="",
-        help="Number of reads per chunk sent to each worker thread. Note: empirically set to either 20000 (for HPC clusters), or 1000, for optimal performance. Changing can alter processing speed. Default: 1000."
+        help="Number of reads per chunk sent to each worker. Default: platform-dependent (empirically set to 20,000 for HPC cluster systems, 1000 otherwise). Changing can alter processing speed."
     )
     advanced_group.add_argument(
         "--phred-offset", type = int, choices=[33, 64], default = None, metavar="",
@@ -3259,6 +3371,15 @@ def main():
         cleanup_stdin_temp_files()
 
 def test_run(parameters):
+    """
+    Runs the full pipeline against a temporary output directory that is
+    deleted on exit, to let users validate their settings without keeping
+    any output. Limits each input file to one chunk per worker thread so
+    the run finishes quickly. Called when --testrun is set.
+
+    Args:
+        parameters (dict): Dictionary of configuration parameters.
+    """
     try:
         with tempfile.TemporaryDirectory(prefix="readzor_testrun_") as tmp_dir:
             created_output_dir = create_folder_structure(tmp_dir)
