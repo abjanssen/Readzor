@@ -219,7 +219,7 @@ Detect complexity of reads using k-mer-based nucleotide frequencies. Low complex
 `--kmer-cutoff, -kc`: Minimum percentage of unique k-mers (relative to the maximum possible for the read) required to pass the complexity filter. Higher values are stricter. Default: 50.
 
 ### MGI header conversion
-Convert read header from MGI (BGI) format to Illumina format. Original header will be stored in the placeholder line. Conversion is necessary for downstream analysis with tools such as SAMtools.\
+Convert read header from MGI (BGI) format to Illumina format. Original header will be discarded.\
 `--mgi-convert-flag, -mf`: [FLAG] Turn on the MGI-to-Illumina header conversion module. Default: off.\
 `--mgi-bc5, -m5`: Input an i5 barcode for Illumina header conversion. Default: 'PLACEHOLDERi5'.\
 `--mgi-bc7, -m7`: Input an i7 barcode for Illumina header conversion. Default: 'PLACEHOLDERi7'.\
