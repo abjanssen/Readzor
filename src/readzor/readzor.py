@@ -19,7 +19,7 @@ import time
 import threading
 
 from numpy.lib.stride_tricks import sliding_window_view
-from isal import igzip as gzip
+from isal import igzip, igzip_threaded
 import numpy as np
 
 ##### Definition of constant values #####
@@ -145,69 +145,6 @@ def setup_logging(output_dir = None, verbose = False, parameters = None):
         file_only_logger.addHandler(file_handler)
         
 ##### Progress tracker #####
-def estimate_bytes_per_read(filepath, sample_size=10):
-    """
-    Estimates the average on-disk (uncompressed) bytes of a file's reads 
-    by sampling for header, sequence, plus-line, and
-    quality lengths and adding back the newline stripped by `lazy_fastq`.
-
-    Args:
-        filepath (str): Path to the FASTQ file (.fastq, .fq, or gzip-compressed).
-        sample_size (int): Maximum number of records to sample. Defaults to 10.
-
-    Returns:
-        int: Estimated number of bytes one record occupies on disk,
-            including line-ending characters.
-
-    Raises:
-        ValueError: If the file contains no readable FASTQ records.
-    """
-    total_bytes = 0
-    n_records = 0
-    for record in lazy_fastq(filepath):
-        if n_records >= sample_size:
-            break
-        header, sequence, plus, quality = record.split(FIELD_SEP)
-        header_bytes = len(header) + 1
-        seq_bytes = len(sequence) + 1
-        plus_bytes = len(plus) + 1
-        qual_bytes = len(quality) + 1
-        total_bytes += header_bytes + seq_bytes + plus_bytes + qual_bytes
-        n_records += 1
-    if n_records == 0:
-        raise ValueError(f"No FASTQ records found in '{filepath}'; cannot estimate bytes per read.")
-    estimate = int(total_bytes / n_records)
-    ESTIMATED_BYTE_PER_READ[filepath] = estimate
-    return estimate
-
-def estimate_gzip_ratio(filepath, sample_bytes=50 * 1024 * 1024):
-    """
-    Estimate a gzip file's compression ratio (uncompressed / compressed) by
-    decompressing a leading sample, rather than the whole file.
-
-    Args:
-        filepath (str): Path to the gzip-compressed file.
-        sample_bytes (int): Target number of uncompressed bytes to sample
-            before stopping. Defaults to 50 MiB.
-
-    Returns:
-        float | None: The uncompressed/compressed ratio, or None if the
-        sample is too small to give a stable ratio (e.g. the whole file is
-        tiny) -- caller should fall back to a fixed default ratio in that case.
-    """
-    compressed_read = 0
-    uncompressed_read = 0
-    with open(filepath, 'rb') as raw:
-        decompressor = gzip.GzipFile(fileobj=raw)
-        while uncompressed_read < sample_bytes:
-            chunk = decompressor.read(1024 * 1024)
-            if not chunk:
-                break
-            uncompressed_read += len(chunk)
-        compressed_read = raw.tell()
-    if compressed_read == 0 or uncompressed_read < 1024 * 1024:
-        return None
-    return uncompressed_read / compressed_read
 
 def chunk_size_setter(chunk_size):
     """
@@ -232,33 +169,68 @@ def chunk_size_setter(chunk_size):
     else:
         return 1000
 
-def count_reads_estimated(filepath, default_gzip_ratio=4):
+def count_reads_estimated(filepath, sample_size=10, default_gzip_ratio=4, gzip_sample_bytes=50 * 1024 * 1024):
     """
     Estimate the number of reads in a FASTQ file from file size and a
     per-read byte estimate, without a full parse.
- 
-    For gzip files, estimates the uncompressed size via a sampled
-    compression ratio (falls back to `default_gzip_ratio` if the file is
-    too small to sample reliably).
+
+    Samples up to `sample_size` records to estimate average on-disk
+    (uncompressed) bytes per read, including line-ending characters
+    stripped by `lazy_fastq`.
+
+    For gzip files, estimates the uncompressed size via a compression
+    ratio sampled by decompressing a leading chunk of the file (falls
+    back to `default_gzip_ratio` if that sample is too small to be stable).
 
     Args:
         filepath (str): Path to the FASTQ file (.fastq, .fq, or gzip-compressed).
+        sample_size (int): Maximum number of records to sample for the
+            per-read byte estimate. Defaults to 10.
         default_gzip_ratio (float): Fallback compression ratio to use when
-            the file is too small to sample a stable ratio. Defaults to 4.
+            the gzip sample is too small to be stable. Defaults to 4.
+        gzip_sample_bytes (int): Target number of uncompressed bytes to
+            sample when estimating the gzip ratio. Defaults to 50 MiB.
 
     Returns:
         int: Estimated number of reads in the file, always >= 1.
+
+    Raises:
+        ValueError: If the file contains no readable FASTQ records.
     """
+    total_bytes = 0
+    n_records = 0
+    for record in lazy_fastq(filepath, buffer_size=256 * 1024):
+        if n_records >= sample_size:
+            break
+        header, sequence, plus, quality = record.split(FIELD_SEP)
+        total_bytes += len(header) + len(sequence) + len(plus) + len(quality) + 4
+        n_records += 1
+    if n_records == 0:
+        raise ValueError(f"No FASTQ records found in '{filepath}'; cannot estimate bytes per read.")
+    bytes_per_read = int(total_bytes / n_records)
+    ESTIMATED_BYTE_PER_READ[filepath] = bytes_per_read
+
     file_size = os.path.getsize(filepath)
-    bytes_per_read = estimate_bytes_per_read(filepath)
     if GZIP_DETECTION[filepath]:
-        ratio = estimate_gzip_ratio(filepath)
-        if ratio is None:
+        compressed = 0
+        uncompressed = 0
+        with open(filepath, 'rb') as raw:
+            decompressor = igzip.GzipFile(fileobj=raw)
+            while uncompressed < gzip_sample_bytes:
+                chunk = decompressor.read(1024 * 1024)
+                if not chunk:
+                    break
+                uncompressed += len(chunk)
+            compressed = raw.tell()
+        if compressed == 0 or uncompressed < 1024 * 1024:
             ratio = default_gzip_ratio
+        else:
+            ratio = uncompressed / compressed
         ESTIMATED_ZIP_RATIO[filepath] = ratio
         estimated_uncompressed_size = file_size * ratio
     else:
         estimated_uncompressed_size = file_size
+
     return max(1, round(estimated_uncompressed_size / bytes_per_read))
 
 class ProgressTracker:
@@ -573,7 +545,7 @@ def is_gz_file(filepath):
     except (IOError, OSError):
         return False
 
-def lazy_fastq(filepath):
+def lazy_fastq(filepath, buffer_size = 2*1024*1024):
     """
     Lazily yield FASTQ records one at a time without loading the entire file.
 
@@ -591,9 +563,8 @@ def lazy_fastq(filepath):
         bytes: One record's (header, sequence, plus, quality) lines joined
             by FIELD_SEP into a single bytes object, line endings stripped.
     """
-    buffer_size = 10 * 1024 * 1024
     if GZIP_DETECTION[filepath]:
-        fastq_file = gzip.open(filepath, 'rb')
+        fastq_file = igzip_threaded.open(filepath, 'rb', threads=1)
         with fastq_file:
             leftover = b""
             while True:
@@ -670,7 +641,7 @@ def find_paired_files(filepaths):
             if GZIP_DETECTION[filepath]:
                 raw = open(filepath, 'rb', buffering=1024)
                 try:
-                    file = gzip.GzipFile(fileobj=raw)
+                    file = igzip.GzipFile(fileobj=raw)
                     with file:
                         lines = [file.readline() for _ in range(8)]
                 finally:
@@ -817,7 +788,7 @@ def detect_phred_offset(filepath, reads_for_phred_offset, phred_offset):
     min_ascii = 127
     max_ascii = 0
     count = 0
-    reader = lazy_fastq(filepath)
+    reader = lazy_fastq(filepath, buffer_size = 256*1024)
     try:
         for record in reader:
             if count >= reads_for_phred_offset:
@@ -1065,15 +1036,15 @@ def build_pipeline(parameters):
     if parameters.get("kmer_filter_flag"):
         pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: kmer_complexity_scan(seq, chunk_padding_bool, padding_mask_bool, kmer=parameters["kmer_size"], low_complex_cutoff=parameters["kmer_cutoff"], allow_n=parameters["allow_n_kmer"]))
     if parameters.get("n_trimming_flag"):
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: n_end_trimming(seq, padding_mask_bool, chunk_padding_bool))
+        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: n_end_trimming(seq, padding_mask_bool, chunk_padding_bool, row_tilde_count))
     if parameters.get("poly_filter_flag"):
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: homopolymer_nucleotide_trimming(seq, padding_mask_bool, chunk_padding_bool, poly_length_both=parameters["poly_length_both"], poly_length_start=parameters["poly_length_start"], poly_length_end=parameters["poly_length_end"], poly_bases_both=parameters["poly_bases_both"], poly_bases_start=parameters["poly_bases_start"], poly_bases_end=parameters["poly_bases_end"]))
+        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: homopolymer_nucleotide_trimming(seq, padding_mask_bool, row_tilde_count, chunk_padding_bool, poly_length_both=parameters["poly_length_both"], poly_length_start=parameters["poly_length_start"], poly_length_end=parameters["poly_length_end"], poly_bases_both=parameters["poly_bases_both"], poly_bases_start=parameters["poly_bases_start"], poly_bases_end=parameters["poly_bases_end"]))
     if parameters.get("adapter_filter_flag"):
         pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: adapter_trimming(seq, chunk_padding_bool, row_tilde_count, adapter_sequences=parameters["adapter_sequences"], mismatches=parameters["adapter_mismatch"]))
 
     #quality_based
     if parameters.get("endqual_filter_flag"):
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: trim_ends_quality(qual, chunk_padding_bool, padding_mask_bool, min_quality_both=parameters["min_quality_both"], endqual_min_start=parameters["endqual_min_start"], endqual_min_end=parameters["endqual_min_end"]))
+        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: trim_ends_quality(qual, chunk_padding_bool, row_tilde_count, padding_mask_bool, min_quality_both=parameters["min_quality_both"], endqual_min_start=parameters["endqual_min_start"], endqual_min_end=parameters["endqual_min_end"]))
     if parameters.get("minimum_average_qual_pre") > 0:
         pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: average_quality_filter_wrapper(qual, chunk_padding_bool, row_tilde_count, min_avg_qual=parameters["minimum_average_qual_pre"]))
     if parameters.get("slider_filter_flag"):
@@ -1149,7 +1120,7 @@ def average_quality_filter_wrapper(quality_arr, chunk_padding_bool, row_tilde_co
     right_cutoffs = np.where(passed, real_lengths, 0).astype(np.int64)
     return np.zeros(n_reads, dtype=np.int8), right_cutoffs
 
-def trim_ends_quality(quality_arr, chunk_padding_bool, padding_mask_bool, min_quality_both, endqual_min_start, endqual_min_end):
+def trim_ends_quality(quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool, min_quality_both, endqual_min_start, endqual_min_end):
     """
     Determines per-read trim boundaries based on quality thresholds at each end.
 
@@ -1209,9 +1180,8 @@ def trim_ends_quality(quality_arr, chunk_padding_bool, padding_mask_bool, min_qu
         qual_mask = (quality_arr_rev >= endqual_min_end) & ~pad_mask_rev
         first_good_pos = qual_mask.argmax(axis=1)
 
-        tilde_count_per_row = np.sum(padding_mask_bool, axis=1)
-        real_lengths = length - tilde_count_per_row
-        run_length = first_good_pos - tilde_count_per_row
+        real_lengths = length - row_tilde_count
+        run_length = first_good_pos - row_tilde_count
         end_cutoffs = real_lengths - run_length
 
         zero_end_rows = first_good_pos == 0
@@ -1221,7 +1191,7 @@ def trim_ends_quality(quality_arr, chunk_padding_bool, padding_mask_bool, min_qu
 
     return start_cutoffs.astype(np.int64), end_cutoffs.astype(np.int64)
 
-def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, chunk_padding_bool, poly_length_both, poly_length_start, poly_length_end, poly_bases_both, poly_bases_start, poly_bases_end):
+def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, row_tilde_count, chunk_padding_bool, poly_length_both, poly_length_start, poly_length_end, poly_bases_both, poly_bases_start, poly_bases_end):
     """
     Determines per-read trim boundaries to remove homopolymer runs 
     from the start and/or end of each read independently.
@@ -1262,67 +1232,66 @@ def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, chunk_paddi
         return np.zeros(n_reads, dtype=np.int8), np.full(n_reads, length, dtype=np.int64)
     if poly_length_both == poly_length_start == poly_length_end == 0:
         return np.zeros(n_reads, dtype=np.int8), np.full(n_reads, length, dtype=np.int64)
-    
+
     start_bases = []
     end_bases = []
-    
+
     if poly_bases_both is not None:
         bases = [b.strip().upper() for b in poly_bases_both.split(",") if b.strip()]
         if any(len(b) != 1 for b in bases):
             raise ValueError(f"Invalid base entry in '{poly_bases_both}': All bases must be single characters.")
         start_bases = bases
         end_bases = bases
-    
+
     if poly_bases_start is not None:
         start_bases = [b.strip().upper() for b in poly_bases_start.split(",") if b.strip()]
         if any(len(b) != 1 for b in start_bases):
             raise ValueError(f"Invalid base entry in '{poly_bases_start}': All bases must be single characters.")
-    
+
     if poly_bases_end is not None:
         end_bases = [b.strip().upper() for b in poly_bases_end.split(",") if b.strip()]
         if any(len(b) != 1 for b in end_bases):
             raise ValueError(f"Invalid base entry in '{poly_bases_end}': All bases must be single characters.")
-    
+
     poly_length_start = poly_length_start if poly_length_start != 0 else poly_length_both
     poly_length_end = poly_length_end if poly_length_end != 0 else poly_length_both
-    
+
     right_cutoffs = np.full(n_reads, length, dtype=np.int64)
     left_cutoffs = np.zeros(n_reads, dtype=np.int8)
-    
+
     for base in start_bases:
         base_code = ord(base)
         non_base_mask = sequence_arr != base_code
-        padded_mask = np.column_stack([non_base_mask, np.ones(n_reads, dtype=bool)])
-        first_non_pos = padded_mask.argmax(axis=1)
+        first_non_pos = non_base_mask.argmax(axis=1)
+        first_non_pos = np.where(non_base_mask.any(axis=1), first_non_pos, length)
         trim_amount = np.where(first_non_pos >= poly_length_start, first_non_pos, 0)
         left_cutoffs = np.maximum(left_cutoffs, trim_amount)
-    
+
     if end_bases:
-        rev_seq = np.ascontiguousarray(sequence_arr[:, ::-1])    
+        rev_seq = np.ascontiguousarray(sequence_arr[:, ::-1])
         if not chunk_padding_bool:
             for base in end_bases:
                 base_code = ord(base)
                 non_base_mask = rev_seq != base_code
-                padded_mask = np.column_stack([non_base_mask, np.ones(n_reads, dtype=bool)])
-                first_non_pos = padded_mask.argmax(axis=1)
+                first_non_pos = non_base_mask.argmax(axis=1)
+                first_non_pos = np.where(non_base_mask.any(axis=1), first_non_pos, length)
                 trim_amount = np.where(first_non_pos >= poly_length_end, first_non_pos, 0)
                 base_right_cutoffs = length - trim_amount
                 right_cutoffs = np.minimum(right_cutoffs, base_right_cutoffs)
         else:
-            tilde_count_per_row = np.sum(padding_mask_bool, axis=1)
-            real_length = length - tilde_count_per_row
+            real_length = length - row_tilde_count
             for base in end_bases:
                 non_base_mask = (rev_seq != ord(base)) & (rev_seq != ord('\x00'))
-                padded_mask = np.column_stack([non_base_mask, np.ones(n_reads, dtype=bool)])
-                first_non_pos = padded_mask.argmax(axis=1)
-                run_length = first_non_pos - tilde_count_per_row
+                first_non_pos = non_base_mask.argmax(axis=1)
+                first_non_pos = np.where(non_base_mask.any(axis=1), first_non_pos, length)
+                run_length = first_non_pos - row_tilde_count
                 trim_amount = np.where(run_length >= poly_length_end, run_length, 0)
                 base_right_cutoffs = real_length - trim_amount
                 right_cutoffs = np.minimum(right_cutoffs, base_right_cutoffs)
-    
+
     return left_cutoffs, right_cutoffs
 
-def n_end_trimming(sequence_arr, padding_mask_bool, chunk_padding_bool):
+def n_end_trimming(sequence_arr, padding_mask_bool, chunk_padding_bool, row_tilde_count):
     """
     Removes leading and trailing N-bases from each read.
 
@@ -1344,7 +1313,7 @@ def n_end_trimming(sequence_arr, padding_mask_bool, chunk_padding_bool):
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
             each of shape (n_reads,), giving the trim boundaries per read.
     """
-    lefts, rights = homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool = padding_mask_bool, chunk_padding_bool = chunk_padding_bool, poly_length_both = 1, poly_length_start = 0, poly_length_end = 0, poly_bases_both = "N", poly_bases_start = None, poly_bases_end = None)
+    lefts, rights = homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool = padding_mask_bool, row_tilde_count = row_tilde_count, chunk_padding_bool = chunk_padding_bool, poly_length_both = 1, poly_length_start = 0, poly_length_end = 0, poly_bases_both = "N", poly_bases_start = None, poly_bases_end = None)
     return lefts, rights
 
 def cut_set_ends(sequence_arr, chunk_padding_bool, row_tilde_count, cut_both, cut_start, cut_end):
@@ -1566,26 +1535,32 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
     right_cutoffs = np.zeros(n_reads, dtype=np.int64)
     if mismatches == 0:
         if not chunk_padding_bool:
-            for i in range(n_reads):
-                row_bytes = all_bytes[i*length:(i+1)*length]
-                best = length
-                for adapter_bytes in adapter_sequences:
-                    pos = row_bytes.find(adapter_bytes)
-                    if pos != -1 and pos < best:
-                        best = pos
-                right_cutoffs[i] = best
+            right_cutoffs[:] = length
+            for adapter_bytes in adapter_sequences:
+                adapter_len = len(adapter_bytes)
+                start = 0
+                while True:
+                    pos = all_bytes.find(adapter_bytes, start)
+                    if pos == -1:
+                        break
+                    i, pos_in_row = divmod(pos, length)
+                    if pos_in_row + adapter_len <= length and pos_in_row < right_cutoffs[i]:
+                        right_cutoffs[i] = pos_in_row
+                    start = pos + 1
         else:
             real_lengths = length - row_tilde_count
-            for i in range(n_reads):
-                row_bytes = all_bytes[i*length:(i+1)*length]
-                real_len = real_lengths[i]
-                row_bytes_real = row_bytes[:real_len]
-                best = real_len
-                for adapter_bytes in adapter_sequences:
-                    pos = row_bytes_real.find(adapter_bytes)
-                    if pos != -1 and pos < best:
-                        best = pos
-                right_cutoffs[i] = best
+            right_cutoffs[:] = real_lengths
+            for adapter_bytes in adapter_sequences:
+                adapter_len = len(adapter_bytes)
+                start = 0
+                while True:
+                    pos = all_bytes.find(adapter_bytes, start)
+                    if pos == -1:
+                        break
+                    i, pos_in_row = divmod(pos, length)
+                    if pos_in_row + adapter_len <= real_lengths[i] and pos_in_row < right_cutoffs[i]:
+                        right_cutoffs[i] = pos_in_row
+                    start = pos + 1
     else:
         right_cutoffs[:] = length if not chunk_padding_bool else (length - row_tilde_count)
 
@@ -1696,7 +1671,6 @@ def kmer_complexity_scan(sequence_arr, chunk_padding_bool, padding_mask_bool, km
             raise ValueError(
                 f"Chosen k-mer length {k} is too big, maximum safe k-mer is 21. "
             )
-
 
     global_passed = np.ones(n_reads, dtype=bool)
     mapping = np.zeros(256, dtype=np.int8)
@@ -1813,7 +1787,7 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
             - Rejected records: optionally gzipped bytes if write_rejected
               is True, otherwise an empty list.
     """
-    if not chunk or len(chunk) == 0:
+    if not chunk:
         return b""
     valid_headers = []
     valid_sequences = []
@@ -1835,7 +1809,7 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
     if not valid_headers:
         rejected_blob = b"".join(rejected_reads) if write_rejected else []
         if gzip_output and rejected_blob:
-            rejected_blob = gzip.compress(rejected_blob, compresslevel=gzip_level)
+            rejected_blob = igzip.compress(rejected_blob, compresslevel=gzip_level)
         return b"", 0, rejected, rejected_blob
     if parameters["mgi_convert_flag"]:
         valid_pluses = [b"+"] * len(valid_headers)
@@ -1900,9 +1874,9 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
         rejected_reads = b"".join(rejected_reads)
     if gzip_output:
         try:
-            results = gzip.compress(results, compresslevel=gzip_level)
+            results = igzip.compress(results, compresslevel=gzip_level)
             if write_rejected:
-                rejected_reads = gzip.compress(rejected_reads, compresslevel=gzip_level)
+                rejected_reads = igzip.compress(rejected_reads, compresslevel=gzip_level)
         except Exception as e:
             raise RuntimeError(f"Compression failed inside worker: {str(e)}") from None
     return results, len_results, rejected, rejected_reads
@@ -1939,25 +1913,27 @@ def generate_unpaired_tasks(filepaths, chunk_size, parameters, filetype = None):
             logger.info("%s: gzip format detected.", os.path.basename(filepath))
             logger.info("%s: estimated gzip compression ratio: %s.", os.path.basename(filepath), ESTIMATED_ZIP_RATIO.get(filepath))
         logger.info("%s: Phred offset of %s detected.", os.path.basename(filepath), phred_offset)
-        logger.info("%s: estimated bytes per read: %s.", os.path.basename(filepath), ESTIMATED_BYTE_PER_READ[filepath])
-        logger.info("%s: (estimated) read count: %s.", os.path.basename(filepath), ESTIMATED_READ_COUNTS.get(filepath, "unknown"))
+        if ESTIMATED_READ_COUNTS.get(filepath) is not None:
+            logger.info("%s: estimated bytes per read: %s.", os.path.basename(filepath), ESTIMATED_BYTE_PER_READ[filepath])
+            logger.info("%s: (estimated) read count: %s.", os.path.basename(filepath), ESTIMATED_READ_COUNTS[filepath])
         reads_iter = lazy_fastq(filepath)
-        chunk_number = 0
         if filetype == "unpaired":
+            total_reads = 0
             while True:
-                chunk_number += 1
                 chunk = list(itertools.islice(reads_iter, chunk_size))
                 if not chunk:
                     elapsed = time.monotonic() - start_time
-                    estimated_reads = ESTIMATED_READ_COUNTS.get(filepath)
-                    if estimated_reads is not None and elapsed > 0:
-                        reads_per_sec = estimated_reads / elapsed
+                    if total_reads > 0 and elapsed > 0:
+                        reads_per_sec = total_reads / elapsed
                         logger.info(
-                            "%s: finished processing in %.2fs (%.0f reads/sec).",
-                            os.path.basename(filepath), elapsed, reads_per_sec)
+                            "%s: finished processing %d reads in %.2fs (%.0f reads/sec).",
+                            os.path.basename(filepath), total_reads, elapsed, reads_per_sec
+                        )
                     else:
                         logger.info("%s: finished processing in %.2fs.", os.path.basename(filepath), elapsed)
                     break
+        
+                total_reads += len(chunk)
                 yield {
                     "type": "unpaired",
                     "filepath": filepath,
@@ -1965,22 +1941,23 @@ def generate_unpaired_tasks(filepaths, chunk_size, parameters, filetype = None):
                     "phred_offset": phred_offset
                 }
         elif filetype == "interleaved":
+            total_reads = 0
             while True:
-                chunk_number += 1
                 chunk = list(itertools.islice(reads_iter, 2*chunk_size))
                 if not chunk:
                     elapsed = time.monotonic() - start_time
-                    estimated_reads = ESTIMATED_READ_COUNTS.get(filepath)
-                    if estimated_reads is not None and elapsed > 0:
-                        reads_per_sec = estimated_reads / elapsed
+                    if total_reads > 0 and elapsed > 0:
+                        reads_per_sec = total_reads / elapsed
                         logger.info(
-                            "%s: finished processing in %.2fs (%.0f reads/sec).",
-                            os.path.basename(filepath), elapsed, reads_per_sec)
+                            "%s: finished processing %d reads in %.2fs (%.0f pairs/sec).",
+                            os.path.basename(filepath), total_reads, elapsed, reads_per_sec
+                        )
                     else:
                         logger.info("%s: finished processing in %.2fs.", os.path.basename(filepath), elapsed)
                     break
                 chunk_1 = chunk[0::2]
                 chunk_2 = chunk[1::2]
+                total_reads += len(chunk_1)
                 yield {
                     "type": "paired",
                     "file1": filepath,
@@ -2093,28 +2070,40 @@ def generate_paired_tasks(files, chunk_size, parameters):
         logger.info("%s: (estimated) read count: %s.", os.path.basename(file2), ESTIMATED_READ_COUNTS.get(file2, "unknown"))
         reads_iter_1 = lazy_fastq(file1)
         reads_iter_2 = lazy_fastq(file2)
+        total_pairs = 0
         while True:
             chunk1 = list(itertools.islice(reads_iter_1, chunk_size))
             chunk2 = list(itertools.islice(reads_iter_2, chunk_size))
+            
             if not chunk1 and not chunk2:
                 elapsed = time.monotonic() - start_time
-                estimated_reads = ESTIMATED_READ_COUNTS.get(file1)
-                if estimated_reads is not None and elapsed > 0:
-                    reads_per_sec = estimated_reads / elapsed
+                if total_pairs > 0 and elapsed > 0:
+                    reads_per_sec = total_pairs / elapsed
                     logger.info(
-                        "%s and %s: finished processing in %.2fs (%.0f read pairs/sec).",
-                        os.path.basename(file1), os.path.basename(file2), elapsed, reads_per_sec)
+                        "%s and %s: finished processing %d read pairs in %.2fs (%.0f pairs/sec).",
+                        os.path.basename(file1),
+                        os.path.basename(file2),
+                        total_pairs,
+                        elapsed,
+                        reads_per_sec,
+                    )
                 else:
                     logger.info(
                         "%s and %s: finished processing in %.2fs.",
-                        os.path.basename(file1), os.path.basename(file2), elapsed
+                        os.path.basename(file1),
+                        os.path.basename(file2),
+                        elapsed,
                     )
                 return
+        
             if len(chunk1) != len(chunk2):
                 raise ValueError(
                     f"Mismatched read counts in paired files {file1} and {file2}. "
                     f"Files must have identical read counts (possible file corruption or truncation)."
                 )
+        
+            total_pairs += len(chunk1)
+        
             yield {
                 "type": "paired",
                 "file1": file1,
@@ -2127,7 +2116,7 @@ def generate_paired_tasks(files, chunk_size, parameters):
                 "gzip_level": parameters["gzip_level"],
                 "discard_singles": parameters["discard_singles"]
             }
-
+            
 def trim_reads(records, phred_offset, minimum_average_qual_post, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, parameters):
     """
     Validates, quality-trims, and length/quality-filters a batch of FASTQ
@@ -2190,7 +2179,7 @@ def trim_reads(records, phred_offset, minimum_average_qual_post, min_length_outp
     if not valid_headers:
         return {}, rejected, rejected_reads
     if parameters["mgi_convert_flag"]:
-        valid_pluses = [plus + b"_OriginalHeader:" + header for plus, header in zip(valid_pluses, valid_headers)]
+        valid_pluses = [b"+"] * len(valid_headers)
         valid_headers = [header_mgi_to_illumina(header, parameters["mgi_bc5"], parameters["mgi_bc7"], parameters["mgi_instrument"], parameters["mgi_run"]) for header in valid_headers]
     quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool, raw_lengths, max_len, n_reads = qual_to_array(quality_list = valid_qualities, phred_offset = phred_offset)
     sequence_arr = seq_to_array(sequence_list = valid_sequences, chunk_padding_bool = chunk_padding_bool, max_len = max_len, n_reads = n_reads)
@@ -2325,17 +2314,17 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
     if gzip_output:
         try:
             if paired_out_1:
-                paired_out_1 = gzip.compress(paired_out_1, compresslevel=gzip_level)
+                paired_out_1 = igzip.compress(paired_out_1, compresslevel=gzip_level)
             if paired_out_2:
-                paired_out_2 = gzip.compress(paired_out_2, compresslevel=gzip_level)
+                paired_out_2 = igzip.compress(paired_out_2, compresslevel=gzip_level)
             if rejected_R1:
-                rejected_R1 = gzip.compress(rejected_R1, compresslevel=gzip_level)
+                rejected_R1 = igzip.compress(rejected_R1, compresslevel=gzip_level)
             if rejected_R2:
-                rejected_R2 = gzip.compress(rejected_R2, compresslevel=gzip_level)
+                rejected_R2 = igzip.compress(rejected_R2, compresslevel=gzip_level)
             if singles_out_1:
-                singles_out_1 = gzip.compress(singles_out_1, compresslevel=gzip_level)
+                singles_out_1 = igzip.compress(singles_out_1, compresslevel=gzip_level)
             if singles_out_2:
-                singles_out_2 = gzip.compress(singles_out_2, compresslevel=gzip_level)
+                singles_out_2 = igzip.compress(singles_out_2, compresslevel=gzip_level)
         except Exception as e:
             raise RuntimeError(f"Compression failed inside worker: {str(e)}") from None
     return paired_out_1, paired_out_2, singles_out_1, singles_out_2, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2, rejected_R1, rejected_R2
@@ -2429,14 +2418,14 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
     unpaired = auto_unpaired + (unpaired_files or [])
     paired = auto_paired + (paired_files or [])
     interleaved = auto_interleaved + (interleaved_files or [])
-    for file in unpaired:
-        ESTIMATED_READ_COUNTS[file] = count_reads_estimated(file)
-    for file in interleaved:
-        ESTIMATED_READ_COUNTS[file] = count_reads_estimated(file)
-    for f1, f2 in paired:
-        ESTIMATED_READ_COUNTS[f1] = count_reads_estimated(f1)
-        ESTIMATED_READ_COUNTS[f2] = count_reads_estimated(f2)
     if show_progress:    
+        for file in unpaired:
+            ESTIMATED_READ_COUNTS[file] = count_reads_estimated(file)
+        for file in interleaved:
+            ESTIMATED_READ_COUNTS[file] = count_reads_estimated(file)
+        for f1, f2 in paired:
+            ESTIMATED_READ_COUNTS[f1] = count_reads_estimated(f1)
+            ESTIMATED_READ_COUNTS[f2] = count_reads_estimated(f2)
         total_reads = sum(ESTIMATED_READ_COUNTS.values())
         tracker = ProgressTracker(total_reads)
     else:
@@ -2603,7 +2592,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
         for handle in file_writing_handles.values():
             if not handle.closed:
                 if parameters["gzip_output"] and handle.tell() == 0:
-                    handle.write(gzip.compress(b""))
+                    handle.write(igzip.compress(b""))
                 handle.close()
     return file_stats
 
