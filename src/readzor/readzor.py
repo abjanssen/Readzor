@@ -28,7 +28,7 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.2.8"
+VERSION = "0.2.9"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq3", [
@@ -676,7 +676,7 @@ def find_paired_files(filepaths):
         base_id_1, read_num_1 = read_info_from_header(header_1)
         header_2 = headers[1].strip().lstrip(b'@')
         base_id_2, read_num_2 = read_info_from_header(header_2)
-        
+    
         base_ids[filepath] = (base_id_1, read_num_1)
         interleaved_flag[filepath] = (
             base_id_1 is not None
@@ -918,70 +918,84 @@ def load_adapters_from_fasta(fasta_file):
             result.append((name, joined_sequence))
             header = sequence
         return result
-
-def qual_to_array(quality_list, phred_offset):
+    
+def seq_to_array(sequence_list):
     """
-    Converts a list of Phred quality strings into a 2D numeric numpy array.
+    Converts a list of nucleotide sequence strings into a 2D numpy array,
+    and works out the chunk's padding layout for all downstream steps.
 
-    Concatenates all quality strings, reinterprets the raw bytes as an
-    array of Phred-shifted integer quality scores, subtracts the Phred offset,
-    and reshapes into a (n_reads, read_length) matrix for vectorized downstream processing.
+    Concatenates all sequences (right-padded with null bytes to the longest
+    read when lengths differ) and reinterprets the raw bytes as an array of
+    ASCII codes, reshaping into a (n_reads, read_length) matrix for
+    vectorized downstream processing.
 
     Args:
-        quality_list (list[str]): Quality strings, all of equal length.
-        phred_offset (int): The Phred encoding offset (33 or 64) to subtract.
+        sequence_list (list[bytes]): Sequence byte-strings.
 
     Returns:
-        numpy.ndarray: Signed 8-bit integer array of shape
-            (len(quality_list), read_length) with true quality scores.
+        tuple: A tuple containing:
+            - numpy.ndarray: Signed 8-bit integer array of shape
+              (n_reads, max_len) of ASCII character codes.
+            - bool: chunk_padding_bool, True if reads differ in length.
+            - numpy.ndarray | int: row_tilde_count, (n_reads,) padding bytes
+              per read, or 0 when not padded.
+            - numpy.ndarray | None: padding_mask_bool, (n_reads, max_len)
+              True at padding positions, or None when not padded.
+            - numpy.ndarray: (n_reads,) real read lengths.
+            - int: max_len, length of the longest read.
+            - int: n_reads, number of reads.
     """
-    quality_arr_lengths = np.array([len(q) for q in quality_list])
-    n_reads = len(quality_list)
-    max_len = quality_arr_lengths.max()
-    min_len = quality_arr_lengths.min()
+    sequence_arr_lengths = np.array([len(s) for s in sequence_list])
+    n_reads = len(sequence_list)
+    max_len = sequence_arr_lengths.max()
+    min_len = sequence_arr_lengths.min()
     if max_len == min_len:
-        joined = b''.join(quality_list) 
+        joined = b''.join(sequence_list)
         array = np.frombuffer(joined, dtype=np.int8).reshape(n_reads, max_len)
-        array = array - phred_offset
         chunk_padding_bool = False
         row_tilde_count = 0
         padding_mask_bool = None
-        return array, chunk_padding_bool, row_tilde_count, padding_mask_bool, quality_arr_lengths, max_len, n_reads
+        return array, chunk_padding_bool, row_tilde_count, padding_mask_bool, sequence_arr_lengths, max_len, n_reads
     else:
-        padded = [q.ljust(max_len, b'\x00') for q in quality_list]
+        padded = [s.ljust(max_len, b'\x00') for s in sequence_list]
         joined = b''.join(padded)
-        array = np.frombuffer(joined, dtype=np.int8).reshape(n_reads, max_len) 
+        array = np.frombuffer(joined, dtype=np.int8).reshape(n_reads, max_len)
         padding_mask_bool = array == ord('\x00')
         row_tilde_count = np.sum(padding_mask_bool, axis=1)
         chunk_padding_bool = bool(np.any(row_tilde_count > 0))
-        array = np.where(padding_mask_bool, array, array - phred_offset)
-        return array, chunk_padding_bool, row_tilde_count, padding_mask_bool, quality_arr_lengths, max_len, n_reads
+        return array, chunk_padding_bool, row_tilde_count, padding_mask_bool, sequence_arr_lengths, max_len, n_reads
 
-def seq_to_array(sequence_list, chunk_padding_bool, max_len, n_reads):
+def qual_to_array(quality_list, phred_offset, chunk_padding_bool, padding_mask_bool, max_len, n_reads):
     """
-    Converts a list of nucleotide sequence strings into a 2D numpy array.
+    Converts a list of Phred quality strings into a 2D numeric numpy array,
+    using the padding layout seq_to_array determined for the same reads.
 
-    Concatenates all sequences and reinterprets the raw bytes as an
-    array of ASCII codes, reshaping into a (n_reads, read_length) matrix 
-    for vectorized downstream processing.
+    Concatenates all quality strings (right-padded with null bytes when
+    chunk_padding_bool is True), reinterprets the raw bytes as Phred-shifted
+    integer scores, subtracts the Phred offset (leaving padding at 0), and
+    reshapes into a (n_reads, read_length) matrix.
 
     Args:
-        sequence_list (list[bytes]): Sequence byte-strings; equal length
-            unless chunk_padding_bool is True.
-        chunk_padding_bool (bool): If True, sequences differ in length and
-            are right-padded with null bytes to max_len before conversion.
-        max_len (int): Length to pad/reshape each sequence to.
-        n_reads (int): Number of sequences (rows) in sequence_list.
+        quality_list (list[bytes]): Quality byte-strings, each the same length
+            as its sequence (guaranteed by validate_fastq).
+        phred_offset (int): The Phred encoding offset (33 or 64) to subtract.
+        chunk_padding_bool (bool): From seq_to_array.
+        padding_mask_bool (numpy.ndarray | None): From seq_to_array.
+        max_len (int): From seq_to_array.
+        n_reads (int): From seq_to_array.
 
     Returns:
         numpy.ndarray: Signed 8-bit integer array of shape
-            (n_reads, max_len) of ASCII character codes.
+            (n_reads, max_len) with true quality scores.
     """
-    if chunk_padding_bool:
-        sequence_list = [s.ljust(max_len, b'\x00') for s in sequence_list]
-    joined = b''.join(sequence_list)
+    if not chunk_padding_bool:
+        joined = b''.join(quality_list)
+        array = np.frombuffer(joined, dtype=np.int8).reshape(n_reads, max_len)
+        return array - phred_offset
+    padded = [q.ljust(max_len, b'\x00') for q in quality_list]
+    joined = b''.join(padded)
     array = np.frombuffer(joined, dtype=np.int8).reshape(n_reads, max_len)
-    return array
+    return np.where(padding_mask_bool, array, array - phred_offset)
 
 def header_mgi_to_illumina(mgi_header, barcode5, barcode7, instrument, run):
     """
@@ -1511,6 +1525,111 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
 
     return left_cutoffs, right_cutoffs
 
+def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_tilde_count_1, chunk_padding_bool_2, row_tilde_count_2, min_overlap=30, max_mismatch=5, max_mismatch_frac=0.05, prefix_length=30):
+    """
+    For each read pair, finds the insert size I where R1[:I] == revcomp(R2[:I])
+    and at least one mate reads past I into adapter.
+
+    Args:
+        seq_arr_1 (numpy.ndarray): (n_reads, length_1) int8 ASCII array of R1.
+        seq_arr_2 (numpy.ndarray): (n_reads, length_2) int8 ASCII array of R2,
+            row-aligned with seq_arr_1 (row i of both is one pair).
+        chunk_padding_bool_1 (bool): Whether seq_arr_1 contains padded
+            (unequal-length) reads.
+        row_tilde_count_1 (numpy.ndarray | int): (n_reads,) count of padding
+            bytes per R1 read, used when chunk_padding_bool_1 is True.
+        chunk_padding_bool_2 (bool): As chunk_padding_bool_1, for R2.
+        row_tilde_count_2 (numpy.ndarray | int): As row_tilde_count_1, for R2.
+        min_overlap (int): Shortest insert size tested; also the minimum number
+            of informative (non-N) bases an accepted overlap must contain.
+        max_mismatch (int): Maximum mismatches allowed in the overlap.
+        max_mismatch_frac (float): Maximum fraction of informative (non-N)
+            overlap bases that may mismatch.
+        prefix_length (int): Overlap bases checked first; a pair with more than
+            max_mismatch mismatches there is rejected without comparing the rest.
+            Only affects speed, never the result.
+
+    Returns:
+        tuple[tuple[numpy.ndarray, numpy.ndarray], tuple[numpy.ndarray, numpy.ndarray]]:
+            ((left_cutoffs_1, right_cutoffs_1), (left_cutoffs_2, right_cutoffs_2)),
+            each of shape (n_reads,). Left cutoffs are always 0 (3'-end trimming
+            only, dtype int8); right cutoffs (int32) are the insert size where an
+            adapter-containing overlap was found, otherwise the read's real length.
+    """
+    prefix_length = 3 * max_mismatch + 1
+    comp = np.zeros(128, dtype=np.int8)
+    for a, b in zip(b"ACGTN", b"TGCAN"):
+        comp[a] = b
+    n_base = np.int8(ord("N"))
+
+    n_reads_1, length_1 = seq_arr_1.shape
+    n_reads_2, length_2 = seq_arr_2.shape
+    if n_reads_1 != n_reads_2:
+        raise ValueError(f"R1 has {n_reads_1} reads, R2 has {n_reads_2}")
+
+    rc_seq_arr_2 = comp[seq_arr_2[:, ::-1]]
+    best_insert = np.full(n_reads_1, -1, dtype=np.int32)
+    best_fraction = np.full(n_reads_1, np.inf)
+    max_insert_size = min(length_1, length_2)
+    any_padding = chunk_padding_bool_1 or chunk_padding_bool_2
+
+    real_lengths_1 = (length_1 - row_tilde_count_1 if chunk_padding_bool_1
+                      else np.full(n_reads_1, length_1)).astype(np.int32)
+    real_lengths_2 = (length_2 - row_tilde_count_2 if chunk_padding_bool_2
+                      else np.full(n_reads_2, length_2)).astype(np.int32)
+    if any_padding:
+        shorter_mate = np.minimum(real_lengths_1, real_lengths_2)
+        longer_mate = np.maximum(real_lengths_1, real_lengths_2)
+
+    for insert_size in range(min_overlap, max_insert_size + 1):
+        if any_padding:
+            candidate = (insert_size <= shorter_mate) & (insert_size < longer_mate)
+            if not candidate.any():
+                continue
+            candidate_rows = np.flatnonzero(candidate)
+        else:
+            if insert_size >= max(length_1, length_2):
+                continue
+            candidate_rows = None
+        offset = length_2 - insert_size
+        prefix = min(prefix_length, insert_size)
+
+        if candidate_rows is None:
+            prefix_arr_1 = seq_arr_1[:, :prefix]
+            prefix_arr_2 = rc_seq_arr_2[:, offset:offset + prefix]
+        else:
+            prefix_arr_1 = seq_arr_1[candidate_rows, :prefix]
+            prefix_arr_2 = rc_seq_arr_2[candidate_rows, offset:offset + prefix]
+        prefix_informative = (prefix_arr_1 != n_base) & (prefix_arr_2 != n_base)
+        prefix_mismatches = ((prefix_arr_1 != prefix_arr_2) & prefix_informative).sum(axis=1)
+
+        survive_bool = prefix_mismatches <= max_mismatch
+        if not survive_bool.any():
+            continue
+        rows_survived = np.flatnonzero(survive_bool) if candidate_rows is None else candidate_rows[survive_bool]
+        mismatches = prefix_mismatches[survive_bool]
+        n_informative = prefix_informative[survive_bool].sum(axis=1)
+
+        if insert_size > prefix:
+            rest_arr_1 = seq_arr_1[rows_survived, prefix:insert_size]
+            rest_arr_2 = rc_seq_arr_2[rows_survived, offset + prefix:]
+            rest_informative = (rest_arr_1 != n_base) & (rest_arr_2 != n_base)
+            mismatches = mismatches + ((rest_arr_1 != rest_arr_2) & rest_informative).sum(axis=1)
+            n_informative = n_informative + rest_informative.sum(axis=1)
+
+        fraction_mismatch = mismatches / np.maximum(n_informative, 1)
+        pass_bool = ((mismatches <= max_mismatch) & (fraction_mismatch <= max_mismatch_frac)
+                     & (n_informative >= min_overlap))
+        rows_passed = rows_survived[pass_bool]
+        better_match_bool = fraction_mismatch[pass_bool] <= best_fraction[rows_passed]
+        best_insert[rows_passed[better_match_bool]] = insert_size
+        best_fraction[rows_passed[better_match_bool]] = fraction_mismatch[pass_bool][better_match_bool]
+
+    found = best_insert > 0
+    right_cutoffs_1 = np.where(found, best_insert, real_lengths_1).astype(np.int32)
+    right_cutoffs_2 = np.where(found, best_insert, real_lengths_2).astype(np.int32)
+    return ((np.zeros(n_reads_1, dtype=np.int8), right_cutoffs_1), (np.zeros(n_reads_2, dtype=np.int8), right_cutoffs_2))
+
 def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_sequences, mismatches):
     """
     Determines per-read trim boundaries to remove specific adapter sequences.
@@ -1825,9 +1944,9 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
     if parameters["mgi_convert_flag"]:
         valid_pluses = [b"+"] * len(valid_headers)
         valid_headers = [header_mgi_to_illumina(header, parameters["mgi_bc5"], parameters["mgi_bc7"], parameters["mgi_instrument"], parameters["mgi_run"]) for header in valid_headers]
-    quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool, raw_lengths, max_len, n_reads = qual_to_array(quality_list = valid_qualities, phred_offset = phred_offset)
-    sequence_arr = seq_to_array(sequence_list = valid_sequences, chunk_padding_bool = chunk_padding_bool, max_len = max_len, n_reads = n_reads)
-    n_reads, length = quality_arr.shape
+    sequence_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool, raw_lengths, max_len, n_reads = seq_to_array(sequence_list = valid_sequences)
+    quality_arr = qual_to_array(quality_list = valid_qualities, phred_offset = phred_offset, chunk_padding_bool = chunk_padding_bool, padding_mask_bool = padding_mask_bool, max_len = max_len, n_reads = n_reads)
+    n_reads, length = sequence_arr.shape
     left_list = [np.zeros(n_reads, dtype=np.int8)]
     right_list = [np.full(n_reads, length, dtype=np.int32) - row_tilde_count]
     for step in build_pipeline(parameters):
@@ -2120,57 +2239,41 @@ def generate_paired_tasks(files, chunk_size, parameters):
                 "discard_singles": parameters["discard_singles"]
             }
             
-def trim_reads(records, phred_offset, minimum_average_qual_post, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, parameters):
+def prepare_reads(records, phred_offset, write_rejected, parameters):
     """
-    Validates, quality-trims, and length/quality-filters a batch of FASTQ
-    reads, keyed by their base (mate-independent) read ID.
-
-    Same trimming logic as `process_unpaired_chunk`, but returns a dict
-    keyed by base read ID rather than a flat list of formatted strings —
-    this allows the paired workflow to later match up surviving R1/R2 mates
-    by ID.
+    Validates one mate's batch of FASTQ records and builds the arrays every
+    later step needs. Runs once per mate per chunk.
 
     Args:
         records (list[bytes]): FIELD_SEP-joined (header, sequence, plus,
             quality) records, as yielded by `lazy_fastq`.
         phred_offset (int): Phred encoding offset (33 or 64).
-        minimum_average_qual_post (float): Minimum acceptable mean quality
-            after trimming. 0 disables this filter.
-        min_length_output (int | None): Minimum acceptable read length
-            after trimming, as an absolute count.
-        max_length_output (int | None): Maximum acceptable read length
-            after trimming, as an absolute count.
-        min_length_output_perc (int | None): Minimum acceptable read length
-            after trimming, as a percentage of the read's input length.
-            Ignored if min_length_output is given.
-        max_length_output_perc (int | None): Maximum acceptable read length
-            after trimming, as a percentage of the read's input length.
-            Ignored if max_length_output is given.
-        write_rejected (bool): If True, also collect rejected/discarded
-            records (invalid on input or filtered out after trimming).
-        parameters (dict): Dictionary of configuration parameters, used to
-            build the trimming pipeline and to resolve N-filtering,
-            MGI-to-Illumina header conversion, and Phred re-encoding.
+        write_rejected (bool): If True, also collect invalid records.
+        parameters (dict): Configuration parameters (N-filtering, input
+            length limits, MGI-to-Illumina header conversion).
 
     Returns:
-        tuple[dict[bytes, bytes], int, list[bytes]]: A tuple containing:
-            - A dictionary mapping each surviving read's base ID to its
-              formatted FASTQ record (not gzip-compressed; compression, if
-              any, happens later once R1/R2 mates are reconciled).
-            - Total count of rejected reads (invalid input records plus
-              records filtered out after trimming).
-            - A list of rejected record strings, populated only if
-              write_rejected is True.
+        dict | None: None if no record passed validation, otherwise a batch with:
+            - "valid_reads" (numpy.ndarray): record index of each array row.
+            - "headers", "sequences", "pluses", "qualities" (list[bytes]):
+              the valid records' fields, one entry per array row.
+            - "sequence_arr", "quality_arr", "chunk_padding_bool",
+              "row_tilde_count", "padding_mask_bool", "raw_lengths":
+              outputs of seq_to_array / qual_to_array.
+        int: Count of records rejected during validation.
+        list[bytes]: Rejected records, populated only if write_rejected is True.
     """
+    valid_reads = []
     valid_headers = []
     valid_sequences = []
     valid_pluses = []
     valid_qualities = []
     rejected_reads = []
     rejected = 0
-    for r in records:
+    for k, r in enumerate(records):
         header, sequence, plus, quality = r.split(FIELD_SEP)
         if validate_fastq(header, sequence, plus, quality, n_filter = parameters["n_filter"], min_length_input = parameters["min_length_input"], max_length_input = parameters["max_length_input"]):
+            valid_reads.append(k)
             valid_headers.append(header)
             valid_sequences.append(sequence)
             valid_pluses.append(plus)
@@ -2180,12 +2283,100 @@ def trim_reads(records, phred_offset, minimum_average_qual_post, min_length_outp
             if write_rejected:
                 rejected_reads.append(b"\n".join((header, sequence, plus, quality)) + b"\n")
     if not valid_headers:
-        return {}, rejected, rejected_reads
+        return None, rejected, rejected_reads
     if parameters["mgi_convert_flag"]:
         valid_pluses = [b"+"] * len(valid_headers)
         valid_headers = [header_mgi_to_illumina(header, parameters["mgi_bc5"], parameters["mgi_bc7"], parameters["mgi_instrument"], parameters["mgi_run"]) for header in valid_headers]
-    quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool, raw_lengths, max_len, n_reads = qual_to_array(quality_list = valid_qualities, phred_offset = phred_offset)
-    sequence_arr = seq_to_array(sequence_list = valid_sequences, chunk_padding_bool = chunk_padding_bool, max_len = max_len, n_reads = n_reads)
+    sequence_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool, raw_lengths, max_len, n_reads = seq_to_array(sequence_list = valid_sequences)
+    quality_arr = qual_to_array(quality_list = valid_qualities, phred_offset = phred_offset, chunk_padding_bool = chunk_padding_bool, padding_mask_bool = padding_mask_bool, max_len = max_len, n_reads = n_reads)
+    batch = {
+        "valid_reads": np.array(valid_reads),
+        "headers": valid_headers,
+        "sequences": valid_sequences,
+        "pluses": valid_pluses,
+        "qualities": valid_qualities,
+        "sequence_arr": sequence_arr,
+        "quality_arr": quality_arr,
+        "chunk_padding_bool": chunk_padding_bool,
+        "row_tilde_count": row_tilde_count,
+        "padding_mask_bool": padding_mask_bool,
+        "raw_lengths": raw_lengths,
+    }
+    return batch, rejected, rejected_reads
+
+
+def paired_overlap_cutoffs(batch_1, batch_2, parameters):
+    """
+    Runs adapter_trimming_overlap on the rows of two prepared batches whose
+    records are valid in both mates, and returns each mate's cutoffs aligned
+    to its own batch rows.
+
+    Args:
+        batch_1, batch_2 (dict): Outputs of prepare_reads for R1 and R2 of the
+            same chunk (record k of one is the mate of record k of the other).
+        parameters (dict): Configuration parameters (currently unused; the
+            overlap settings are adapter_trimming_overlap's defaults).
+
+    Returns:
+        tuple: ((left_1, right_1), (left_2, right_2)), one entry per batch row.
+            Rows without a valid mate get left 0 and right int32 max, so the
+            other modules decide their trimming alone.
+    """
+    no_cut = np.iinfo(np.int32).max
+    n_1, n_2 = len(batch_1["headers"]), len(batch_2["headers"])
+    left_1 = np.zeros(n_1, dtype=np.int32)
+    right_1 = np.full(n_1, no_cut, dtype=np.int32)
+    left_2 = np.zeros(n_2, dtype=np.int32)
+    right_2 = np.full(n_2, no_cut, dtype=np.int32)
+    # records valid in both mates, and where each sits in its own batch
+    _, rows_1, rows_2 = np.intersect1d(batch_1["valid_reads"], batch_2["valid_reads"], assume_unique=True, return_indices=True)
+    if rows_1.size == 0:
+        return (left_1, right_1), (left_2, right_2)
+    seq_arr_1 = batch_1["sequence_arr"][rows_1]
+    seq_arr_2 = batch_2["sequence_arr"][rows_2]
+    pad_1, pad_2 = batch_1["chunk_padding_bool"], batch_2["chunk_padding_bool"]
+    tilde_1 = batch_1["row_tilde_count"][rows_1] if pad_1 else 0
+    tilde_2 = batch_2["row_tilde_count"][rows_2] if pad_2 else 0
+    (l1, r1), (l2, r2) = adapter_trimming_overlap(seq_arr_1, seq_arr_2, pad_1, tilde_1, pad_2, tilde_2)
+    left_1[rows_1], right_1[rows_1] = l1, r1
+    left_2[rows_2], right_2[rows_2] = l2, r2
+    return (left_1, right_1), (left_2, right_2)
+
+
+def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, overlap_cutoffs, parameters):
+    """
+    Trims and length/quality-filters one prepared batch and formats the
+    survivors, keyed by their base (mate-independent) read ID.
+
+    Args:
+        batch (dict | None): Output of prepare_reads (None = nothing valid).
+        phred_offset (int): Phred encoding offset (33 or 64).
+        minimum_average_qual_post (float): Minimum acceptable mean quality
+            after trimming. 0 disables this filter.
+        min_length_output, max_length_output (int | None): Absolute length
+            limits after trimming.
+        min_length_output_perc, max_length_output_perc (int | None): Length
+            limits as a percentage of input length; ignored if the absolute
+            limit is given.
+        write_rejected (bool): If True, also collect filtered-out records.
+        overlap_cutoffs (tuple | None): (left, right) per batch row from
+            paired_overlap_cutoffs, or None.
+        parameters (dict): Configuration parameters (pipeline, Phred re-encoding).
+
+    Returns:
+        tuple[dict[bytes, bytes], int, list[bytes]]: Survivors by base ID,
+            count of records filtered out here, and the rejected records
+            (populated only if write_rejected is True).
+    """
+    rejected_reads = []
+    rejected = 0
+    if batch is None:
+        return {}, rejected, rejected_reads
+    valid_headers, valid_sequences = batch["headers"], batch["sequences"]
+    valid_pluses, valid_qualities = batch["pluses"], batch["qualities"]
+    sequence_arr, quality_arr = batch["sequence_arr"], batch["quality_arr"]
+    chunk_padding_bool, row_tilde_count = batch["chunk_padding_bool"], batch["row_tilde_count"]
+    padding_mask_bool, raw_lengths = batch["padding_mask_bool"], batch["raw_lengths"]
     n_reads, length = sequence_arr.shape
     left_list = [np.zeros(n_reads, dtype=np.int8)]
     right_list = [np.full(n_reads, length, dtype=np.int32) - row_tilde_count]
@@ -2193,6 +2384,10 @@ def trim_reads(records, phred_offset, minimum_average_qual_post, min_length_outp
         left, right = step(sequence_arr, quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool)
         left_list.append(left)
         right_list.append(right)
+    if overlap_cutoffs is not None:
+        overlap_left, overlap_right = overlap_cutoffs
+        left_list.append(overlap_left)
+        right_list.append(overlap_right)
     lefts = np.maximum.reduce(left_list)
     rights = np.minimum.reduce(right_list)
     if (min_length_output is not None or max_length_output is not None
@@ -2275,8 +2470,18 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
             - Count of R2 reads rejected during trimming.
     """
     chunk1, chunk2 = chunks
-    survivors_1, rejected_1, rejected_R1 = trim_reads(chunk1, phred_offset_1, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], parameters = parameters)
-    survivors_2, rejected_2, rejected_R2 = trim_reads(chunk2, phred_offset_2, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], parameters = parameters)
+    batch_1, invalid_1, rejected_R1 = prepare_reads(chunk1, phred_offset_1, write_rejected = parameters["write_rejected"], parameters = parameters)
+    batch_2, invalid_2, rejected_R2 = prepare_reads(chunk2, phred_offset_2, write_rejected = parameters["write_rejected"], parameters = parameters)
+    overlap_1 = overlap_2 = None
+    if parameters["overlap_filter_flag"] and batch_1 is not None and batch_2 is not None:
+        overlap_1, overlap_2 = paired_overlap_cutoffs(batch_1, batch_2, parameters)
+    survivors_1, filtered_1, filtered_R1 = finish_reads(batch_1, phred_offset_1, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_1, parameters = parameters)
+    survivors_2, filtered_2, filtered_R2 = finish_reads(batch_2, phred_offset_2, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_2, parameters = parameters)
+    rejected_1 = invalid_1 + filtered_1
+    rejected_2 = invalid_2 + filtered_2
+    rejected_R1 = rejected_R1 + filtered_R1
+    rejected_R2 = rejected_R2 + filtered_R2
+
     paired_out_1 = []
     paired_out_2 = []
     singles_out_1 = []
@@ -2976,6 +3181,10 @@ def parse_args():
         "--adapter-fasta-excl", "-ax", type = str, default = None, metavar="",
         help="Fasta file with adapter sequences to trim for, excluding predefined and additional sequences specified."
     )
+    adapter_trimming.add_argument(
+        "--overlap-filter-flag", "-of", action="store_true", default = False,
+        help="[FLAG] Paired and interleaved input only: find where the insert ends from the overlap between R1 and R2, and trim both mates there. Also finds partial adapters, and works independently of adapter sequence. Can be combined with --adapter-filter-flag. Default: off."
+    )
 
     low_complexity_group = parser.add_argument_group("Low complexity filtering",
                                                      "Detect complexity of reads using kmer-based nucleotide frequencies. Low complex reads discarded entirely.")
@@ -3172,6 +3381,7 @@ def parse_args():
     parameters["write_rejected"] = args.write_rejected
     parameters["adapter_group"] = args.adapter_group
     parameters["discard_singles"] = args.discard_singles
+    parameters["overlap_filter_flag"] = args.overlap_filter_flag
     
     if parameters["gzip_output"]:
         parameters["stdout"] = False
