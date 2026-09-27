@@ -18,7 +18,6 @@ import tempfile
 import time
 import threading
 
-from numpy.lib.stride_tricks import sliding_window_view
 from isal import igzip, igzip_threaded
 import numpy as np
 
@@ -29,7 +28,7 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.2.6"
+VERSION = "0.2.8"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq3", [
@@ -49,7 +48,7 @@ DEFAULT_ADAPTERS = [
         ["Illumina_RNA", "ACTGTCTCTTATACACATCT"],
     ]],
 ]
-FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "full_auto"}
+FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "input_interleaved", "full_auto"}
 FIELD_SEP = b"\x1f"
 FULL_AUTO_OVERRIDES = {
     "endqual_filter_flag": True,
@@ -248,6 +247,8 @@ class ProgressTracker:
 
     @staticmethod
     def _format_duration(seconds_val, concise=False):
+        if seconds_val == float('inf') or seconds_val < 0 or seconds_val is None:
+            return "?"
         total_seconds = int(round(seconds_val))
         hours, remainder = divmod(total_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
@@ -359,9 +360,7 @@ def resolve_stdin_input(parser=None):
 
     if os.path.getsize(tmp_path) == 0:
         cleanup_stdin_temp_files()
-        message = ("No input files were given and stdin is empty. Specify input with "
-                   "--input-files/--input-paired/--input-unpaired/--input-interleaved, "
-                   "pipe FASTQ data into Readzor, or use --full-auto.")
+        message = ("No input files were given and stdin was empty. Specify input with --input-files/--input-paired/--input-unpaired/--input-interleaved, pipe FASTQ data into Readzor, or use --full-auto.")
         if parser is not None:
             parser.error(message)
         raise SystemExit(f"Error: {message}")
@@ -369,7 +368,9 @@ def resolve_stdin_input(parser=None):
     return tmp_path
 
 def cleanup_stdin_temp_files():
-    """Remove any temp files created by resolve_stdin_input(), ignoring ones already gone."""
+    """
+    Remove files created through stdin.
+    """
     for tmp_path in STDIN_TEMP_FILES:
         try:
             os.remove(tmp_path)
@@ -402,7 +403,9 @@ def group_paired_input_into_pairs(files, parser):
         return None
     if len(files) % 2 != 0:
         parser.error(f"argument --paired: expected an even number of files (R1 R2 pairs), got {len(files)}.")
-    pairs = [tuple(files[i:i+2]) for i in range(0, len(files), 2)]
+    pairs = []
+    for i in range(0, len(files), 2):
+        pairs.append(tuple(files[i:i+2]))
     return pairs
 
 def create_folder_structure(output_dir):
@@ -491,16 +494,28 @@ def common_name_parts(filenames):
     """
     if not filenames:
         return "unknown"
-    stems = [re.sub(r'\.(fastq|fq)(\.gzip|\.gz)?$', '', file, flags=re.IGNORECASE) for file in filenames]
-    token_lists = [stem.split('_') for stem in stems]
-    min_len = min(len(tokens) for tokens in token_lists)
+    stems = []
+    for file in filenames:
+        stems.append(re.sub(r'\.(fastq|fq)(\.gzip|\.gz)?$', '', file, flags=re.IGNORECASE))
+    token_lists = []
+    for stem in stems:
+        token_lists.append(stem.split('_'))
+    min_len = None
+    for tokens in token_lists:
+        if min_len is None or len(tokens) < min_len:
+            min_len = len(tokens)
     common_tokens = []
     for i in range(min_len):
-        values_at_position = {tokens[i].lower() for tokens in token_lists}
+        values_at_position = set()
+        for tokens in token_lists:
+            values_at_position.add(tokens[i].lower())
         if len(values_at_position) != 1:
             break
         common_tokens.append(token_lists[0][i])
-    output = '_'.join(common_tokens) if common_tokens else stems[0]
+    if common_tokens:
+        output = '_'.join(common_tokens)
+    else:
+        output = stems[0]    
     return output
 
 def basename_file(filepath):
@@ -578,9 +593,9 @@ def lazy_fastq(filepath, buffer_size = 2*1024*1024):
                                 "%s: last record is incomplete (%d trailing line(s)); it was skipped. "
                                 "The file may be truncated.",
                                 os.path.basename(filepath), len(lines) - usable)
-                        it = iter(lines[:usable])
-                        for group in zip(it, it, it, it):
-                            yield FIELD_SEP.join(group)
+                        line = iter(lines[:usable])
+                        for header, sequence, plus, quality in zip(line, line, line, line):
+                            yield FIELD_SEP.join((header, sequence, plus, quality))
                     break
                 data = leftover + chunk
                 last_newline = data.rfind(b"\n")
@@ -589,9 +604,9 @@ def lazy_fastq(filepath, buffer_size = 2*1024*1024):
                     continue
                 lines = data[:last_newline].replace(b"\r", b"").split(b"\n")
                 usable = len(lines) - (len(lines) % 4)
-                it = iter(lines[:usable])
-                for group in zip(it, it, it, it):
-                    yield FIELD_SEP.join(group)
+                line = iter(lines[:usable])
+                for header, sequence, plus, quality in zip(line, line, line, line):
+                    yield FIELD_SEP.join((header, sequence, plus, quality))
                 leftover_lines = lines[usable:]
                 if leftover_lines:
                     leftover = b"\n".join(leftover_lines) + b"\n" + data[last_newline + 1:]
@@ -658,17 +673,15 @@ def find_paired_files(filepaths):
             continue
 
         header_1 = headers[0].strip().lstrip(b'@')
-        base_id, read_num = read_info_from_header(header_1)
-        base_ids[filepath] = (base_id, read_num)
-        if len(headers) == 2:
-            header_2 = headers[1].strip().lstrip(b'@')
-            base_id_2, read_num_2 = read_info_from_header(header_2)
-            interleaved_flag[filepath] = (
-                base_id is not None
-                and base_id == base_id_2
-            )
-        else:
-            interleaved_flag[filepath] = False
+        base_id_1, read_num_1 = read_info_from_header(header_1)
+        header_2 = headers[1].strip().lstrip(b'@')
+        base_id_2, read_num_2 = read_info_from_header(header_2)
+        
+        base_ids[filepath] = (base_id_1, read_num_1)
+        interleaved_flag[filepath] = (
+            base_id_1 is not None
+            and base_id_1 == base_id_2
+        )
 
     pairs_dict = defaultdict(list)
     for filepath, (base_id, read_num) in base_ids.items():
@@ -927,7 +940,7 @@ def qual_to_array(quality_list, phred_offset):
     max_len = quality_arr_lengths.max()
     min_len = quality_arr_lengths.min()
     if max_len == min_len:
-        joined = b''.join(quality_list)
+        joined = b''.join(quality_list) 
         array = np.frombuffer(joined, dtype=np.int8).reshape(n_reads, max_len)
         array = array - phred_offset
         chunk_padding_bool = False
@@ -964,15 +977,11 @@ def seq_to_array(sequence_list, chunk_padding_bool, max_len, n_reads):
         numpy.ndarray: Signed 8-bit integer array of shape
             (n_reads, max_len) of ASCII character codes.
     """
-    if not chunk_padding_bool:
-        joined = b''.join(sequence_list)
-        array = np.frombuffer(joined, dtype=np.int8).reshape(n_reads, max_len)
-        return array
-    else:
-        padded = [s.ljust(max_len, b'\x00') for s in sequence_list]
-        joined = b''.join(padded)
-        array = np.frombuffer(joined, dtype=np.int8).reshape(n_reads, max_len)
-        return array
+    if chunk_padding_bool:
+        sequence_list = [s.ljust(max_len, b'\x00') for s in sequence_list]
+    joined = b''.join(sequence_list)
+    array = np.frombuffer(joined, dtype=np.int8).reshape(n_reads, max_len)
+    return array
 
 def header_mgi_to_illumina(mgi_header, barcode5, barcode7, instrument, run):
     """
@@ -1011,8 +1020,8 @@ def header_mgi_to_illumina(mgi_header, barcode5, barcode7, instrument, run):
         int(strings.group(3)),
         int(strings.group(4)),
         int(strings.group(6)),
-        barcode5.encode('ascii'),
-        barcode7.encode('ascii')
+        barcode7.encode('ascii'),
+        barcode5.encode('ascii')
     )
     return illumina_header
 
@@ -1112,12 +1121,12 @@ def average_quality_filter_wrapper(quality_arr, chunk_padding_bool, row_tilde_co
     """
     n_reads, length = quality_arr.shape
     if not chunk_padding_bool:
-        real_lengths = np.full(n_reads, length, dtype=np.int64)
+        real_lengths = np.full(n_reads, length, dtype=np.int32)
     else:
-        real_lengths = length - row_tilde_count
+        real_lengths = (length - row_tilde_count).astype(np.int32)
     avg_quals = average_quality_batch(quality_arr, lefts=0, rights=real_lengths)
     passed = avg_quals >= min_avg_qual
-    right_cutoffs = np.where(passed, real_lengths, 0).astype(np.int64)
+    right_cutoffs = np.where(passed, real_lengths, 0).astype(np.int32)
     return np.zeros(n_reads, dtype=np.int8), right_cutoffs
 
 def trim_ends_quality(quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool, min_quality_both, endqual_min_start, endqual_min_end):
@@ -1189,7 +1198,7 @@ def trim_ends_quality(quality_arr, chunk_padding_bool, row_tilde_count, padding_
             end_good_pos = qual_mask[:, 0] | ~zero_end_rows
             end_cutoffs = np.where(end_good_pos, end_cutoffs, 0)
 
-    return start_cutoffs.astype(np.int64), end_cutoffs.astype(np.int64)
+    return start_cutoffs.astype(np.int32), end_cutoffs.astype(np.int32)
 
 def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, row_tilde_count, chunk_padding_bool, poly_length_both, poly_length_start, poly_length_end, poly_bases_both, poly_bases_start, poly_bases_end):
     """
@@ -1229,9 +1238,9 @@ def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, row_tilde_c
     """
     n_reads, length = sequence_arr.shape
     if not poly_bases_start and not poly_bases_end and not poly_bases_both:
-        return np.zeros(n_reads, dtype=np.int8), np.full(n_reads, length, dtype=np.int64)
+        return np.zeros(n_reads, dtype=np.int8), np.full(n_reads, length, dtype=np.int32)
     if poly_length_both == poly_length_start == poly_length_end == 0:
-        return np.zeros(n_reads, dtype=np.int8), np.full(n_reads, length, dtype=np.int64)
+        return np.zeros(n_reads, dtype=np.int8), np.full(n_reads, length, dtype=np.int32)
 
     start_bases = []
     end_bases = []
@@ -1256,7 +1265,7 @@ def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, row_tilde_c
     poly_length_start = poly_length_start if poly_length_start != 0 else poly_length_both
     poly_length_end = poly_length_end if poly_length_end != 0 else poly_length_both
 
-    right_cutoffs = np.full(n_reads, length, dtype=np.int64)
+    right_cutoffs = np.full(n_reads, length, dtype=np.int32)
     left_cutoffs = np.zeros(n_reads, dtype=np.int8)
 
     for base in start_bases:
@@ -1363,12 +1372,12 @@ def cut_set_ends(sequence_arr, chunk_padding_bool, row_tilde_count, cut_both, cu
         cut_end_pos = max(cut_end_pos, 0)
         cut_start_pos = min(cut_start, cut_end_pos)
         cut_start_pos = max(cut_start_pos, 0)
-        return np.full(n_reads, cut_start_pos, dtype=np.int64), np.full(n_reads, cut_end_pos, dtype=np.int64)
+        return np.full(n_reads, cut_start_pos, dtype=np.int32), np.full(n_reads, cut_end_pos, dtype=np.int32)
     else:
         real_length = length - row_tilde_count
         end_positions = real_length - cut_end
         cut_start_pos = np.where(cut_start > end_positions, end_positions, cut_start)
-        return np.full(n_reads, cut_start_pos, dtype=np.int64), end_positions
+        return np.full(n_reads, cut_start_pos, dtype=np.int32), end_positions
 
 def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, row_tilde_count, slider_quality, slider_window, slider_step):
     """
@@ -1407,42 +1416,41 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
 
     if not chunk_padding_bool:
         if length < slider_window:
-            return np.zeros(n_reads, dtype=np.int16), np.full(n_reads, length, dtype=np.int64)
+            return np.zeros(n_reads, dtype=np.int8), np.full(n_reads, length, dtype=np.int32)
 
         last_possible_start = length - slider_window
         window_starts = np.arange(0, last_possible_start + 1, slider_step)
         if window_starts[-1] != last_possible_start:
             window_starts = np.append(window_starts, last_possible_start)
 
-        cumsum = np.cumsum(quality_arr, axis=1, dtype=np.int64)
-        cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int64), cumsum], axis=1)
+        cumsum = np.cumsum(quality_arr, axis=1, dtype=np.int32)
+        cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int32), cumsum], axis=1)
         window_sums = cumsum[:, window_starts + slider_window] - cumsum[:, window_starts]
         failed_mask = window_sums < (slider_quality * slider_window)
 
         bad_positions = np.zeros((n_reads, length), dtype=bool)
-        n_windows = len(window_starts)
 
         if slider_step == 1:
             for offset in range(slider_window):
-                bad_positions[:, offset:offset + n_windows] |= failed_mask
+                bad_positions[:, offset:offset + len(window_starts)] |= failed_mask
         else:
             for j, start in enumerate(window_starts):
                 bad_positions[:, start:start + slider_window] |= failed_mask[:, j:j + 1]
 
-        real_lengths = np.full(n_reads, length, dtype=np.int64)
+        real_lengths = np.full(n_reads, length, dtype=np.int32)
     else:
         real_lengths = length - row_tilde_count
         too_short = real_lengths < slider_window
 
         if length < slider_window:
-            left_cutoffs = np.zeros(n_reads, dtype=np.int16)
-            right_cutoffs = real_lengths.astype(np.int64)
+            left_cutoffs = np.zeros(n_reads, dtype=np.int8)
+            right_cutoffs = real_lengths.astype(np.int32)
             return left_cutoffs, right_cutoffs
 
-        cumsum = np.cumsum(quality_arr, axis=1, dtype=np.int64)
-        cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int64), cumsum], axis=1)
-        pad_cumsum = np.cumsum(padding_mask_bool.astype(np.int64), axis=1)
-        pad_cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int64), pad_cumsum], axis=1)
+        cumsum = np.cumsum(quality_arr, axis=1, dtype=np.int32)
+        cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int32), cumsum], axis=1)
+        pad_cumsum = np.cumsum(padding_mask_bool.astype(np.int32), axis=1)
+        pad_cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int32), pad_cumsum], axis=1)
 
         last_possible_start = length - slider_window
         window_starts = np.arange(0, last_possible_start + 1, slider_step)
@@ -1469,14 +1477,14 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
     good_positions = ~bad_positions
     no_bad = ~bad_positions.any(axis=1)
     all_bad = bad_positions.all(axis=1)
-    left_cutoffs = np.zeros(n_reads, dtype=np.int64)
-    right_cutoffs = np.zeros(n_reads, dtype=np.int64)
-    right_cutoffs[no_bad] = real_lengths[no_bad].astype(np.int64)
+    left_cutoffs = np.zeros(n_reads, dtype=np.int32)
+    right_cutoffs = np.zeros(n_reads, dtype=np.int32)
+    right_cutoffs[no_bad] = real_lengths[no_bad].astype(np.int32)
     needs_stretch_search = ~no_bad & ~all_bad
     if not needs_stretch_search.any():
         if chunk_padding_bool:
             left_cutoffs[too_short] = 0
-            right_cutoffs[too_short] = real_lengths[too_short].astype(np.int64)
+            right_cutoffs[too_short] = real_lengths[too_short].astype(np.int32)
         return left_cutoffs, right_cutoffs
 
     padded = np.zeros((needs_stretch_search.sum(), length + 2), dtype=bool)
@@ -1499,7 +1507,7 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
 
     if chunk_padding_bool:
         left_cutoffs[too_short] = 0
-        right_cutoffs[too_short] = real_lengths[too_short].astype(np.int64)
+        right_cutoffs[too_short] = real_lengths[too_short].astype(np.int32)
 
     return left_cutoffs, right_cutoffs
 
@@ -1531,11 +1539,10 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
             trim boundaries per read. Left cutoffs are always 0 (3'-end trimming only).
     """
     n_reads, length = sequence_arr.shape
-    all_bytes = sequence_arr.tobytes()
-    right_cutoffs = np.zeros(n_reads, dtype=np.int64)
     if mismatches == 0:
+        all_bytes = sequence_arr.tobytes()
         if not chunk_padding_bool:
-            right_cutoffs[:] = length
+            right_cutoffs = np.full(n_reads, length, dtype=np.int32)
             for adapter_bytes in adapter_sequences:
                 adapter_len = len(adapter_bytes)
                 start = 0
@@ -1549,7 +1556,7 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
                     start = pos + 1
         else:
             real_lengths = length - row_tilde_count
-            right_cutoffs[:] = real_lengths
+            right_cutoffs = np.full(n_reads, real_lengths, dtype=np.int32)
             for adapter_bytes in adapter_sequences:
                 adapter_len = len(adapter_bytes)
                 start = 0
@@ -1562,15 +1569,17 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
                         right_cutoffs[i] = pos_in_row
                     start = pos + 1
     else:
-        right_cutoffs[:] = length if not chunk_padding_bool else (length - row_tilde_count)
-
         if not chunk_padding_bool:
+            right_cutoffs = np.full(n_reads, length, dtype=np.int32)
             for adapter_bytes in adapter_sequences:
-                adapter_arr = np.frombuffer(adapter_bytes, dtype=np.uint8)
-                if len(adapter_arr) > length:
+                adapter_arr = np.frombuffer(adapter_bytes, dtype=np.int8)
+                adapter_len = len(adapter_bytes)
+                if adapter_len > length:
                    continue
-                windows = sliding_window_view(sequence_arr, window_shape=len(adapter_arr), axis=1)
-                mismatch_matrix = (windows != adapter_arr).sum(axis=2)
+                n_windows = length - adapter_len + 1
+                mismatch_matrix = np.zeros((n_reads, n_windows), dtype=np.uint8)
+                for j in range(adapter_len):
+                    mismatch_matrix += sequence_arr[:, j:j + n_windows] != adapter_arr[j]
                 valid_mask = mismatch_matrix <= mismatches
                 has_match = valid_mask.any(axis=1)
 
@@ -1578,18 +1587,21 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
                     first_match_col = valid_mask.argmax(axis=1)
                     right_cutoffs[has_match] = np.minimum(
                         right_cutoffs[has_match],
-                        first_match_col[has_match].astype(np.int16)
+                        first_match_col[has_match].astype(np.int32)
                     )
         else:
             real_lengths = length - row_tilde_count
+            right_cutoffs = np.full(n_reads, real_lengths, dtype=np.int32)
             for adapter_bytes in adapter_sequences:
-                adapter_arr = np.frombuffer(adapter_bytes, dtype=np.uint8)
-                length_adapter = len(adapter_arr)
-                if length_adapter > length:
+                adapter_arr = np.frombuffer(adapter_bytes, dtype=np.int8)
+                adapter_len = len(adapter_bytes)
+                if adapter_len > length:
                    continue
-                windows = sliding_window_view(sequence_arr, window_shape=length_adapter, axis=1)
-                mismatch_matrix = (windows != adapter_arr).sum(axis=2)
-                window_ends = np.arange(length_adapter, length + 1)
+                n_windows = length - adapter_len + 1
+                mismatch_matrix = np.zeros((n_reads, n_windows), dtype=np.uint8)
+                for j in range(adapter_len):
+                    mismatch_matrix += sequence_arr[:, j:j + n_windows] != adapter_arr[j]
+                window_ends = np.arange(adapter_len, length + 1)
                 within_bounds = window_ends <= real_lengths[:, None]
                 valid_mask = (mismatch_matrix <= mismatches) & within_bounds
                 has_match = valid_mask.any(axis=1)
@@ -1598,9 +1610,9 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
                     first_match_col = valid_mask.argmax(axis=1)
                     right_cutoffs[has_match] = np.minimum(
                         right_cutoffs[has_match],
-                        first_match_col[has_match].astype(np.int16)
+                        first_match_col[has_match].astype(np.int32)
                     )
-    return np.zeros(n_reads, dtype=np.int16), right_cutoffs
+    return np.zeros(n_reads, dtype=np.int8), right_cutoffs
     
 def average_quality_batch(quality_arr, lefts, rights):
     """
@@ -1701,7 +1713,9 @@ def kmer_complexity_scan(sequence_arr, chunk_padding_bool, padding_mask_bool, km
         alphabet_size = 5 if allow_n else 4
         max_possible_unique = min(max_kmers, alphabet_size**k)
         
-        kmer_ints = np.zeros((n_reads, max_kmers), dtype=np.int64)
+        n_bits = bits_per_base * k
+        kmer_dtype = np.int16 if n_bits <= 15 else (np.int32 if n_bits <= 31 else np.int64)
+        kmer_ints = np.zeros((n_reads, max_kmers), dtype=kmer_dtype)
         
         if not chunk_padding_bool:
             for i in range(k):
@@ -1730,16 +1744,15 @@ def kmer_complexity_scan(sequence_arr, chunk_padding_bool, padding_mask_bool, km
 
             valid_kmer_counts = (~window_has_pad).sum(axis=1)
             any_pad_in_row = window_has_pad.any(axis=1)
-            unique_counts = unique_counts - any_pad_in_row.astype(np.int64)
+            unique_counts = unique_counts - any_pad_in_row.astype(np.int32)
 
-            # Cap the valid k-mer denominator per read by alphabet_size**k
             denom = np.minimum(valid_kmer_counts, alphabet_size**k)
 
             ratio = np.where(denom > 0, unique_counts / denom, 0.0)
             global_passed &= (ratio >= (low_complex_cutoff / 100))
 
-    second_array = np.where(global_passed, length, 0).astype(np.int64)
-    return np.zeros(n_reads, dtype=np.int16), second_array
+    second_array = np.where(global_passed, length, 0).astype(np.int32)
+    return np.zeros(n_reads, dtype=np.int8), second_array
 
 ##### Unpaired reads workflow functions #####
 def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_output, gzip_level, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, parameters):
@@ -1787,8 +1800,6 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
             - Rejected records: optionally gzipped bytes if write_rejected
               is True, otherwise an empty list.
     """
-    if not chunk:
-        return b""
     valid_headers = []
     valid_sequences = []
     valid_pluses = []
@@ -1807,18 +1818,18 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
             if write_rejected:
                 rejected_reads.append(b"\n".join((header, sequence, plus, quality)) + b"\n")
     if not valid_headers:
-        rejected_blob = b"".join(rejected_reads) if write_rejected else []
-        if gzip_output and rejected_blob:
-            rejected_blob = igzip.compress(rejected_blob, compresslevel=gzip_level)
-        return b"", 0, rejected, rejected_blob
+        rejected_data = b"".join(rejected_reads) if write_rejected else []
+        if gzip_output and rejected_data:
+            rejected_data = igzip.compress(rejected_data, compresslevel=gzip_level)
+        return b"", 0, rejected, rejected_data
     if parameters["mgi_convert_flag"]:
         valid_pluses = [b"+"] * len(valid_headers)
         valid_headers = [header_mgi_to_illumina(header, parameters["mgi_bc5"], parameters["mgi_bc7"], parameters["mgi_instrument"], parameters["mgi_run"]) for header in valid_headers]
     quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool, raw_lengths, max_len, n_reads = qual_to_array(quality_list = valid_qualities, phred_offset = phred_offset)
     sequence_arr = seq_to_array(sequence_list = valid_sequences, chunk_padding_bool = chunk_padding_bool, max_len = max_len, n_reads = n_reads)
     n_reads, length = quality_arr.shape
-    left_list = [np.zeros(n_reads, dtype=np.int64)]
-    right_list = [np.full(n_reads, length, dtype=np.int64) - row_tilde_count]
+    left_list = [np.zeros(n_reads, dtype=np.int8)]
+    right_list = [np.full(n_reads, length, dtype=np.int32) - row_tilde_count]
     for step in build_pipeline(parameters):
         left, right = step(sequence_arr, quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool)
         left_list.append(left)
@@ -1901,6 +1912,8 @@ def generate_unpaired_tasks(filepaths, chunk_size, parameters, filetype = None):
         logger.info("%s: started processing.", os.path.basename(filepath))
         if GZIP_DETECTION[filepath]:
             logger.info("%s: gzip format detected.", os.path.basename(filepath))
+            if ESTIMATED_ZIP_RATIO.get(filepath) is not None:
+                logger.info("%s: estimated gzip compression ratio: %s.", os.path.basename(filepath), ESTIMATED_ZIP_RATIO.get(filepath))
         else:
             logger.info("%s: text format detected.", os.path.basename(filepath))
         logger.info("%s: file size: %s bytes.", os.path.basename(filepath), os.path.getsize(filepath))
@@ -1909,9 +1922,6 @@ def generate_unpaired_tasks(filepaths, chunk_size, parameters, filetype = None):
             reads_for_phred_offset=parameters["reads_for_phred_offset"],
             phred_offset=parameters["phred_offset"]
         )
-        if ESTIMATED_ZIP_RATIO.get(filepath) is not None:
-            logger.info("%s: gzip format detected.", os.path.basename(filepath))
-            logger.info("%s: estimated gzip compression ratio: %s.", os.path.basename(filepath), ESTIMATED_ZIP_RATIO.get(filepath))
         logger.info("%s: Phred offset of %s detected.", os.path.basename(filepath), phred_offset)
         if ESTIMATED_READ_COUNTS.get(filepath) is not None:
             logger.info("%s: estimated bytes per read: %s.", os.path.basename(filepath), ESTIMATED_BYTE_PER_READ[filepath])
@@ -2046,24 +2056,17 @@ def generate_paired_tasks(files, chunk_size, parameters):
         file1, file2 = pair
         start_time = time.monotonic()
         logger.info("%s and %s: started processing.", os.path.basename(file1), os.path.basename(file2))
-        if GZIP_DETECTION[file1]:
-            logger.info("%s: gzip format detected.", os.path.basename(file1))
-        else:
-            logger.info("%s: text format detected.", os.path.basename(file1))
-        if GZIP_DETECTION[file2]:
-            logger.info("%s: gzip format detected.", os.path.basename(file2))
-        else:
-            logger.info("%s: text format detected.", os.path.basename(file2))
-        logger.info("%s: file size: %s bytes.", os.path.basename(file1), os.path.getsize(file1))
-        logger.info("%s: file size: %s bytes.", os.path.basename(file2), os.path.getsize(file2))
-        phred_offset_1 = detect_phred_offset(filepath = file1, reads_for_phred_offset = parameters["reads_for_phred_offset"], phred_offset = parameters["phred_offset"])
-        phred_offset_2 = detect_phred_offset(filepath = file2, reads_for_phred_offset = parameters["reads_for_phred_offset"], phred_offset = parameters["phred_offset"])
-        if ESTIMATED_ZIP_RATIO.get(file1) is not None:
-            logger.info("%s: gzip format detected.", os.path.basename(file1))
-            logger.info("%s: estimated gzip compression ratio: %s.", os.path.basename(file1), ESTIMATED_ZIP_RATIO.get(file1))
-        if ESTIMATED_ZIP_RATIO.get(file2) is not None:
-            logger.info("%s: gzip format detected.", os.path.basename(file2))
-            logger.info("%s: estimated gzip compression ratio: %s.", os.path.basename(file2), ESTIMATED_ZIP_RATIO.get(file2))
+        for f in (file1, file2):
+            if GZIP_DETECTION[f]:
+                logger.info("%s: gzip format detected.", os.path.basename(f))
+                if ESTIMATED_ZIP_RATIO.get(f) is not None:
+                    logger.info("%s: estimated gzip compression ratio: %s.", os.path.basename(f), ESTIMATED_ZIP_RATIO.get(f))
+            else:
+                logger.info("%s: text format detected.", os.path.basename(f))
+            logger.info("%s: file size: %s bytes.", os.path.basename(f), os.path.getsize(f))
+        
+        phred_offset_1 = detect_phred_offset(filepath=file1, reads_for_phred_offset=parameters["reads_for_phred_offset"], phred_offset=parameters["phred_offset"])
+        phred_offset_2 = detect_phred_offset(filepath=file2, reads_for_phred_offset=parameters["reads_for_phred_offset"], phred_offset=parameters["phred_offset"])
         logger.info("%s: Phred offset of %s detected.", os.path.basename(file1), phred_offset_1)
         logger.info("%s: Phred offset of %s detected.", os.path.basename(file2), phred_offset_2)
         logger.info("%s: (estimated) read count: %s.", os.path.basename(file1), ESTIMATED_READ_COUNTS.get(file1, "unknown"))
@@ -2184,8 +2187,8 @@ def trim_reads(records, phred_offset, minimum_average_qual_post, min_length_outp
     quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool, raw_lengths, max_len, n_reads = qual_to_array(quality_list = valid_qualities, phred_offset = phred_offset)
     sequence_arr = seq_to_array(sequence_list = valid_sequences, chunk_padding_bool = chunk_padding_bool, max_len = max_len, n_reads = n_reads)
     n_reads, length = sequence_arr.shape
-    left_list = [np.zeros(n_reads, dtype=np.int64)]
-    right_list = [np.full(n_reads, length, dtype=np.int64) - row_tilde_count]
+    left_list = [np.zeros(n_reads, dtype=np.int8)]
+    right_list = [np.full(n_reads, length, dtype=np.int32) - row_tilde_count]
     for step in build_pipeline(parameters):
         left, right = step(sequence_arr, quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool)
         left_list.append(left)
@@ -2674,7 +2677,7 @@ def print_full_auto_help(parser):
     """
     print(
         "\n"
-        "When --full-auto/-GO is specified, only input parameters --input-files/-i, --input-paired/-ip, and --input-unpaired/-iu are respected."
+        "When --full-auto/-GO is specified, only input parameters --input-files/-i, --input-paired/-ip, --input-interleaved/-ii, and --input-unpaired/-iu are respected."
         "\nIf none of these are provided, Readzor will auto-detect FASTQ files in the current working directory."
         "\nAll other user-provided parameters are ignored."
         "\n"
@@ -2963,7 +2966,7 @@ def parse_args():
     )
     adapter_trimming.add_argument(
         "--adapter-mismatch", "-am", type = int, default = 0, metavar="",
-        help="Number of mismatches allowed in adapter finding. Note: setting mismatches to > 0, infers significant processing constrains. Default: 0."
+        help="Number of mismatches allowed in adapter finding. Default: 0."
     )
     adapter_trimming.add_argument(
         "--adapter-fasta-add", "-ad", type = str, default = None, metavar="",
