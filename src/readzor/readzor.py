@@ -28,7 +28,7 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.2.7"
+VERSION = "0.2.8"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq3", [
@@ -672,16 +672,16 @@ def find_paired_files(filepaths):
             logger.warning("File '%s' has an empty or missing header, skipping.", filepath)
             continue
 
-    header_1 = headers[0].strip().lstrip(b'@')
-    base_id_1, read_num_1 = read_info_from_header(header_1)
-    header_2 = headers[1].strip().lstrip(b'@')
-    base_id_2, read_num_2 = read_info_from_header(header_2)
-    
-    base_ids[filepath] = (base_id_1, read_num_1)
-    interleaved_flag[filepath] = (
-        base_id_1 is not None
-        and base_id_1 == base_id_2
-    )
+        header_1 = headers[0].strip().lstrip(b'@')
+        base_id_1, read_num_1 = read_info_from_header(header_1)
+        header_2 = headers[1].strip().lstrip(b'@')
+        base_id_2, read_num_2 = read_info_from_header(header_2)
+        
+        base_ids[filepath] = (base_id_1, read_num_1)
+        interleaved_flag[filepath] = (
+            base_id_1 is not None
+            and base_id_1 == base_id_2
+        )
 
     pairs_dict = defaultdict(list)
     for filepath, (base_id, read_num) in base_ids.items():
