@@ -1,4 +1,17 @@
 #!/usr/bin/env python3
+"""
+Readzor: a modular FASTQ quality trimming and filtering pipeline.
+
+Every enabled trimming module independently works out, for each read, the
+[left, right) window of bases it would keep. The windows of all modules are
+merged by taking the innermost boundary on each side (the most stringent
+result per end), after which the output length and average-quality filters
+are applied. Unpaired, paired (two-file) and interleaved inputs are
+supported, plain-text or gzip-compressed, and reads are processed in chunks
+by a multiprocessing pool.
+
+Run ``readzor --help`` for the full list of command-line options.
+"""
 
 ##### Import packages #####
 import argparse
@@ -28,7 +41,7 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.2.9"
+VERSION = "0.3.0"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq3", [
@@ -81,29 +94,40 @@ class ProgressAwareStreamHandler(logging.StreamHandler):
     terminal line.
     """
     def emit(self, record):
+        """
+        Clear the active progress-bar line (if there is one), then emit
+        the record as a normal StreamHandler would.
+        """
         if ACTIVE_PROGRESS_TRACKER is not None:
             ACTIVE_PROGRESS_TRACKER.clear_line()
         super().emit(record)
 
 def setup_logging(output_dir = None, verbose = False, parameters = None):
     """
-    Configure Readzor's logger.
-    Called from parse_args() twice — once with no arguments, before parsing,
-    to attach a console handler so any parser.error()/early messages are
-    visible; and again immediately after args are parsed, to apply the
-    user's --verbose choice to that same console handler. Called a third
-    time from main() once the timestamped output directory exists, to attach
-    a file handler so the full run is captured on disk
-    (Readzor_results_.../readzor.log) regardless of console verbosity.
+    Configure Readzor's logger and attach its console and/or file handler.
+
+    Called from parse_args() twice: once before parsing, with no arguments,
+    to attach a console handler so early messages are visible, and again
+    right after parsing to apply the user's --verbose choice to that same
+    handler. Called a third time, from main() or test_run(), once the
+    timestamped results folder exists, to attach a file handler that writes
+    the full run to <output_dir>/Readzor_log.txt regardless of console
+    verbosity. On that third call it also logs the Readzor version, the
+    exact command line, whether full-auto and/or test-run mode is active,
+    and the output folder and log file locations, and attaches the same
+    file handler to ``file_only_logger`` (for messages that should only go
+    to the log file). The file handler is only ever attached once.
+
     Args:
-        output_dir (str | None): Timestamped results directory to write
-            readzor.log into. If None, only the console handler is
-            (re)configured.
-        verbose (bool): If True, console output includes DEBUG-level
-            messages. The log file always captures DEBUG and above.
+        output_dir (str | None): Results folder to write Readzor_log.txt
+            into. If None, only the console handler is (re)configured.
+        verbose (bool): If True, the console shows DEBUG-level messages and
+            above. If False, the console handler is effectively silenced
+            (its level is set above CRITICAL). The log file always captures
+            DEBUG and above.
         parameters (dict | None): Run parameters. Required (and only
-            consulted) when output_dir is given, to log whether full-auto
-            and/or test-run mode is active.
+            consulted) when output_dir is given, to read the "full_auto"
+            and "testrun" flags.
     """
     logger.setLevel(logging.DEBUG)
     formatter = logging.Formatter(
@@ -147,18 +171,21 @@ def setup_logging(output_dir = None, verbose = False, parameters = None):
 
 def chunk_size_setter(chunk_size):
     """
-    Resolves the chunk size to use for parallel processing.
-    If a chunk size is explicitly given, it's returned unchanged.
-    Otherwise, detects whether a supported job scheduler's tools are
-    available on the system (SLURM, PBS/Torque, SGE, or LSF) and picks
-    a larger default chunk size for scheduler-managed (typically
-    higher-resource) systems, or a smaller default otherwise.
+    Resolve the number of reads per chunk sent to each worker.
+
+    If a chunk size is given explicitly, it is returned unchanged.
+    Otherwise, the presence of a common job-scheduler command on PATH
+    (sinfo, sbatch, squeue, qsub, qstat, bsub or bjobs, i.e. SLURM,
+    PBS/Torque/SGE or LSF) is taken as a sign of an HPC system, which
+    typically has more resources and gets a larger default.
+
     Args:
-        chunk_size (int | None): User-specified chunk size. Defaults to
-            None (auto-detect).
+        chunk_size (int | None): User-specified chunk size, or None to
+            auto-detect.
+
     Returns:
-        int: The resolved chunk size — 20000 on scheduler-managed systems,
-            1000 otherwise, unless overridden.
+        int: ``chunk_size`` if given; otherwise 20000 when a scheduler
+            command is found, else 1000.
     """
     if chunk_size is not None:
         return chunk_size
@@ -170,31 +197,37 @@ def chunk_size_setter(chunk_size):
 
 def count_reads_estimated(filepath, sample_size=10, default_gzip_ratio=4, gzip_sample_bytes=50 * 1024 * 1024):
     """
-    Estimate the number of reads in a FASTQ file from file size and a
-    per-read byte estimate, without a full parse.
+    Estimate the number of reads in a FASTQ file without parsing all of it.
 
-    Samples up to `sample_size` records to estimate average on-disk
-    (uncompressed) bytes per read, including line-ending characters
-    stripped by `lazy_fastq`.
+    The average number of (uncompressed) bytes per read is estimated from
+    the first ``sample_size`` records: the lengths of the four lines plus
+    4 for the newline characters that lazy_fastq() strips. The estimated
+    uncompressed file size is then divided by this value.
 
-    For gzip files, estimates the uncompressed size via a compression
-    ratio sampled by decompressing a leading chunk of the file (falls
-    back to `default_gzip_ratio` if that sample is too small to be stable).
+    For gzip files, the uncompressed size is estimated as the file size
+    times a compression ratio, measured by decompressing up to
+    ``gzip_sample_bytes`` from the start of the file. If less than 1 MiB
+    could be decompressed, ``default_gzip_ratio`` is used instead.
+
+    Requires GZIP_DETECTION[filepath] to be set (see input_handler()).
+    Stores the bytes-per-read estimate in ESTIMATED_BYTE_PER_READ and, for
+    gzip files, the compression ratio in ESTIMATED_ZIP_RATIO, both keyed
+    by ``filepath``.
 
     Args:
-        filepath (str): Path to the FASTQ file (.fastq, .fq, or gzip-compressed).
-        sample_size (int): Maximum number of records to sample for the
-            per-read byte estimate. Defaults to 10.
-        default_gzip_ratio (float): Fallback compression ratio to use when
-            the gzip sample is too small to be stable. Defaults to 4.
-        gzip_sample_bytes (int): Target number of uncompressed bytes to
-            sample when estimating the gzip ratio. Defaults to 50 MiB.
+        filepath (str): Path to the FASTQ file (plain or gzip-compressed).
+        sample_size (int): Maximum number of records sampled for the
+            bytes-per-read estimate. Defaults to 10.
+        default_gzip_ratio (float): Compression ratio used when the gzip
+            sample is too small to be reliable. Defaults to 4.
+        gzip_sample_bytes (int): Number of uncompressed bytes to decompress
+            when measuring the gzip ratio. Defaults to 50 MiB.
 
     Returns:
         int: Estimated number of reads in the file, always >= 1.
 
     Raises:
-        ValueError: If the file contains no readable FASTQ records.
+        ValueError: If the file contains no complete FASTQ records.
     """
     total_bytes = 0
     n_records = 0
@@ -234,8 +267,21 @@ def count_reads_estimated(filepath, sample_size=10, default_gzip_ratio=4, gzip_s
 
 class ProgressTracker:
     """
-    Tracks number of analysed reads against estimated total and renders a single-line
-    progress bar to stderr. Dynamically scales bar width to fit screen size.
+    Tracks the number of processed reads against an estimated total and
+    draws a single-line progress bar, with processing rate and estimated
+    time remaining, on stderr.
+
+    The bar is only drawn when stderr is a terminal, is redrawn at most
+    once every ``min_interval`` seconds, and shrinks to fit the terminal
+    width (or is dropped, leaving only the statistics, on very narrow
+    terminals). Because the total is an estimate, the displayed fraction
+    is capped at 99.9% until close() is called.
+
+    Args:
+        total_reads (int): Estimated total number of reads (clamped to >= 1).
+        bar_width (int): Maximum width of the bar in characters. Defaults to 50.
+        min_interval (float): Minimum number of seconds between redraws.
+            Defaults to 0.2.
     """
     def __init__(self, total_reads, bar_width=50, min_interval=0.2):
         self.total = max(total_reads, 1)
@@ -247,6 +293,19 @@ class ProgressTracker:
 
     @staticmethod
     def _format_duration(seconds_val, concise=False):
+        """
+        Format a duration for display.
+
+        Args:
+            seconds_val (float): Duration in seconds. Infinite or negative
+                values are shown as "?".
+            concise (bool): If True, use a compact form ("1h 02m 03s",
+                "2m 05s", "7s"); otherwise a spelled-out form
+                ("1 hour, 2 minutes, 3 seconds").
+
+        Returns:
+            str: The formatted duration.
+        """
         if seconds_val == float('inf') or seconds_val < 0 or seconds_val is None:
             return "?"
         total_seconds = int(round(seconds_val))
@@ -270,6 +329,13 @@ class ProgressTracker:
         return ", ".join(parts)
 
     def update(self, n):
+        """
+        Add ``n`` processed reads and redraw the bar if at least
+        ``min_interval`` seconds have passed since the last redraw.
+
+        Args:
+            n (int): Number of reads processed since the previous call.
+        """
         self.done += n
         now = time.time()
         if now - self._last_render >= self.min_interval:
@@ -277,6 +343,10 @@ class ProgressTracker:
             self._last_render = now
 
     def _render(self):
+        """
+        Draw the current progress line on stderr, overwriting the previous
+        one. Does nothing if stderr is not a terminal.
+        """
         if not sys.stderr.isatty():
             return
         term_width = shutil.get_terminal_size(fallback=(80, 24)).columns
@@ -307,6 +377,7 @@ class ProgressTracker:
         Blank out the current progress-bar line so other output (e.g. log
         messages) can be written to stderr without visually clashing with
         the bar. The bar redraws itself on the next call to `update()`.
+        Does nothing if stderr is not a terminal.
         """
         if not sys.stderr.isatty():
             return
@@ -315,6 +386,11 @@ class ProgressTracker:
         sys.stderr.flush()
 
     def close(self):
+        """
+        Draw the final line (100%, total reads processed, average rate and
+        total time) and end it with a newline. When stderr is not a
+        terminal, only the statistics are written, as plain text.
+        """
         elapsed = time.time() - self._start_time
         rate = self.done / elapsed if elapsed > 0 else 0
         time_str = self._format_duration(elapsed, concise=False)
@@ -342,13 +418,25 @@ class ProgressTracker:
 
 def resolve_stdin_input(parser=None):
     """
-    Auto-detects piped stdin data and spools it to a temporary file.
+    Spool FASTQ data piped into stdin to a temporary file.
+
+    The rest of the pipeline needs a real, re-readable path (inputs are
+    read several times: for pairing, Phred detection and processing), so
+    stdin is copied to a temporary "readzor_stdin_*.fastq" file. Its path
+    is recorded in STDIN_TEMP_FILES so cleanup_stdin_temp_files() can
+    remove it later. Gzip-compressed data on stdin also works, since
+    compression is detected from the file contents.
+
+    Args:
+        parser (argparse.ArgumentParser | None): If given, used to report
+            an empty stdin through parser.error().
 
     Returns:
-        str: A real filesystem path safe to pass through the rest of the pipeline.
+        str: Path to the temporary file holding the stdin data.
 
     Raises:
-        SystemExit: If no data is being piped into stdin, or stdin is empty.
+        SystemExit: If stdin is a terminal (nothing is piped in), or if
+            stdin was empty (through parser.error() when a parser is given).
     """
     if sys.stdin.isatty():
         raise SystemExit("Error: No input file specified and no piped data detected on stdin.")
@@ -369,7 +457,8 @@ def resolve_stdin_input(parser=None):
 
 def cleanup_stdin_temp_files():
     """
-    Remove files created through stdin.
+    Delete all temporary files created by resolve_stdin_input() and clear
+    STDIN_TEMP_FILES. Files that no longer exist are ignored.
     """
     for tmp_path in STDIN_TEMP_FILES:
         try:
@@ -384,6 +473,8 @@ def group_paired_input_into_pairs(files, parser):
 
     Assumes files are supplied in consecutive R1/R2 order, e.g.
     [sample1_R1, sample1_R2, sample2_R1, sample2_R2] -> [(sample1_R1, sample1_R2), (sample2_R1, sample2_R2)].
+    The order within each pair is taken as given; file contents are not
+    inspected.
     
     Args:
         files (list[str] | None): Flat list of input file paths, or None/empty
@@ -436,19 +527,20 @@ def create_folder_structure(output_dir):
 
 def worker_determination(threads=None):
     """
-    Determine the number of worker processes for parallel task execution.
+    Determine the number of worker processes for the multiprocessing pool.
 
-    The worker count is calculated in the following order of precedence:
-    1. Explicit Request: If `threads` is a valid integer, it is used.
-    2. Scheduler Environment: If a supported job-scheduler CPU variable
-       (SLURM, PBS, SGE, LSF, or OMP_NUM_THREADS) is set and valid, it is used.
-    3. Local Default: Uses (available CPUs - 1).
+    The worker count is determined in the following order of precedence:
+    1. Explicit request: ``threads``, if it is an int.
+    2. Scheduler environment: the first of SLURM_CPUS_PER_TASK, PBS_NCPUS,
+       NCPUS, NSLOTS or LSB_DJOB_NUMPROC that is set to a valid integer.
+    3. Local default: the number of available CPUs minus one.
 
-    All return values are clamped to a minimum of 1 worker.
+    The result is always at least 1.
 
     Args:
-        threads (int | None): User-requested number of base threads/CPUs.
-            Ignored if not a valid int (e.g., None, float, bool). Defaults to None.
+        threads (int | None): User-requested number of workers, or None to
+            auto-detect. Values that are not an int are ignored.
+            Defaults to None.
 
     Returns:
         int: The number of worker processes to spawn, always >= 1.
@@ -466,26 +558,23 @@ def worker_determination(threads=None):
 
 def common_name_parts(filenames):
     """
-    Extract the common underscore-separated stem shared across FASTQ filenames.
-    
-    Strips file extensions (.fastq, .fq, optionally .gz/.gzip) and identifies
-    tokens that are identical across all input filenames at each position.
-    Stops at the first position where tokens differ, allowing paired-end files
-    (e.g., sample1_R1.fastq.gz and sample1_R2.fastq.gz) to be reduced to their
-    shared prefix (sample1).
-    
-    If no common tokens are found, returns the first filename's stem as a fallback
-    to ensure a non-empty identifier is always available for downstream processing.
+    Find the common leading, underscore-separated name shared by FASTQ filenames.
+
+    Strips the FASTQ extension (.fastq/.fq, optionally followed by .gz/.gzip,
+    case-insensitive) from each name, splits the names on underscores, and
+    keeps tokens from the start for as long as they are identical across all
+    names. Tokens are compared case-insensitively; the returned tokens use
+    the casing of the first filename. Used to name the outputs of a paired
+    R1/R2 input, e.g. sample1_R1.fastq.gz and sample1_R2.fastq.gz share the
+    prefix "sample1".
 
     Args:
-        filenames (list[str]): List of FASTQ filenames (basenames, not paths).
-            Can be single or multiple files. Extensions are case-insensitive.
-            Must not be empty.
+        filenames (list[str]): FASTQ filenames (basenames, not paths).
 
     Returns:
-        str: The common name stem, with tokens rejoined by underscores. If no
-        common tokens exist, returns the first filename's stem (without extension).
-        Never returns an empty string.
+        str: The common tokens, rejoined by underscores. If the very first
+        token already differs, the first filename's stem (without extension)
+        is returned instead. An empty input list returns "unknown".
 
     Examples:
         - ["sample1_R1.fastq.gz", "sample1_R2.fastq.gz"] -> "sample1"
@@ -524,6 +613,8 @@ def basename_file(filepath):
     
     Strips the directory path and FASTQ file extension (.fastq, .fq, optionally
     .gz/.gzip) to isolate the sample identifier. Extension matching is case-insensitive.
+    Names without a FASTQ extension are returned unchanged (apart from the
+    directory part).
 
     Args:
         filepath (str): Path to the FASTQ file (absolute or relative).
@@ -562,21 +653,31 @@ def is_gz_file(filepath):
 
 def lazy_fastq(filepath, buffer_size = 2*1024*1024):
     """
-    Lazily yield FASTQ records one at a time without loading the entire file.
+    Lazily yield FASTQ records one at a time without loading the whole file.
 
-    Detects gzip compression via magic bytes (independent of file extension).
-    Gzip files are read via isal in large chunks with manual line-stitching
-    across chunk boundaries (fastest path for isal's decompression throughput).
-    Plain-text files are read via Python's line iterator with a 10 MB read
-    buffer (fastest path for uncompressed I/O). Yields each 4-line FASTQ
-    record as (header, sequence, plus, quality) tuples with line endings
-    stripped.
+    Whether the file is gzip-compressed is looked up in GZIP_DETECTION,
+    which must already contain ``filepath`` (see input_handler()).
+
+    - Gzip files are decompressed with isal (igzip_threaded, one thread)
+      in blocks of ``buffer_size`` bytes, with manual line-stitching across
+      block boundaries (the fastest path for isal's decompression
+      throughput). Carriage returns are removed. If the file ends with an
+      incomplete record, a warning is logged and that record is skipped.
+    - Plain-text files are read line by line through a buffered reader of
+      ``buffer_size`` bytes, and each line is stripped of surrounding
+      whitespace. An incomplete final record is skipped silently.
+
+    Records are not validated here; see validate_fastq().
 
     Args:
-        filepath (str): Path to the FASTQ file (.fastq, .fq, or gzip-compressed).
+        filepath (str): Path to the FASTQ file (plain or gzip-compressed).
+        buffer_size (int): Block size (gzip) or read-buffer size (plain
+            text) in bytes. Defaults to 2 MiB.
+
     Yields:
-        bytes: One record's (header, sequence, plus, quality) lines joined
-            by FIELD_SEP into a single bytes object, line endings stripped.
+        bytes: One record's header, sequence, plus and quality lines, with
+            line endings removed, joined by FIELD_SEP into a single bytes
+            object.
     """
     if GZIP_DETECTION[filepath]:
         fastq_file = igzip_threaded.open(filepath, 'rb', threads=1)
@@ -628,22 +729,35 @@ def lazy_fastq(filepath, buffer_size = 2*1024*1024):
 
 def find_paired_files(filepaths):
     """
-    Groups a list of FASTQ filepaths into paired-end pairs and leftover unpaired files.
-    For each file, reads the first line (its header) to determine a
-    "base ID" and read number (e.g., R1/R2) via helper functions,
-    without parsing the whole file. Files sharing a base ID with valid
-    mate designations are paired together (ensuring correct R1, R2 order);
-    leftover files, unmatchable files, or base IDs with more than two files
-    are returned as unpaired.
+    Sort FASTQ files into paired-end pairs, interleaved files and unpaired files.
+
+    Only the first two records (first 8 lines) of each file are read. The
+    base read ID and read number (1 or 2) of the first header are extracted
+    with read_info_from_header(), independent of the filename. A file whose
+    first two records share the same base ID is marked as interleaved.
+
+    Files are then grouped by the base ID of their first read:
+      - Exactly two files with read numbers 1 and 2 form a pair, returned in
+        (R1, R2) order.
+      - Two files with the same read number (possible duplicates), or with
+        missing/unexpected read numbers, are logged and not paired.
+      - More than two files sharing a base ID are logged and not paired.
+    Of the files that were not paired, those marked as interleaved are
+    returned as interleaved and the rest as unpaired.
+
+    Requires GZIP_DETECTION to contain every path (see input_handler()).
+
     Args:
-        filepaths (list[str]): Paths to FASTQ files to inspect and pair.
+        filepaths (list[str] | None): Paths to FASTQ files to inspect.
+            None is treated as an empty list.
+
     Returns:
         tuple[list[tuple[str, str]], list[str], list[str]]:
-            - A list of (file_1, file_2) tuples representing matched pairs (ordered R1, R2).
-            - A list of filepaths whose first two records share a base ID
-              (i.e. are interleaved R1/R2 reads within a single file).
-            - A list of remaining filepaths that could not be matched with
-              a valid pair and aren't interleaved.
+            - Matched (R1, R2) file pairs.
+            - Interleaved files (first two records share a base ID).
+            - Remaining unpaired files.
+        Files that cannot be read, or whose first header is empty or
+        missing, are logged and left out of all three lists.
     """
     base_ids = {}
     interleaved_flag = {}
@@ -740,21 +854,25 @@ def find_paired_files(filepaths):
 
 def read_info_from_header(header):
     """
-    Extracts the base read identifier and read number from a FASTQ header.
+    Extract the base read ID and read number from a FASTQ header.
 
-    Handles two common Illumina header conventions:
-      - Modern Illumina: "@<id> 1:N:0:..." or "@<id> 2:N:0:..."
-      - Legacy Illumina, and MGI: "@<id>/1" or "@<id>/2"
-      
-    If neither convention matches, the entire header is used as the base ID 
+    Handles two common conventions:
+      - Modern Illumina (Casava 1.8+): "<id> 1:N:0:..." or "<id> 2:N:0:...".
+        The base ID is everything before the first space; the read number
+        is taken from the start of the second field.
+      - Legacy Illumina, and MGI: "<id>/1" or "<id>/2". The base ID is the
+        header without the trailing "/1" or "/2".
+
+    If neither convention matches, the entire header is used as the base ID
     and the read number is set to None.
 
     Args:
-        header (str): The FASTQ header line, with the leading '@' and
-            trailing newline already stripped.
+        header (bytes): The FASTQ header line. Surrounding whitespace is
+            stripped. A leading '@' is not removed, and is then part of the
+            base ID.
 
     Returns:
-        tuple[str, int | None]:
+        tuple[bytes, int | None]:
             - base_id: The read identifier shared by R1/R2 mates.
             - read_num: 1, 2, or None if the read number cannot be determined.
     """
@@ -777,24 +895,27 @@ def read_info_from_header(header):
 
 def detect_phred_offset(filepath, reads_for_phred_offset, phred_offset):
     """
-    Auto-detects the Phred quality score encoding offset of a FASTQ file.
+    Detect the Phred quality encoding offset (33 or 64) of a FASTQ file.
 
-    If a pre-determined `phred_offset` is provided, it returns it immediately. 
-    Otherwise, it samples up to `reads_for_phred_offset` reads and inspects the 
-    ASCII range of their quality strings to distinguish Phred+33 (Sanger/modern Illumina) 
-    from Phred+64 (older Illumina) encoding.
+    If ``phred_offset`` is given, it is returned without reading the file.
+    Otherwise up to ``reads_for_phred_offset`` records are sampled and the
+    lowest and highest quality characters are recorded:
+      - any character below ASCII 64 ('@') -> Phred+33 (Sanger/modern Illumina);
+      - otherwise, if no character is above ASCII 104 ('h') -> Phred+64
+        (older Illumina);
+      - otherwise the encoding is ambiguous and an error is raised.
 
     Args:
         filepath (str): Path to the FASTQ file to inspect.
         reads_for_phred_offset (int): Maximum number of reads to sample.
-        phred_offset (int | None): User-specified Phred offset, if already known.
+        phred_offset (int | None): User-specified Phred offset, if known.
 
     Returns:
         int: 33 or 64, the detected or provided Phred offset.
 
     Raises:
-        ValueError: If the FASTQ file cannot be read, or if the observed 
-            ASCII range is ambiguous and doesn't clearly match either encoding.
+        ValueError: If the FASTQ file cannot be read, or if the observed
+            ASCII range fits neither encoding.
     """
     if phred_offset is not None:
         return phred_offset
@@ -829,13 +950,17 @@ def detect_phred_offset(filepath, reads_for_phred_offset, phred_offset):
 
 def validate_fastq(header, sequence, plus, quality, n_filter, min_length_input, max_length_input):
     """
-    Validates that a single FASTQ record is well-formed.
+    Check that a single FASTQ record is well-formed.
 
-    Checks that the header starts with '@' and the plus-line starts with
-    '+', that the sequence and quality lines are the same length and
-    within the given length bounds, that the sequence contains only
-    allowed nucleotide bytes (ACTG, or ACTGN if `n_filter` is off), and
-    that the quality string contains only printable Phred-range bytes.
+    A record passes if:
+      - the header is longer than one character and starts with '@';
+      - the plus line starts with '+';
+      - the sequence and quality lines have the same length;
+      - the sequence length lies within [min_length_input, max_length_input]
+        (each bound is skipped if None);
+      - the sequence contains only uppercase A, C, G and T, plus N unless
+        ``n_filter`` is set (lowercase bases are rejected);
+      - every quality character is printable ASCII (33-126).
 
     Args:
         header (bytes): The header line.
@@ -850,8 +975,7 @@ def validate_fastq(header, sequence, plus, quality, n_filter, min_length_input, 
             or None to skip this check.
 
     Returns:
-        bool: True if the record is well-formed and passes all checks,
-            False otherwise.
+        bool: True if the record passes all checks, False otherwise.
     """
     if len(header) <= 1 or header[0] != 64:
         return False
@@ -874,28 +998,29 @@ def validate_fastq(header, sequence, plus, quality, n_filter, min_length_input, 
 
 def load_adapters_from_fasta(fasta_file):
     """
-    Parses adapter sequences from a FASTA file.
+    Parse adapter sequences from a FASTA file.
 
-    Reads a FASTA-formatted file containing adapter sequences, extracting
-    each adapter's name and sequence. Handles multi-line sequences (where
-    a single sequence may span multiple lines in the FASTA file) by
-    concatenating all lines between headers.
+    Each entry is a header line starting with ">" followed by one or more
+    sequence lines. Sequence lines are uppercased and concatenated, so a
+    sequence may be split over several lines. Trailing whitespace is
+    stripped from every line.
+
+    Note: parsing stops at the first empty (or whitespace-only) line,
+    including one at the very top of the file, so the file should not
+    contain blank lines.
 
     Args:
         fasta_file (str): Path to the FASTA file containing adapter sequences.
-            Each adapter entry must have a header line starting with ">" followed
-            by one or more sequence lines. Sequence lines may be split across
-            multiple lines.
 
     Returns:
         list[tuple[str, str]]: A list of (name, sequence) tuples, where:
-            - name (str): The adapter name, extracted from the header line
-              (with leading ">" and surrounding whitespace removed).
-            - sequence (str): The full nucleotide sequence, with all lines
-              between headers concatenated into a single string.
+            - name (str): The header line without the leading ">" and
+              surrounding whitespace.
+            - sequence (str): The full, uppercased nucleotide sequence.
 
     Raises:
-        ValueError: If a header is encountered without any following sequence lines.
+        ValueError: If an entry does not start with a ">" header line, or a
+            header is not followed by any sequence lines.
     """
     result = []
     with open(fasta_file) as fastafile:
@@ -921,24 +1046,24 @@ def load_adapters_from_fasta(fasta_file):
     
 def seq_to_array(sequence_list):
     """
-    Converts a list of nucleotide sequence strings into a 2D numpy array,
-    and works out the chunk's padding layout for all downstream steps.
+    Convert a list of nucleotide sequences into a 2D numpy array of ASCII
+    codes, and work out the chunk's padding layout for all downstream steps.
 
-    Concatenates all sequences (right-padded with null bytes to the longest
-    read when lengths differ) and reinterprets the raw bytes as an array of
-    ASCII codes, reshaping into a (n_reads, read_length) matrix for
-    vectorized downstream processing.
+    If all reads have the same length, the sequences are joined directly.
+    Otherwise each read is right-padded with null bytes (0x00) to the length
+    of the longest read. The raw bytes are then reinterpreted as a
+    (n_reads, max_len) matrix for vectorized processing.
 
     Args:
-        sequence_list (list[bytes]): Sequence byte-strings.
+        sequence_list (list[bytes]): Sequence byte-strings (non-empty list).
 
     Returns:
         tuple: A tuple containing:
             - numpy.ndarray: Signed 8-bit integer array of shape
               (n_reads, max_len) of ASCII character codes.
             - bool: chunk_padding_bool, True if reads differ in length.
-            - numpy.ndarray | int: row_tilde_count, (n_reads,) padding bytes
-              per read, or 0 when not padded.
+            - numpy.ndarray | int: row_tilde_count, (n_reads,) number of
+              padding bytes per read, or 0 when not padded.
             - numpy.ndarray | None: padding_mask_bool, (n_reads, max_len)
               True at padding positions, or None when not padded.
             - numpy.ndarray: (n_reads,) real read lengths.
@@ -967,13 +1092,13 @@ def seq_to_array(sequence_list):
 
 def qual_to_array(quality_list, phred_offset, chunk_padding_bool, padding_mask_bool, max_len, n_reads):
     """
-    Converts a list of Phred quality strings into a 2D numeric numpy array,
-    using the padding layout seq_to_array determined for the same reads.
+    Convert a list of Phred quality strings into a 2D numeric numpy array,
+    using the padding layout seq_to_array() determined for the same reads.
 
     Concatenates all quality strings (right-padded with null bytes when
-    chunk_padding_bool is True), reinterprets the raw bytes as Phred-shifted
-    integer scores, subtracts the Phred offset (leaving padding at 0), and
-    reshapes into a (n_reads, read_length) matrix.
+    chunk_padding_bool is True), reinterprets the raw bytes as integers,
+    subtracts the Phred offset (padding positions stay 0), and reshapes
+    into a (n_reads, max_len) matrix.
 
     Args:
         quality_list (list[bytes]): Quality byte-strings, each the same length
@@ -999,25 +1124,31 @@ def qual_to_array(quality_list, phred_offset, chunk_padding_bool, padding_mask_b
 
 def header_mgi_to_illumina(mgi_header, barcode5, barcode7, instrument, run):
     """
-    Converts an MGI-style FASTQ header into an Illumina-style header format.
+    Convert an MGI/BGI FASTQ header into an Illumina (Casava 1.8+) header.
 
-    Takes strings for elements needed in an Illumina header that are missing 
-    from the MGI header (instrument, run, barcodes). Parses the MGI coordinate 
-    components and maps them into the standard Illumina identifier structure.
+    MGI headers have the form "<flowcell>L<lane>C<column>R<row><tile>/<read>",
+    where <row> is three digits. The Illumina fields missing from an MGI
+    header (instrument, run and index sequences) are supplied by the caller.
+    The result has the form:
+
+        @<instrument>:<run>:<flowcell>:<lane>:<tile>:<column>:<row> <read>:N:0:<barcode7>+<barcode5>
+
+    Headers that already look like Illumina headers are returned unchanged
+    (with a leading '@'). Anything after "/<read>" in an MGI header is
+    discarded.
 
     Args:
-        mgi_header (str): MGI header, with or without leading '@', in the
-            form "<flowcell>L<lane>C<column>R<row><tile>/<read_num>".
+        mgi_header (bytes): MGI header, with or without leading '@'.
         barcode5 (str): The i5 index sequence or barcode string.
         barcode7 (str): The i7 index sequence or barcode string.
         instrument (str): The sequencing instrument identifier.
         run (str): The run identifier or run number.
 
     Returns:
-        str: Illumina-style header (including leading '@').
+        bytes: Illumina-style header (including leading '@').
 
     Raises:
-        ValueError: If the header doesn't match the expected MGI format.
+        ValueError: If the header matches neither the MGI nor the Illumina format.
     """
     mgi_header = mgi_header.lstrip(b"@").strip()
     if re.search(rb"^[\w-]+:\d+:[\w-]+:\d+:\d+:\d+:\d+\s+[12]:[YN]:\d+:", mgi_header):
@@ -1040,19 +1171,33 @@ def header_mgi_to_illumina(mgi_header, barcode5, barcode7, instrument, run):
     return illumina_header
 
 def build_pipeline(parameters):
-    """Constructs a list of active trimming operations based on configuration flags.
+    """
+    Build the list of enabled trimming and filtering modules.
 
-    Filters incoming parameter flags and returns a list of executable lambda functions 
-    representing active trimming strategies. Each function expects `(sequence_arr, quality_arr)` 
-    and returns a tuple of `(left, right)` NumPy boundary arrays.
+    Each returned callable takes (sequence_arr, quality_arr,
+    chunk_padding_bool, row_tilde_count, padding_mask_bool) for one chunk
+    and returns a (left, right) pair of per-read boundary arrays, describing
+    the [left, right) window of bases that module would keep. Callers merge
+    all windows by taking the largest left and smallest right boundary per
+    read, so the order of the modules does not affect the result.
+
+    Modules included, when enabled in ``parameters``:
+      - k-mer complexity filter ("kmer_filter_flag")
+      - N end trimming ("n_trimming_flag")
+      - homopolymer end trimming ("poly_filter_flag")
+      - adapter trimming ("adapter_filter_flag")
+      - quality-dependent end trimming ("endqual_filter_flag")
+      - input average-quality filter ("minimum_average_qual_pre" > 0)
+      - sliding-window quality trimming ("slider_filter_flag")
+      - set-length end trimming ("cut_flag")
+    Overlap trimming for paired reads is not part of this list; it is
+    computed per pair and added separately in finish_reads().
 
     Args:
-        parameters (dict): Configuration dictionary containing boolean flags 
-            (e.g., 'endqual_filter_flag', 'adapter_filter_flag') and strategy-specific 
-            trimming arguments.
+        parameters (dict): Run parameters (module flags and their settings).
 
     Returns:
-        list[callable]: A list of functions matching active modules.
+        list[callable]: The enabled modules; empty if none are enabled.
     """
     pipeline = []
     #sequence_based
@@ -1083,24 +1228,28 @@ def build_pipeline(parameters):
 
 def open_fastq_writer(filepath, output_dir, gzip_output):
     """
-    Opens an output file handle for writing filtered FASTQ reads.
+    Open a new output FASTQ file for writing.
 
-    Derives the output filename from the input filepath's basename plus a
-    "_filtered" suffix (with a ".gz" extension if gzip_output is True) and 
-    opens the file in exclusive binary write mode (`"xb"`).
+    The output name is basename_file(filepath) followed by
+    "_filtered.fastq", or "_filtered.fastq.gz" when gzip_output is True.
+    If the resulting name contains "rejected", the "_filtered" part is
+    dropped, so rejected-read files are named "<name>_rejected.fastq[.gz]".
+    ``filepath`` does not need to be an existing file: input_handler() also
+    passes plain name stems such as "<prefix>_R1_paired".
+
+    The file is opened in exclusive binary write mode ("xb"). This function
+    only chooses the name; the data itself is compressed by the workers.
 
     Args:
-        filepath (str): Path to the original input FASTQ file, used to
-            derive the output filename.
+        filepath (str): Input path or name stem to derive the output name from.
         output_dir (str): Directory in which to create the output file.
-        gzip_output (bool): If True, names the file with a ".fastq.gz" 
-            extension for gzip compression.
+        gzip_output (bool): If True, use a ".fastq.gz" extension.
 
     Returns:
-        io.BufferedIOBase: An opened binary file handle for the output file.
+        io.BufferedWriter: The opened binary file handle.
 
     Raises:
-        FileExistsError: If the output file already exists (due to exclusive create mode).
+        FileExistsError: If the output file already exists.
     """
     basename_for_write = basename_file(filepath)
     extension = "_filtered.fastq.gz" if gzip_output else "_filtered.fastq"
@@ -1113,25 +1262,28 @@ def open_fastq_writer(filepath, output_dir, gzip_output):
 ##### Processing reads functions #####
 def average_quality_filter_wrapper(quality_arr, chunk_padding_bool, row_tilde_count, min_avg_qual):
     """
-    Wraps average_quality_batch to conform to the pipeline's (left, right)
-    boundary-array contract, since average_quality_batch is a whole-read
-    pass/fail filter rather than a trimmer.
-    Reads with average quality >= min_avg_qual are left untouched
-    (left=0, right=read_length). Reads that fail the threshold are collapsed
-    to a zero-length boundary (left=0, right=0), signaling downstream stages
-    to treat them as fully discarded.
+    Whole-read average-quality filter (--min-average-qual-pre), in the
+    pipeline's (left, right) boundary format.
+
+    The mean quality is computed over each read's full, untrimmed length.
+    Reads with a mean >= min_avg_qual keep their full window
+    (left 0, right = read length). Reads below the threshold get right 0,
+    i.e. a zero-length window, so they are discarded downstream.
+
     Args:
         quality_arr (numpy.ndarray): (n_reads, read_length) array of
             per-base quality scores.
         chunk_padding_bool (bool): Whether quality_arr contains padded
             (unequal-length) reads.
-        row_tilde_count (numpy.ndarray | None): (n_reads,) count of padding
+        row_tilde_count (numpy.ndarray | int): (n_reads,) count of padding
             bytes per read, used to recover each read's real length when
             chunk_padding_bool is True.
         min_avg_qual (float): Minimum average quality required to keep a read.
+
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
-            each of shape (n_reads,) and dtype int16.
+            each of shape (n_reads,). Left cutoffs are all 0 (int8); right
+            cutoffs are int32.
     """
     n_reads, length = quality_arr.shape
     if not chunk_padding_bool:
@@ -1145,29 +1297,39 @@ def average_quality_filter_wrapper(quality_arr, chunk_padding_bool, row_tilde_co
 
 def trim_ends_quality(quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool, min_quality_both, endqual_min_start, endqual_min_end):
     """
-    Determines per-read trim boundaries based on quality thresholds at each end.
+    Quality-dependent end trimming: per-read boundaries that trim each end
+    up to the first base that meets a quality threshold.
 
-    For each read, finds the position meeting `endqual_min_start` at the start,
-    and the position meeting `endqual_min_end` at the end. Vectorized
-    across all reads in a chunk. Reads with no position meeting the threshold
-    are assigned zero-length cutoffs. If `endqual_filter_flag` is False,
-    returns full-length arrays without trimming.
+    The left boundary is the first position (scanning from the 5' end) with
+    quality >= endqual_min_start. The right boundary is one past the last
+    position (scanning from the 3' end) with quality >= endqual_min_end.
+    Only the ends are trimmed; low-quality bases inside the read are kept.
+    Padding positions are ignored. Reads without any base meeting the
+    threshold get left = row width and right = 0, i.e. an empty window.
+    Vectorized across all reads in the chunk.
 
     Args:
-        quality_arr (numpy.ndarray): (n_reads, read_length) array of per-base quality scores.
+        quality_arr (numpy.ndarray): (n_reads, read_length) array of
+            per-base quality scores.
         chunk_padding_bool (bool): Whether quality_arr contains padded
             (unequal-length) reads.
+        row_tilde_count (numpy.ndarray | int): (n_reads,) count of padding
+            bytes per read, used when chunk_padding_bool is True.
         padding_mask_bool (numpy.ndarray | None): (n_reads, read_length)
             boolean mask marking right-padding positions, or None if the
             chunk isn't padded. Padded positions are excluded from the scan.
-        min_quality_both (int | None): Minimum quality fallback to keep bases from both ends.
-        endqual_min_start (int | None): Minimum quality to keep bases from the start of the read.
-        endqual_min_end (int | None): Minimum quality to keep bases from the end of the read.
+        min_quality_both (int | None): Threshold used for any end whose
+            specific threshold is None. If this is also None, 0 is used
+            (no trimming at that end).
+        endqual_min_start (int | None): Minimum quality to keep bases from
+            the start of the read, or None to use min_quality_both.
+        endqual_min_end (int | None): Minimum quality to keep bases from
+            the end of the read, or None to use min_quality_both.
 
     Returns:
-        tuple[numpy.ndarray, numpy.ndarray]: A tuple of `(start_cutoffs, end_cutoffs)` 
-            arrays of shape `(n_reads,)` and dtype `int16`, giving the left and right trim 
-            boundaries per read.
+        tuple[numpy.ndarray, numpy.ndarray]: (start_cutoffs, end_cutoffs),
+            each of shape (n_reads,) and dtype int32, giving the left and
+            right trim boundaries per read.
     """
     n_reads, length = quality_arr.shape
     if endqual_min_start is None:
@@ -1216,13 +1378,23 @@ def trim_ends_quality(quality_arr, chunk_padding_bool, row_tilde_count, padding_
 
 def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, row_tilde_count, chunk_padding_bool, poly_length_both, poly_length_start, poly_length_end, poly_bases_both, poly_bases_start, poly_bases_end):
     """
-    Determines per-read trim boundaries to remove homopolymer runs 
-    from the start and/or end of each read independently.
+    Homopolymer trimming: per-read boundaries that remove homopolymer runs
+    from the start and/or end of each read.
 
-    Scans for specified base runs (e.g., poly-G tails or custom nucleotides) 
-    that meet or exceed defined length thresholds separately for both ends 
-    of the sequence array. Specified bases are checked independently 
-    rather than on a heteropolymer basis.
+    For each base to check at an end, the run of that base touching the end
+    is measured; if it is at least the minimum length for that end, the whole
+    run is trimmed. Each listed base is checked on its own (a mixed run such
+    as "GGAGG" is not treated as one run), and the largest trim per end wins.
+
+    Base selection: poly_bases_both applies to both ends, but
+    poly_bases_start and poly_bases_end each replace it for their own end
+    when they are not None. Length selection: poly_length_start and
+    poly_length_end are used for their own end, and fall back to
+    poly_length_both when 0.
+
+    If no bases are given at all, or all three lengths are 0, no trimming is
+    done. A read consisting entirely of a checked base ends up with an empty
+    window.
 
     Args:
         sequence_arr (numpy.ndarray): (n_reads, read_length) array of
@@ -1230,25 +1402,30 @@ def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, row_tilde_c
         padding_mask_bool (numpy.ndarray | None): (n_reads, read_length)
             boolean mask marking right-padding positions, or None if the
             chunk isn't padded.
+        row_tilde_count (numpy.ndarray | int): (n_reads,) count of padding
+            bytes per read, used when chunk_padding_bool is True.
         chunk_padding_bool (bool): Whether sequence_arr contains padded
             (unequal-length) reads.
-        poly_length_both (int): Fallback minimum run length to trigger 
-            trimming on either end.
-        poly_length_start (int): Minimum run length to trigger trimming 
-            at the start of the read.
-        poly_length_end (int): Minimum run length to trigger trimming 
-            at the end of the read.
-        poly_bases_both (str | None): Comma-separated bases to check independently 
-            at both ends.
-        poly_bases_start (str | None): Comma-separated bases to check independently 
-            at the start.
-        poly_bases_end (str | None): Comma-separated bases to check independently 
-            at the end.
+        poly_length_both (int): Minimum run length used for an end whose
+            specific length is 0.
+        poly_length_start (int): Minimum run length to trigger trimming at
+            the start of the read (0 = use poly_length_both).
+        poly_length_end (int): Minimum run length to trigger trimming at
+            the end of the read (0 = use poly_length_both).
+        poly_bases_both (str | None): Comma-separated bases to check at
+            both ends.
+        poly_bases_start (str | None): Comma-separated bases to check at
+            the start; replaces poly_bases_both for the start if not None.
+        poly_bases_end (str | None): Comma-separated bases to check at
+            the end; replaces poly_bases_both for the end if not None.
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
-            each of shape (n_reads,) and dtype int16, giving the left and right 
-            trim boundaries per read.
+            each of shape (n_reads,), giving the left and right trim
+            boundaries per read.
+
+    Raises:
+        ValueError: If any comma-separated base entry is not a single character.
     """
     n_reads, length = sequence_arr.shape
     if not poly_bases_start and not poly_bases_end and not poly_bases_both:
@@ -1316,12 +1493,11 @@ def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, row_tilde_c
 
 def n_end_trimming(sequence_arr, padding_mask_bool, chunk_padding_bool, row_tilde_count):
     """
-    Removes leading and trailing N-bases from each read.
+    N end trimming: remove runs of N bases (any length >= 1) from both ends
+    of each read, leaving internal N's untouched.
 
-    This function detects and strips runs of N's from both the ends
-    of each read (any length >= 1), leaving internal N's untouched.
-    Internally reuses `homopolymer_nucleotide_trimming` under the hood
-    configured for N bases.
+    Implemented as homopolymer_nucleotide_trimming() with base "N" at both
+    ends and a minimum run length of 1.
 
     Args:
         sequence_arr (numpy.ndarray): (n_reads, read_length) array of
@@ -1331,6 +1507,8 @@ def n_end_trimming(sequence_arr, padding_mask_bool, chunk_padding_bool, row_tild
             chunk isn't padded.
         chunk_padding_bool (bool): Whether sequence_arr contains padded
             (unequal-length) reads.
+        row_tilde_count (numpy.ndarray | int): (n_reads,) count of padding
+            bytes per read, used when chunk_padding_bool is True.
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
@@ -1341,33 +1519,30 @@ def n_end_trimming(sequence_arr, padding_mask_bool, chunk_padding_bool, row_tild
 
 def cut_set_ends(sequence_arr, chunk_padding_bool, row_tilde_count, cut_both, cut_start, cut_end):
     """
-    Produces fixed, user-specified trim boundaries applied uniformly to
-    every read (e.g. hard-trimming a known number of adapter/primer bases
-    off each end, regardless of quality).
+    Set-length end trimming: remove a fixed number of bases from each end of
+    every read, regardless of sequence or quality (e.g. to hard-trim a known
+    primer or a biased first/last few bases).
 
-    `cut_both` sets a symmetric default trim for both ends, but is overridden
-    on either side individually if `cut_start` and/or `cut_end` are also
-    given (nonzero) — so a user can specify a general trim amount while
-    still customizing one end specifically. A value of 0 for `cut_start` or
-    `cut_end` is treated as "not given" and falls back to `cut_both`, not
-    as an explicit request to trim nothing off that end.
+    `cut_start` and `cut_end` set the trim for their own end. A value of 0
+    means "not given" and falls back to `cut_both`, so an explicit 0 cannot
+    override a nonzero `cut_both`. If the two cuts meet or cross, the read's
+    window becomes empty and the read is discarded downstream.
 
-    Resulting boundaries are clamped to a minimum of 0 — if the requested
-    trim would push a boundary negative (e.g. `cut_end` larger than the
-    read, or a left boundary computed past the right boundary), it is
-    floored at 0 instead.
+    For equal-length chunks, the boundaries are clamped to
+    [0, read_length]. For padded chunks, the boundaries are computed from
+    each read's real length and are not clamped; a negative right boundary
+    has the same effect (the read is discarded).
 
     Args:
         sequence_arr (numpy.ndarray): (n_reads, read_length) array of
             per-base ASCII sequence codes, used only for its shape.
         chunk_padding_bool (bool): Whether sequence_arr contains padded
             (unequal-length) reads.
-        row_tilde_count (numpy.ndarray): (n_reads,) count of padding bytes
-            per read, used to recover each read's real length when
+        row_tilde_count (numpy.ndarray | int): (n_reads,) count of padding
+            bytes per read, used to recover each read's real length when
             chunk_padding_bool is True.
-        cut_both (int): Number of bases to trim off both ends. Used as a
-            fallback for any side left at 0 (i.e. not given explicitly)
-            via cut_start/cut_end.
+        cut_both (int): Number of bases to trim off both ends. Used for any
+            end whose specific value is 0.
         cut_start (int): Number of bases to trim from the 5' end. Takes
             priority over cut_both if nonzero.
         cut_end (int): Number of bases to trim from the 3' end. Takes
@@ -1376,7 +1551,7 @@ def cut_set_ends(sequence_arr, chunk_padding_bool, row_tilde_count, cut_both, cu
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
             each of shape (n_reads,), giving the left and right trim
-            boundaries per read, clamped to [0, read_length].
+            boundaries per read.
     """
     n_reads, length = sequence_arr.shape
     cut_start = cut_start if cut_start != 0 else cut_both
@@ -1395,14 +1570,19 @@ def cut_set_ends(sequence_arr, chunk_padding_bool, row_tilde_count, cut_both, cu
 
 def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, row_tilde_count, slider_quality, slider_window, slider_step):
     """
-    Determines per-read trim boundaries using a sliding-window quality scan,
-    finding the longest (and highest-average-quality, as tiebreaker) stretch
-    of the read where every window of `slider_window` bases has a mean
-    quality above `slider_quality`.
+    Sliding-window quality trimming: keep the best stretch of each read in
+    which every window passes the quality threshold.
 
-    Rather than trimming only from the ends inward, it identifies the best
-    surviving internal stretch of acceptable quality and reports its
-    boundaries.
+    Windows of `slider_window` bases start every `slider_step` positions
+    (the last possible window is always included). A window fails if its
+    mean quality is below `slider_quality`. Every base covered by at least
+    one failing window is marked bad, and the longest run of good bases is
+    kept, with ties broken by the higher mean quality. Because the kept
+    stretch can lie in the middle of the read, both ends can be trimmed at
+    once, and after a mid-read quality drop the longer side survives.
+
+    Reads shorter than one window are not trimmed. In padded chunks,
+    windows overlapping padding count as failing.
 
     Args:
         quality_arr (numpy.ndarray): (n_reads, read_length) array of
@@ -1411,20 +1591,19 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
             (unequal-length) reads.
         padding_mask_bool (numpy.ndarray | None): (n_reads, read_length)
             boolean mask marking right-padding positions, or None if the
-            chunk isn't padded. Padded positions are always treated as
-            failing windows.
-        row_tilde_count (numpy.ndarray | None): (n_reads,) count of padding
+            chunk isn't padded.
+        row_tilde_count (numpy.ndarray | int): (n_reads,) count of padding
             bytes per read, used to recover each read's real length when
             chunk_padding_bool is True.
-        slider_quality (int): Minimum acceptable mean quality within a window.
+        slider_quality (int): Minimum mean quality for a window to pass.
         slider_window (int): Number of bases per sliding window.
         slider_step (int): Step size between successive window start positions.
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
-            each of shape (n_reads,), giving the best surviving
-            [left, right) region per read. Reads with no failing windows keep
-            their full length; reads that fail everywhere get a zero-length region.
+            each of shape (n_reads,), giving the kept [left, right) region
+            per read. Reads without failing windows keep their full length;
+            reads in which every base is bad get an empty region (0, 0).
     """
     n_reads, length = quality_arr.shape
 
@@ -1525,10 +1704,26 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
 
     return left_cutoffs, right_cutoffs
 
-def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_tilde_count_1, chunk_padding_bool_2, row_tilde_count_2, min_overlap=30, max_mismatch=5, max_mismatch_frac=0.05, prefix_length=30):
+def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_tilde_count_1, chunk_padding_bool_2, row_tilde_count_2, min_overlap, max_mismatch, max_mismatch_frac):
     """
-    For each read pair, finds the insert size I where R1[:I] == revcomp(R2[:I])
-    and at least one mate reads past I into adapter.
+    Overlap-based adapter trimming for read pairs, independent of the
+    adapter sequence.
+
+    When the DNA insert is shorter than the reads, both mates read through
+    into adapter. For a pair with insert size I, the first I bases of R1
+    then equal the reverse complement of the first I bases of R2. For every
+    candidate I from `min_overlap` upwards (only sizes that both mates cover
+    and that at least one mate reads past), these two I-base regions are
+    compared, ignoring positions where either base is N. An insert size is
+    accepted if it has at most `max_mismatch` mismatches, a mismatch
+    fraction of at most `max_mismatch_frac` percent, and at least
+    `min_overlap` informative (non-N) positions. If several insert sizes
+    are accepted, the one with the lowest mismatch fraction wins (ties go to
+    the larger insert). Both mates are then cut at I.
+
+    As a speed-up, the first 3 * max_mismatch + 1 overlap positions are
+    compared first, and pairs that already exceed `max_mismatch` there are
+    skipped. This does not change the result.
 
     Args:
         seq_arr_1 (numpy.ndarray): (n_reads, length_1) int8 ASCII array of R1.
@@ -1543,20 +1738,21 @@ def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_til
         min_overlap (int): Shortest insert size tested; also the minimum number
             of informative (non-N) bases an accepted overlap must contain.
         max_mismatch (int): Maximum mismatches allowed in the overlap.
-        max_mismatch_frac (float): Maximum fraction of informative (non-N)
-            overlap bases that may mismatch.
-        prefix_length (int): Overlap bases checked first; a pair with more than
-            max_mismatch mismatches there is rejected without comparing the rest.
-            Only affects speed, never the result.
+        max_mismatch_frac (float): Maximum percentage (0-100) of informative
+            overlap positions that may mismatch.
 
     Returns:
         tuple[tuple[numpy.ndarray, numpy.ndarray], tuple[numpy.ndarray, numpy.ndarray]]:
             ((left_cutoffs_1, right_cutoffs_1), (left_cutoffs_2, right_cutoffs_2)),
             each of shape (n_reads,). Left cutoffs are always 0 (3'-end trimming
-            only, dtype int8); right cutoffs (int32) are the insert size where an
-            adapter-containing overlap was found, otherwise the read's real length.
+            only, dtype int8); right cutoffs (int32) are the accepted insert
+            size, or the read's real length if no overlap was accepted.
+
+    Raises:
+        ValueError: If seq_arr_1 and seq_arr_2 have different numbers of rows.
     """
     prefix_length = 3 * max_mismatch + 1
+    max_mismatch_frac = max_mismatch_frac / 100
     comp = np.zeros(128, dtype=np.int8)
     for a, b in zip(b"ACGTN", b"TGCAN"):
         comp[a] = b
@@ -1632,30 +1828,34 @@ def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_til
 
 def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_sequences, mismatches):
     """
-    Determines per-read trim boundaries to remove specific adapter sequences.
-    For each read, finds the earliest position where any provided adapter
-    sequence appears (as an exact substring if mismatches <= 0, or as an
-    approximate match allowing up to `mismatches` substitutions if
-    mismatches > 0, via vectorized Hamming-distance search), and trims the
-    read at that position. 
+    Adapter trimming: cut each read at the earliest occurrence of any
+    adapter sequence.
+
+    For each read, the earliest position where any of the adapters occurs is
+    found, and everything from that position onwards is removed (3'-end
+    trimming). With mismatches == 0, exact substring search is used. With
+    mismatches > 0, a vectorized Hamming-distance search allows up to that
+    many substitutions (no insertions or deletions). The whole adapter must
+    lie within the read, so partial adapters at the very 3' end are not
+    detected (for paired reads, overlap trimming can catch those).
+
     Args:
         sequence_arr (numpy.ndarray): (n_reads, read_length) array of
-            per-base ASCII sequence codes (uint8).
+            per-base ASCII sequence codes (int8).
         chunk_padding_bool (bool): Whether sequence_arr contains padded
             (unequal-length) reads.
-        row_tilde_count (numpy.ndarray | None): (n_reads,) count of padding
+        row_tilde_count (numpy.ndarray | int): (n_reads,) count of padding
             bytes per read, used to keep matches within each read's real
             length when chunk_padding_bool is True.
-        adapter_sequences (list[bytes]): List of adapter byte-sequences to
-            search for. 
-        mismatches (int): Number of allowed mismatches (substitutions) when
-            searching for adapters. If = 0, uses exact substring matching.
-            If > 0, uses vectorized Hamming-distance fuzzy matching
-            (substitutions only, no indels).
+        adapter_sequences (list[bytes]): Adapter sequences to search for.
+        mismatches (int): Number of allowed substitutions. 0 means exact
+            matching.
+
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
-            each of shape (n_reads,) and dtype int16, giving the left and right
-            trim boundaries per read. Left cutoffs are always 0 (3'-end trimming only).
+            each of shape (n_reads,). Left cutoffs are always 0 (int8);
+            right cutoffs (int32) are the adapter start position, or the
+            read's real length if no adapter was found.
     """
     n_reads, length = sequence_arr.shape
     if mismatches == 0:
@@ -1735,14 +1935,16 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
     
 def average_quality_batch(quality_arr, lefts, rights):
     """
-    Computes the mean quality score within a per-read [left, right) window,
+    Compute the mean quality score within a per-read [left, right) window,
     vectorized across all reads at once.
 
     Args:
         quality_arr (numpy.ndarray): (n_reads, read_length) array of
             per-base quality scores.
-        lefts (numpy.ndarray): Per-read left boundary (inclusive), shape (n_reads,).
-        rights (numpy.ndarray): Per-read right boundary (exclusive), shape (n_reads,).
+        lefts (numpy.ndarray | int): Per-read left boundary (inclusive),
+            shape (n_reads,), or a single value for all reads.
+        rights (numpy.ndarray | int): Per-read right boundary (exclusive),
+            shape (n_reads,), or a single value for all reads.
 
     Returns:
         numpy.ndarray: Per-read mean quality within [left, right), shape
@@ -1760,8 +1962,18 @@ def average_quality_batch(quality_arr, lefts, rights):
 
 def kmer_complexity_scan(sequence_arr, chunk_padding_bool, padding_mask_bool, kmer, low_complex_cutoff, allow_n):
     """
-    Counts k-mers per read and flags reads falling below the specified complexity
-    cutoff for removal.
+    Low-complexity filter: flag reads with too few distinct k-mers for removal.
+
+    For each k-mer length, the number of distinct k-mers in a read is divided
+    by the maximum possible number, min(number of k-mer windows,
+    alphabet_size ** k). A read fails if this ratio is below
+    `low_complex_cutoff` percent for any of the k-mer lengths. Failing reads
+    get an empty window; passing reads are not trimmed.
+
+    Bases are encoded with 3 bits each, which limits k to 21 (63 bits). The
+    alphabet size is 5 (A, C, G, T, N) when `allow_n` is True, and 4
+    otherwise. In padded chunks, k-mer windows overlapping padding are
+    excluded from both the distinct count and the maximum.
 
     Args:
         sequence_arr (numpy.ndarray): A 2D array of ASCII sequence codes
@@ -1770,22 +1982,23 @@ def kmer_complexity_scan(sequence_arr, chunk_padding_bool, padding_mask_bool, km
             (unequal-length) reads.
         padding_mask_bool (numpy.ndarray | None): (n_reads, length) boolean
             mask marking right-padding positions, or None if the chunk
-            isn't padded. K-mer windows overlapping padding are excluded.
-        kmer (int | str | iterable): The length or lengths of the k-mers to evaluate.
-        low_complex_cutoff (float): The percentage threshold of unique k-mers 
-            relative to the maximum possible windows. If the ratio falls below 
-            this value, the read is flagged as low complexity.
-        allow_n (bool): If True, encodes 'N' using a 3-bit system (base-8); 
-            if False, uses a 2-bit system strictly for 'A', 'C', 'G', and 'T' (base-4).
+            isn't padded.
+        kmer (int | str | iterable): The k-mer length(s) to evaluate. A
+            string may contain comma-separated values, e.g. "4,6".
+        low_complex_cutoff (float): Minimum percentage of distinct k-mers,
+            relative to the maximum possible, required to pass.
+        allow_n (bool): If True, N is counted as a fifth letter of the
+            alphabet.
 
     Returns:
-        tuple[numpy.ndarray, numpy.ndarray]: A tuple containing two 1D NumPy arrays of dtype `np.int32`:
-            - First array: An array of zeros of shape (n_reads,) acting as primary status flags.
-            - Second array: An array of shape (n_reads,) where complex reads retain their 
-              original length value and low-complexity reads are set to 0.
+        tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
+            each of shape (n_reads,). Left cutoffs are all 0 (int8); right
+            cutoffs (int32) are the chunk's row width for passing reads and
+            0 for low-complexity reads.
 
     Raises:
-        ValueError: If any chosen `kmer` length is greater than the sequence `length`.
+        ValueError: If any k-mer length is greater than the chunk's row
+            width, or greater than 21.
     """
     n_reads, length = sequence_arr.shape
     if isinstance(kmer, str):
@@ -1876,15 +2089,24 @@ def kmer_complexity_scan(sequence_arr, chunk_padding_bool, padding_mask_bool, km
 ##### Unpaired reads workflow functions #####
 def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_output, gzip_level, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, parameters):
     """
-    Validates, quality-trims, and length/quality-filters a chunk of unpaired
-    FASTQ reads.
+    Validate, trim, filter and format one chunk of unpaired FASTQ reads.
 
-    Combines multiple independent trimming strategies (quality-threshold end
-    trimming, sliding-window quality trimming, poly-G/poly-X tail trimming,
-    adapter trimming, fixed-position end trimming, N-end trimming, and k-mer
-    complexity scanning) by taking the most conservative (innermost) boundary
-    from each, then discards reads that fall outside the acceptable length or
-    average-quality range after trimming.
+    Steps:
+      1. Each record is checked with validate_fastq(); invalid records are
+         rejected.
+      2. If MGI conversion is enabled, headers are converted to Illumina
+         format and plus lines are reset to "+".
+      3. All enabled modules from build_pipeline() are run. Their windows
+         are merged by taking the largest left and smallest right boundary
+         per read (the most stringent result per end).
+      4. A read is kept if its merged window is non-empty, lies within the
+         output length limits, and (if set) has a mean quality of at least
+         minimum_average_qual_post.
+      5. Kept reads are cut to their window and, if requested, their
+         quality strings are re-encoded to parameters["phred_out"].
+
+    Rejected records are written untrimmed, with their original quality
+    encoding.
 
     Args:
         chunk (list[bytes]): FIELD_SEP-joined (header, sequence, plus,
@@ -1892,8 +2114,8 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
         phred_offset (int): Phred encoding offset (33 or 64).
         minimum_average_qual_post (float): Minimum acceptable mean quality
             after trimming. 0 disables this filter.
-        gzip_output (bool): If True, compresses output records with Isal gzip.
-        gzip_level (int): Isal gzip compression level (0-3).
+        gzip_output (bool): If True, compresses output records with isal gzip.
+        gzip_level (int): isal gzip compression level (0-3).
         min_length_output (int | None): Minimum acceptable read length
             after trimming, as an absolute count.
         max_length_output (int | None): Maximum acceptable read length
@@ -1904,20 +2126,23 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
         max_length_output_perc (int | None): Maximum acceptable read length
             after trimming, as a percentage of the read's input length.
             Ignored if max_length_output is given.
-        write_rejected (bool): If True, also collect rejected/discarded
-            records (invalid on input or filtered out after trimming).
-        parameters (dict): Dictionary of configuration parameters, used to
-            build the trimming pipeline and to resolve N-filtering,
-            MGI-to-Illumina header conversion, and Phred re-encoding.
+        write_rejected (bool): If True, also collect rejected records
+            (invalid on input or filtered out after trimming).
+        parameters (dict): Run parameters, used to build the trimming
+            pipeline and for N-filtering, input length limits,
+            MGI-to-Illumina header conversion and Phred re-encoding.
 
     Returns:
         tuple[bytes, int, int, bytes | list]: A tuple containing:
-            - Formatted and optionally gzipped FASTQ records for surviving reads.
+            - Kept records as FASTQ text (gzip-compressed if gzip_output).
             - Count of kept reads.
             - Count of rejected reads (invalid input records plus records
               filtered out after trimming).
-            - Rejected records: optionally gzipped bytes if write_rejected
-              is True, otherwise an empty list.
+            - Rejected records as FASTQ text (gzip-compressed if
+              gzip_output) if write_rejected is True, otherwise an empty list.
+
+    Raises:
+        RuntimeError: If gzip compression fails.
     """
     valid_headers = []
     valid_sequences = []
@@ -2013,18 +2238,35 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
 
 def generate_unpaired_tasks(filepaths, chunk_size, parameters, filetype = None):
     """
-    Lazily yields individual chunks alongside their filepaths and precomputed parameters,
-    allowing a single global pool to process chunks from multiple files concurrently.
+    Lazily split unpaired or interleaved FASTQ files into worker tasks.
+
+    For each file, logs basic file information, detects the Phred offset
+    once, and then yields one task per chunk, so that a single global pool
+    can process chunks from many files. Logs the processing time and rate
+    once a file is exhausted.
+
+      - filetype "unpaired": each task holds ``chunk_size`` records and has
+        type "unpaired".
+      - filetype "interleaved": each task holds 2 * ``chunk_size`` records,
+        split alternately into R1 (records 1, 3, 5, ...) and R2 (records
+        2, 4, 6, ...). The task has type "paired" with file1 == file2 ==
+        filepath, so it is processed exactly like a two-file pair.
+
     Args:
-        filepaths (list[str]): List of paths to unpaired or interleaved FASTQ files.
-        chunk_size (int): Number of reads per chunk (record pairs for
-            interleaved files, so 2*chunk_size records are read at once).
-        parameters (dict): Dictionary of configuration parameters.
-        filetype (str | None): Either "unpaired" or "interleaved", selecting
-            how records are chunked and tagged in the yielded tasks.
+        filepaths (list[str]): Paths to unpaired or interleaved FASTQ files.
+        chunk_size (int): Number of reads per chunk (read pairs for
+            interleaved files).
+        parameters (dict): Run parameters (Phred detection settings, and
+            the gzip and discard_singles settings copied into paired tasks).
+        filetype (str | None): "unpaired" or "interleaved".
+
     Yields:
-        dict: A task dictionary containing the task type, filepath, chunk data,
-            and precomputed metadata.
+        dict: A task dictionary with the task type, filepath(s), chunk data
+            and precomputed metadata (Phred offset(s), and for paired tasks
+            the gzip and discard_singles settings).
+
+    Raises:
+        TypeError: If filetype is neither "unpaired" nor "interleaved".
     """
     for filepath in filepaths:
         start_time = time.monotonic()
@@ -2104,14 +2346,18 @@ def generate_unpaired_tasks(filepaths, chunk_size, parameters, filetype = None):
                 
 def process_unpaired_task_flat(task, parameters):
     """
-    Worker wrapper for flat task queue execution on unpaired files.
+    Worker wrapper for an unpaired task: runs process_unpaired_chunk() on
+    the task's chunk and tags the result with the task type and filepath.
 
     Args:
-        task (dict): A task dictionary containing chunk data, filepaths, and metadata.
-        parameters (dict): Dictionary of configuration parameters.
+        task (dict): An "unpaired" task from generate_unpaired_tasks().
+        parameters (dict): Run parameters.
 
     Returns:
-        tuple: A tuple containing (type, filepath, chunk_results, kept, rejected).
+        tuple: (type, filepath, chunk_results, kept, rejected, rejected_reads),
+            where chunk_results and rejected_reads are the kept and rejected
+            record data, and kept and rejected are counts (see
+            process_unpaired_chunk()).
     """
     chunk_results, kept, rejected, rejected_reads = process_unpaired_chunk(
         chunk=task["chunk"],
@@ -2131,18 +2377,23 @@ def process_unpaired_task_flat(task, parameters):
 ##### Paired reads workflow funtions #####
 def process_paired_task_flat(task, parameters):
     """
-    Worker wrapper for flat task queue execution on paired-end files.
+    Worker wrapper for a paired task (two-file or interleaved): runs
+    process_paired_chunk() on the task's R1/R2 chunks and tags the result
+    with the task type and filepaths.
 
     Args:
-        task (dict): A task dictionary containing chunks for R1 and R2, filepaths, and metadata.
-        parameters (dict): Dictionary of configuration parameters.
+        task (dict): A "paired" task from generate_paired_tasks() or
+            generate_unpaired_tasks(filetype="interleaved").
+        parameters (dict): Run parameters.
 
     Returns:
-        tuple: A tuple containing (type, file1, file2, paired_out_1, paired_out_2,
+        tuple: (type, file1, file2, paired_out_1, paired_out_2,
             R1_singles_out, R2_singles_out, num_paired, num_R1_singles,
-            num_R2_singles, rejected_1, rejected_2). R1 and R2 singleton
-            records and rejected counts are kept separate since each mate
-            is trimmed and filtered independently before reconciliation.
+            num_R2_singles, rejected_1, rejected_2, rejected_R1, rejected_R2).
+            rejected_1/rejected_2 are rejected-read counts and
+            rejected_R1/rejected_R2 the rejected record data, kept separate
+            per mate since each mate is trimmed and filtered independently
+            before reconciliation (see process_paired_chunk()).
     """
     file1 = task["file1"]
     file2 = task["file2"]
@@ -2159,17 +2410,29 @@ def process_paired_task_flat(task, parameters):
 
 def generate_paired_tasks(files, chunk_size, parameters):
     """
-    Lazily yields individual paired-end chunks alongside their filepaths and precomputed parameters,
-    allowing a single global pool to process chunks from multiple files concurrently.
+    Lazily split paired-end file pairs into worker tasks.
+
+    For each (R1, R2) pair, logs basic file information, detects the Phred
+    offset of each file once, and then yields one task per chunk of
+    ``chunk_size`` read pairs, so that a single global pool can process
+    chunks from many files. Mates are matched by position here; within a
+    chunk they are reconciled by base read ID in process_paired_chunk().
+    Logs the processing time and rate once both files are exhausted.
 
     Args:
-        files (list[tuple[str, str]]): List of (file1, file2) path tuples for paired FASTQ files.
+        files (list[tuple[str, str]]): (file1, file2) path tuples for
+            paired FASTQ files.
         chunk_size (int): Number of read pairs per chunk.
-        parameters (dict): Dictionary of configuration parameters.
+        parameters (dict): Run parameters (Phred detection settings, and
+            the gzip and discard_singles settings copied into each task).
 
     Yields:
-        dict: A task dictionary containing the task type, filepaths, chunk data,
-            and precomputed metadata.
+        dict: A "paired" task dictionary with the filepaths, R1 and R2
+            chunk data and precomputed metadata.
+
+    Raises:
+        ValueError: If one file of a pair runs out of reads before the
+            other (different read counts, e.g. a truncated file).
     """
     for pair in files:
         file1, file2 = pair
@@ -2241,27 +2504,34 @@ def generate_paired_tasks(files, chunk_size, parameters):
             
 def prepare_reads(records, phred_offset, write_rejected, parameters):
     """
-    Validates one mate's batch of FASTQ records and builds the arrays every
+    Validate one mate's batch of FASTQ records and build the arrays every
     later step needs. Runs once per mate per chunk.
+
+    Invalid records (see validate_fastq()) are rejected. If MGI conversion
+    is enabled, the valid records' headers are converted to Illumina format
+    and their plus lines reset to "+".
 
     Args:
         records (list[bytes]): FIELD_SEP-joined (header, sequence, plus,
             quality) records, as yielded by `lazy_fastq`.
         phred_offset (int): Phred encoding offset (33 or 64).
         write_rejected (bool): If True, also collect invalid records.
-        parameters (dict): Configuration parameters (N-filtering, input
-            length limits, MGI-to-Illumina header conversion).
+        parameters (dict): Run parameters (N-filtering, input length
+            limits, MGI-to-Illumina header conversion).
 
     Returns:
-        dict | None: None if no record passed validation, otherwise a batch with:
-            - "valid_reads" (numpy.ndarray): record index of each array row.
-            - "headers", "sequences", "pluses", "qualities" (list[bytes]):
-              the valid records' fields, one entry per array row.
-            - "sequence_arr", "quality_arr", "chunk_padding_bool",
-              "row_tilde_count", "padding_mask_bool", "raw_lengths":
-              outputs of seq_to_array / qual_to_array.
-        int: Count of records rejected during validation.
-        list[bytes]: Rejected records, populated only if write_rejected is True.
+        tuple[dict | None, int, list[bytes]]:
+            - The batch, or None if no record passed validation. The batch
+              is a dict with:
+                - "valid_reads" (numpy.ndarray): index in ``records`` of the
+                  record in each array row.
+                - "headers", "sequences", "pluses", "qualities" (list[bytes]):
+                  the valid records' fields, one entry per array row.
+                - "sequence_arr", "quality_arr", "chunk_padding_bool",
+                  "row_tilde_count", "padding_mask_bool", "raw_lengths":
+                  outputs of seq_to_array() / qual_to_array().
+            - Count of records rejected during validation.
+            - Rejected records, populated only if write_rejected is True.
     """
     valid_reads = []
     valid_headers = []
@@ -2307,20 +2577,21 @@ def prepare_reads(records, phred_offset, write_rejected, parameters):
 
 def paired_overlap_cutoffs(batch_1, batch_2, parameters):
     """
-    Runs adapter_trimming_overlap on the rows of two prepared batches whose
-    records are valid in both mates, and returns each mate's cutoffs aligned
-    to its own batch rows.
+    Run adapter_trimming_overlap() on the reads of a chunk that are valid in
+    both mates, and map the results back onto each mate's own batch rows.
 
     Args:
-        batch_1, batch_2 (dict): Outputs of prepare_reads for R1 and R2 of the
-            same chunk (record k of one is the mate of record k of the other).
-        parameters (dict): Configuration parameters (currently unused; the
-            overlap settings are adapter_trimming_overlap's defaults).
+        batch_1 (dict): Output of prepare_reads() for R1 of the chunk.
+        batch_2 (dict): Output of prepare_reads() for R2 of the same chunk
+            (record k of one is the mate of record k of the other). Neither
+            batch may be None.
+        parameters (dict): Run parameters; uses "overlap_min_length",
+            "overlap_mismatches" and "overlap_portion_mismatch".
 
     Returns:
-        tuple: ((left_1, right_1), (left_2, right_2)), one entry per batch row.
-            Rows without a valid mate get left 0 and right int32 max, so the
-            other modules decide their trimming alone.
+        tuple: ((left_1, right_1), (left_2, right_2)), one entry per batch
+            row. Rows without a valid mate get left 0 and right int32 max,
+            so the other modules decide their trimming alone.
     """
     no_cut = np.iinfo(np.int32).max
     n_1, n_2 = len(batch_1["headers"]), len(batch_2["headers"])
@@ -2328,7 +2599,6 @@ def paired_overlap_cutoffs(batch_1, batch_2, parameters):
     right_1 = np.full(n_1, no_cut, dtype=np.int32)
     left_2 = np.zeros(n_2, dtype=np.int32)
     right_2 = np.full(n_2, no_cut, dtype=np.int32)
-    # records valid in both mates, and where each sits in its own batch
     _, rows_1, rows_2 = np.intersect1d(batch_1["valid_reads"], batch_2["valid_reads"], assume_unique=True, return_indices=True)
     if rows_1.size == 0:
         return (left_1, right_1), (left_2, right_2)
@@ -2337,16 +2607,24 @@ def paired_overlap_cutoffs(batch_1, batch_2, parameters):
     pad_1, pad_2 = batch_1["chunk_padding_bool"], batch_2["chunk_padding_bool"]
     tilde_1 = batch_1["row_tilde_count"][rows_1] if pad_1 else 0
     tilde_2 = batch_2["row_tilde_count"][rows_2] if pad_2 else 0
-    (l1, r1), (l2, r2) = adapter_trimming_overlap(seq_arr_1, seq_arr_2, pad_1, tilde_1, pad_2, tilde_2)
+    (l1, r1), (l2, r2) = adapter_trimming_overlap(seq_arr_1, seq_arr_2, pad_1, tilde_1, pad_2, tilde_2, min_overlap = parameters["overlap_min_length"], max_mismatch = parameters["overlap_mismatches"], max_mismatch_frac = parameters["overlap_portion_mismatch"])
     left_1[rows_1], right_1[rows_1] = l1, r1
     left_2[rows_2], right_2[rows_2] = l2, r2
-    return (left_1, right_1), (left_2, right_2)
-
+    return (left_1, right_1), (left_2, right_2)    
 
 def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, overlap_cutoffs, parameters):
     """
-    Trims and length/quality-filters one prepared batch and formats the
-    survivors, keyed by their base (mate-independent) read ID.
+    Trim and length/quality-filter one prepared batch (one mate of a paired
+    chunk) and format the survivors, keyed by their base (mate-independent)
+    read ID.
+
+    Runs all enabled modules from build_pipeline(), plus the overlap
+    cutoffs if given, merges their windows (largest left, smallest right
+    boundary), and applies the same keep rules as process_unpaired_chunk():
+    non-empty window, within the output length limits, and (if set) mean
+    quality of at least minimum_average_qual_post. Kept reads are cut to
+    their window and optionally Phred re-encoded; rejected records are
+    collected untrimmed.
 
     Args:
         batch (dict | None): Output of prepare_reads (None = nothing valid).
@@ -2361,12 +2639,14 @@ def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_outp
         write_rejected (bool): If True, also collect filtered-out records.
         overlap_cutoffs (tuple | None): (left, right) per batch row from
             paired_overlap_cutoffs, or None.
-        parameters (dict): Configuration parameters (pipeline, Phred re-encoding).
+        parameters (dict): Run parameters (pipeline, Phred re-encoding).
 
     Returns:
-        tuple[dict[bytes, bytes], int, list[bytes]]: Survivors by base ID,
-            count of records filtered out here, and the rejected records
-            (populated only if write_rejected is True).
+        tuple[dict[bytes, bytes], int, list[bytes]]:
+            - Survivors as {base read ID: formatted FASTQ record}, in batch
+              order. If two survivors share a base ID, only the last is kept.
+            - Count of records filtered out here.
+            - Rejected records (populated only if write_rejected is True).
     """
     rejected_reads = []
     rejected = 0
@@ -2441,39 +2721,63 @@ def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_outp
         
 def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gzip_level, discard_singles, parameters):
     """
-    Trims and filters one paired chunk of R1/R2 reads, then reconciles the
-    two mates by base read ID to determine which reads survive as intact
-    pairs versus as orphaned singletons.
+    Trim and filter one chunk of paired reads, then sort the survivors into
+    intact pairs and orphaned singletons.
+
+    Both mates are validated (prepare_reads()), optionally overlap-trimmed
+    as a pair (paired_overlap_cutoffs(), when "overlap_filter_flag" is set),
+    and then trimmed and filtered independently (finish_reads()). Survivors
+    are matched by base read ID: records whose mate also survived are output
+    as pairs (in R1 order), the others as singletons.
+
+    If parameters["interleaved_out"] is True (always the case with
+    --stdout), pairs are written as alternating R1/R2 records into the first
+    paired output, and both mates' rejected records are merged into the
+    first rejected output; the second outputs are then empty.
 
     Args:
         chunks (tuple[list, list]): (chunk1, chunk2) — record lists for R1
             and R2 respectively, covering the same reads in the same order.
         phred_offset_1 (int): Phred encoding offset (33 or 64) for R1.
         phred_offset_2 (int): Phred encoding offset (33 or 64) for R2.
-        gzip_output (bool): If True, compresses output records with Isal gzip.
-        gzip_level (int): Isal gzip compression level (0-3).
-        parameters (dict): Dictionary of configuration parameters, including
-            `stdout`/`interleaved_out` (which route both mates' surviving
-            reads into the R1 output as interleaved records) and
-            `write_rejected`.
+        gzip_output (bool): If True, compresses output records with isal gzip.
+        gzip_level (int): isal gzip compression level (0-3).
+        discard_singles (bool): If True, singleton records are dropped
+            (their counts are still reported).
+        parameters (dict): Run parameters, including "interleaved_out",
+            "write_rejected", "overlap_filter_flag" and all module settings.
 
     Returns:
-        tuple[bytes, bytes, bytes, bytes, int, int, int, int, int]: A tuple containing:
-            - Surviving R1 records whose R2 mate also survived (optionally gzipped).
-            - Surviving R2 records whose R1 mate also survived (optionally gzipped).
-            - Surviving R1 records whose mate did not survive, treated as unpaired singletons (optionally gzipped).
-            - Surviving R2 records whose mate did not survive, treated as unpaired singletons (optionally gzipped).
-            - Count of surviving read pairs.
-            - Count of surviving R1 singleton reads.
-            - Count of surviving R2 singleton reads.
-            - Count of R1 reads rejected during trimming.
-            - Count of R2 reads rejected during trimming.
+        tuple: An 11-element tuple containing:
+            - paired_out_1 (bytes): R1 records of surviving pairs (all pair
+              records, alternating R1/R2, when interleaving).
+            - paired_out_2 (bytes): R2 records of surviving pairs (empty when
+              interleaving).
+            - singles_out_1 (bytes): Surviving R1 records whose mate did not
+              survive (empty if discard_singles).
+            - singles_out_2 (bytes): Surviving R2 records whose mate did not
+              survive (empty if discard_singles).
+            - num_paired (int): Count of surviving read pairs.
+            - num_R1_singles (int): Count of surviving R1 singletons.
+            - num_R2_singles (int): Count of surviving R2 singletons.
+            - rejected_1 (int): Count of rejected R1 reads (invalid plus
+              filtered out).
+            - rejected_2 (int): Count of rejected R2 reads.
+            - rejected_R1 (bytes): Rejected R1 records, untrimmed (both
+              mates' rejected records when interleaving); empty unless
+              "write_rejected" is set.
+            - rejected_R2 (bytes): Rejected R2 records (empty when
+              interleaving).
+        Non-empty byte outputs are gzip-compressed when gzip_output is True.
+
+    Raises:
+        RuntimeError: If gzip compression fails.
     """
     chunk1, chunk2 = chunks
     batch_1, invalid_1, rejected_R1 = prepare_reads(chunk1, phred_offset_1, write_rejected = parameters["write_rejected"], parameters = parameters)
     batch_2, invalid_2, rejected_R2 = prepare_reads(chunk2, phred_offset_2, write_rejected = parameters["write_rejected"], parameters = parameters)
     overlap_1 = overlap_2 = None
-    if parameters["overlap_filter_flag"] and batch_1 is not None and batch_2 is not None:
+    if parameters["overlap_filter_flag"]:
         overlap_1, overlap_2 = paired_overlap_cutoffs(batch_1, batch_2, parameters)
     survivors_1, filtered_1, filtered_R1 = finish_reads(batch_1, phred_offset_1, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_1, parameters = parameters)
     survivors_2, filtered_2, filtered_R2 = finish_reads(batch_2, phred_offset_2, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_2, parameters = parameters)
@@ -2502,22 +2806,19 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
         singles_out_1 = b""
         singles_out_2 = b""
         
-    interleave = parameters["stdout"] or parameters["interleaved_out"]
+    interleave = parameters["interleaved_out"]   # see point 4
     if interleave:
         paired_out_1 = b"".join(r1 + r2 for r1, r2 in zip(paired_out_1, paired_out_2))
-        paired_out_1 += b"".join(singles_out_1) + b"".join(singles_out_2)
+        paired_out_2 = b""
         rejected_R1 = b"".join(rejected_R1) + b"".join(rejected_R2)
         rejected_R2 = b""
-        paired_out_2 = b""
-        singles_out_1 = b""
-        singles_out_2 = b""
     else:
         paired_out_1 = b"".join(paired_out_1)
         paired_out_2 = b"".join(paired_out_2)
-        rejected_R1 = b"".join(x.encode("utf-8") if isinstance(x, str) else x for x in rejected_R1)
-        rejected_R2 = b"".join(x.encode("utf-8") if isinstance(x, str) else x for x in rejected_R2)
-        singles_out_1 = b"".join(singles_out_1)
-        singles_out_2 = b"".join(singles_out_2)
+        rejected_R1 = b"".join(rejected_R1)
+        rejected_R2 = b"".join(rejected_R2)
+    singles_out_1 = b"".join(singles_out_1)
+    singles_out_2 = b"".join(singles_out_2)
 
     if gzip_output:
         try:
@@ -2540,13 +2841,14 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
 ##### Input handler functions #####
 def worker_initilizer(parameters):
     """
-    Pool initializer: runs once per worker process at startup, storing
-    `parameters` in a worker-global so it doesn't need to be pickled and
-    sent again with every individual task.
+    Pool initializer: runs once in each worker process at startup.
+
+    Makes the worker ignore SIGINT, so Ctrl+C is handled by the main
+    process only, and stores `parameters` in the WORKER_PARAMETERS global,
+    so it is pickled and sent once per worker instead of with every task.
 
     Args:
-        parameters (dict): Configuration parameters, pickled and sent to
-            each worker exactly once when the pool spins it up.
+        parameters (dict): Run parameters.
     """
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     global WORKER_PARAMETERS
@@ -2554,18 +2856,17 @@ def worker_initilizer(parameters):
 
 def unified_worker(task):
     """
-    Routes a processing task to the appropriate handler based on its type.
-    Serves as a dispatcher for the multiprocessing pool, examining the task's
-    type field and delegating to either paired-end or unpaired read processing.
+    Pool entry point: route a task to the paired or unpaired handler, using
+    the run parameters stored by worker_initilizer().
 
     Args:
-        task (dict): A task dictionary containing at minimum:
-            - type (str): Either "paired" or "unpaired", indicating which
-              processing workflow to apply.
-            - parameters (dict): Configuration parameters passed through to the handler.
+        task (dict): A task from generate_unpaired_tasks() or
+            generate_paired_tasks(). Its "type" field ("paired" or
+            "unpaired") selects the handler.
 
     Returns:
-        tuple: The return value from the appropriate handler function.
+        tuple: The result of process_paired_task_flat() or
+            process_unpaired_task_flat().
 
     Raises:
         ValueError: If the task type is unknown or missing.
@@ -2582,36 +2883,64 @@ def unified_worker(task):
 
 def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_files, output_dir, threads, chunk_size, show_progress, stdout, interleaved_out, write_rejected, discard_singles, parameters):
     """
-    Top-level orchestrator that separates input files into paired and
-    unpaired groups, sets up file writers, and runs the multiprocessing pool
-    workflow across all inputs.
+    Top-level orchestrator: sort the inputs, open the output files, and run
+    all chunks of all inputs through a single multiprocessing pool.
+
+    Steps:
+      1. Detect gzip compression of every input (fills GZIP_DETECTION).
+      2. Auto-sort ``unspecified_files`` into pairs, interleaved and
+         unpaired files (find_paired_files()) and merge them with the
+         explicitly given groups.
+      3. If show_progress is set, estimate the read count of every input
+         (count_reads_estimated()) and start a ProgressTracker.
+      4. Unless streaming to stdout, open the output files in output_dir.
+         Each paired or interleaved input gets a unique name prefix: the
+         common name of its two files (common_name_parts()), or the
+         interleaved file's name, with "_2", "_3", ... appended if the
+         prefix is already taken.
+      5. Stream chunks of all unpaired, then interleaved, then paired
+         inputs to the pool and write the results as they come back. At
+         most threads * 5 chunks are in flight at once, to bound memory
+         use. With parameters["ordered_output"], results are written in
+         input order. In test-run mode only the first ``threads`` chunks
+         of each input are processed.
+      6. Close all outputs; gzip outputs that received no data get a
+         valid, empty gzip member.
+
+    In stdout mode, only kept reads are written to stdout (for paired and
+    interleaved inputs, the interleaved pairs); no FASTQ files are opened.
 
     Args:
-        unspecified_files (list[str]): Files with unknown pairing status to auto-detect.
-        unpaired_files (list[str]): Explicitly provided unpaired input FASTQ files.
-        paired_files (list[tuple[str, str]]): Explicitly provided paired FASTQ file pairs.
-        interleaved_files (list[str]): Explicitly provided interleaved FASTQ files.
+        unspecified_files (list[str] | None): Files with unknown pairing
+            status, to auto-detect.
+        unpaired_files (list[str] | None): Explicitly provided unpaired
+            FASTQ files.
+        paired_files (list[tuple[str, str]] | None): Explicitly provided
+            (R1, R2) file pairs.
+        interleaved_files (list[str] | None): Explicitly provided
+            interleaved FASTQ files.
         output_dir (str): Directory to write output files to.
-        threads (int | None): Number of worker threads/processes for the pool.
-        chunk_size (int): Number of reads per processing chunk.
+        threads (int): Number of worker processes in the pool.
+        chunk_size (int): Number of reads (read pairs for paired and
+            interleaved inputs) per processing chunk.
         show_progress (bool): If True, renders a live progress bar to stderr.
         stdout (bool): If True, streams surviving reads to stdout instead
             of writing output files.
-        interleaved_out (bool): If True, interleaves surviving paired reads
-            into a single output file per pair instead of separate R1/R2 files.
-        write_rejected (bool): If True, also writes rejected/discarded reads
-            to file (ignored when stdout is True).
-        parameters (dict): Dictionary of configuration parameters.
+        interleaved_out (bool): If True, writes surviving pairs of each
+            paired or interleaved input interleaved into a single file,
+            instead of separate R1/R2 files.
+        write_rejected (bool): If True, also writes rejected reads to file.
+        discard_singles (bool): If True, no singleton files are opened for
+            paired and interleaved inputs.
+        parameters (dict): Run parameters.
 
     Returns:
-        dict: Mapping of file identifiers to their summary statistics.
-            For each unpaired file (keyed by its filepath), the value is
-            a dict with ``kept`` and ``rejected`` counts. For each paired
-            group (keyed by the pair's common filename prefix), the value
-            is a dict with ``kept_pairs``, ``kept_R1_singletons``,
-            ``kept_R2_singletons``, ``rejected_R1``, and ``rejected_R2``
-            counts, since each mate is trimmed and filtered independently
-            before reconciliation.
+        dict: Summary statistics per input. Unpaired files are keyed by
+            their filepath, with "kept" and "rejected" counts. Paired and
+            interleaved inputs are keyed by their name prefix, with
+            "kept_pairs", "kept_R1_singletons", "kept_R2_singletons",
+            "rejected_R1" and "rejected_R2" counts, since each mate is
+            trimmed and filtered independently before reconciliation.
     """
     for file in (unspecified_files or []):
         GZIP_DETECTION[file] = is_gz_file(file)
@@ -2654,9 +2983,14 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
             suffix = basename_file(file) + "_rejected"
             file_writing_handles[f"{file}_rejected"] = open_fastq_writer(f"{suffix}", output_dir, gzip_output=parameters["gzip_output"])
     pair_keys = {}
-    used_prefixes = set()
+    used_prefixes = {basename_file(f) for f in unpaired}
 
     def unique_prefix(base_prefix):
+        """
+        Return base_prefix, or base_prefix with the first free numeric
+        suffix (_2, _3, ...) if it is already used by another input, and
+        mark the returned prefix as used.
+        """
         prefix, n = base_prefix, 2
         while prefix in used_prefixes:
             prefix = f"{base_prefix}_{n}"
@@ -2664,21 +2998,34 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
         used_prefixes.add(prefix)
         return prefix
 
-    def open_pair_outputs(prefix):
+    def pair_output_keys(prefix):
+        """
+        Map each output role ("paired", "paired_1", "paired_2", "singles_1",
+        "singles_2", "rejected", "rejected_1", "rejected_2") to its file
+        handle key for one paired/interleaved input, depending on the
+        interleaved-output, discard-singles and write-rejected settings.
+        Returns an empty dict in stdout mode.
+        """
         if stdout:
-            return
+            return {}
         if interleaved_out:
-            suffixes = [""]
-            if write_rejected:
-                suffixes.append("_rejected")
+            keys = {"paired": f"{prefix}_interleaved"}
         else:
-            suffixes = ["_R1_paired", "_R2_paired"]
-            if not discard_singles:
-                suffixes += ["_R1_unpaired", "_R2_unpaired"]
-            if write_rejected:
-                suffixes += ["_R1_rejected", "_R2_rejected"]
-        for suffix in suffixes:
-            key = f"{prefix}{suffix}"
+            keys = {"paired_1": f"{prefix}_R1_paired", "paired_2": f"{prefix}_R2_paired"}
+        if not discard_singles:
+            keys["singles_1"] = f"{prefix}_R1_unpaired"
+            keys["singles_2"] = f"{prefix}_R2_unpaired"
+        if write_rejected:
+            if interleaved_out:
+                keys["rejected"] = f"{prefix}_rejected"
+            else:
+                keys["rejected_1"] = f"{prefix}_R1_rejected"
+                keys["rejected_2"] = f"{prefix}_R2_rejected"
+        return keys
+    
+    def open_pair_outputs(prefix):
+        """Open every output file one paired/interleaved input needs (see pair_output_keys)."""
+        for key in pair_output_keys(prefix).values():
             file_writing_handles[key] = open_fastq_writer(key, output_dir, gzip_output=parameters["gzip_output"])
 
     for file in interleaved:
@@ -2693,6 +3040,10 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
         open_pair_outputs(prefix)
 
     def unified_chunk_streamer():
+        """
+        Yield the tasks of all unpaired, then interleaved, then paired
+        inputs. In test-run mode, each input is limited to ``threads`` tasks.
+        """
         chunks_per_file = threads if parameters["testrun"] else None
         if unpaired:
             logger.info("Started processing unpaired files.")
@@ -2734,6 +3085,10 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
 
     backpressure = threading.Semaphore(threads * 5)
     def bounded_chunk_stream():
+        """
+        Yield tasks from chunk_stream, blocking while threads * 5 tasks are
+        still unprocessed (the semaphore is released for each result).
+        """
         for item in chunk_stream:
             backpressure.acquire()
             yield item
@@ -2764,30 +3119,20 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
                         if paired_out_1:
                             sys.stdout.buffer.write(paired_out_1)
                     else:
-                        if interleaved_out:
-                            if paired_out_1:
-                                file_writing_handles[common_prefix].write(paired_out_1)
-                            if write_rejected:
-                                if rejected_R1:
-                                    file_writing_handles[f"{common_prefix}_rejected"].write(rejected_R1)
-                        else:
-                            writes = [
-                                (f"{common_prefix}_R1_paired", paired_out_1),
-                                (f"{common_prefix}_R2_paired", paired_out_2),
-                            ]
-                            if not discard_singles:
-                                writes.extend([
-                                    (f"{common_prefix}_R1_unpaired", R1_singles_out),
-                                    (f"{common_prefix}_R2_unpaired", R2_singles_out)
-                                ])
-                            if write_rejected:
-                                writes.extend([
-                                    (f"{common_prefix}_R1_rejected", rejected_R1),
-                                    (f"{common_prefix}_R2_rejected", rejected_R2)
-                                ])
-                            for handle_key, records in writes:
-                                if records:
-                                    file_writing_handles[handle_key].write(records)
+                        payloads = {
+                            "paired": paired_out_1,
+                            "paired_1": paired_out_1,
+                            "paired_2": paired_out_2,
+                            "singles_1": R1_singles_out,
+                            "singles_2": R2_singles_out,
+                            "rejected": rejected_R1,
+                            "rejected_1": rejected_R1,
+                            "rejected_2": rejected_R2,
+                        }
+                        for role, handle_key in pair_output_keys(common_prefix).items():
+                            records = payloads[role]
+                            if records:
+                                file_writing_handles[handle_key].write(records)
                     file_stats[common_prefix]["kept_pairs"] += num_paired
                     file_stats[common_prefix]["kept_R1_singletons"] += num_R1_singles
                     file_stats[common_prefix]["kept_R2_singletons"] += num_R2_singles
@@ -2876,9 +3221,13 @@ def print_adapters():
 
 def print_full_auto_help(parser):
     """
-    Prints the effective settings --full-auto/-GO applies, grouped by the
-    parser's argument groups, using each argument's registered default
-    (or its full-auto override, where one exists).
+    Print the help for --full-auto/-GO (called for --help combined with
+    --full-auto): which options are still respected, and the options whose
+    value full-auto mode changes (FULL_AUTO_OVERRIDES), grouped by the
+    parser's argument groups. All other options use their regular defaults.
+
+    Args:
+        parser (argparse.ArgumentParser): The fully built Readzor parser.
     """
     print(
         "\n"
@@ -2906,33 +3255,49 @@ def print_full_auto_help(parser):
 
 def parse_args():
     """
-    Parses Readzor's command-line arguments into a resolved parameters dict.
-    
-    Supports three main input modes: fully automatic operation (--full-auto,
-    which autodetects files and ignores all other options), a flat list of
-    FASTQ files (--files), or an explicit R1/R2 pair (--paired). The latter
-    two are mutually exclusive.
-    
-    All trimming, quality, and runtime parameters default to None if not
-    specified, signaling to downstream code that an adaptive/platform-
-    dependent default should be resolved later (e.g. based on read length
-    or Slurm detection) rather than being hardcoded here.
-    
+    Parse Readzor's command-line arguments into a resolved parameters dict.
+
+    Input can come from any combination of --input-files (pairing is
+    auto-detected), --input-paired, --input-unpaired and
+    --input-interleaved. If none of these is given, FASTQ files
+    (.fastq/.fq, optionally .gz/.gzip) in the current working directory are
+    used with --full-auto; otherwise data piped into stdin is spooled to a
+    temporary file (resolve_stdin_input()).
+
+    With --full-auto, every option except the input options is reset to its
+    default, apart from the values listed in FULL_AUTO_OVERRIDES.
+
+    After parsing, some settings are resolved or adjusted:
+      - --gzip turns --stdout off.
+      - --stdout turns off verbose output, the progress bar and
+        --write-rejected, and turns on --discard-singles and
+        --interleaved-out.
+      - --n-filter turns off N end trimming (there would be nothing left
+        to trim).
+      - With adapter trimming on, the adapter list is taken from
+        --adapter-fasta-excl alone, or else from the selected
+        --adapter-group(s) plus --adapter-fasta-add, and de-duplicated.
+      - The thread count and chunk size are resolved
+        (worker_determination(), chunk_size_setter()).
+
     Returns:
-        dict: A parameters dictionary, keyed one-for-one with the resolved
-            CLI options (input files/pairing, all trimming/filtering module
-            flags and their thresholds, output/gzip/threading/chunking
-            settings, and run-mode flags such as `testrun` and `full_auto`).
-            See the "--- Store parameters ---" block below this docstring
-            for the authoritative, up-to-date list of keys.
+        dict: Run parameters, keyed one-for-one with the resolved CLI
+            options (inputs, module flags and settings, output, threading
+            and run-mode settings). See the "--- Store parameters ---" block
+            in this function for the authoritative list of keys;
+            "adapter_sequences" (list[bytes]) is added after that block.
 
     Side Effects:
-        If --version, --list-adapters, or --help is passed, prints the
-        corresponding output and exits the program immediately (via
-        `sys.exit()`). If neither --input-files, --input-paired,
-        --input-unpaired, --input-interleaved, piped stdin, nor --full-auto
-        provides input, calls `parser.error(...)`, which prints a usage
-        message to stderr and exits with a non-zero status.
+        Sets up console logging. When run without any arguments, prints the
+        help to stderr and exits with status 1. With --help (optionally
+        combined with --full-auto), --version or --list-adapters, prints
+        the corresponding output and exits. Calls parser.error() (which
+        exits with status 2) if no input can be found. May create a
+        temporary file holding stdin data.
+
+    Raises:
+        ValueError: If an adapter FASTA file is malformed, or
+            --adapter-fasta-excl contains no sequences.
     """
     setup_logging()
 
@@ -3010,11 +3375,11 @@ def parse_args():
     )
     output_group.add_argument(
         "--stdout", action="store_true", default=False,
-        help="Stream resulting FASTQ reads to stdout. Forces --interleaved-out for paired and interleaved files. Overrides --verbose and --progress. Overridden to 'off' by --gzip. Note: all files will be streamed on end, without any seperators."
+        help="Stream resulting FASTQ reads to stdout. Forces --interleaved-out and --discard-singles for paired and interleaved files. Overrides --verbose and --progress. Overridden to 'off' by --gzip. Note: all files will be streamed on end, without any seperators."
     )
     output_group.add_argument(
         "--interleaved-out", action="store_true", default=False,
-        help="Interleave surviving FASTQ reads of paired and interleaved input files, resulting in one output file."
+        help="Interleave surviving paired FASTQ reads of paired and interleaved input files. Single reads are written to seperate files."
     )    
     output_group.add_argument(
         "--write-rejected", action="store_true", default=False,
@@ -3181,9 +3546,24 @@ def parse_args():
         "--adapter-fasta-excl", "-ax", type = str, default = None, metavar="",
         help="Fasta file with adapter sequences to trim for, excluding predefined and additional sequences specified."
     )
-    adapter_trimming.add_argument(
+
+    overlap_trimming = parser.add_argument_group("Overlap trimming",
+                                                 "Perform overlap analysis to find adapter sequences. Works independently of adapter sequence. Only available for paired and interleaved reads. Can be combined with --adapter-filter-flag.")
+    overlap_trimming.add_argument(
         "--overlap-filter-flag", "-of", action="store_true", default = False,
-        help="[FLAG] Paired and interleaved input only: find where the insert ends from the overlap between R1 and R2, and trim both mates there. Also finds partial adapters, and works independently of adapter sequence. Can be combined with --adapter-filter-flag. Default: off."
+        help="[FLAG] Turn on overlap trimming module. Default: off."
+    )
+    overlap_trimming.add_argument(
+        "--overlap-mismatches", "-om", type = int, default = 5, metavar="",
+        help='Maximum mismatches allowed in the overlapping region. Default: 5.'
+    )
+    overlap_trimming.add_argument(
+        "--overlap-min-length", "-ol", type = int, default = 30, metavar="",
+        help="Minimum overlap length between the paired reads. Default: 30."
+    )
+    overlap_trimming.add_argument(
+        "--overlap-portion-mismatch", "-op", type = str, default = 5, metavar="",
+        help="Maximum percentgae of mismatched bases allowed in the overlapping region. Default: 5"
     )
 
     low_complexity_group = parser.add_argument_group("Low complexity filtering",
@@ -3382,6 +3762,9 @@ def parse_args():
     parameters["adapter_group"] = args.adapter_group
     parameters["discard_singles"] = args.discard_singles
     parameters["overlap_filter_flag"] = args.overlap_filter_flag
+    parameters["overlap_mismatches"] = args.overlap_mismatches
+    parameters["overlap_min_length"] = args.overlap_min_length
+    parameters["overlap_portion_mismatch"] = args.overlap_portion_mismatch
     
     if parameters["gzip_output"]:
         parameters["stdout"] = False
@@ -3390,6 +3773,8 @@ def parse_args():
         parameters["verbose"] = False
         parameters["show_progress"] = False
         parameters["write_rejected"] = False
+        parameters["discard_singles"] = True
+        parameters["interleaved_out"] = True
     
     if parameters["n_filter"]:
         parameters["n_trimming_flag"] = False
@@ -3422,25 +3807,23 @@ def parse_args():
 ##### Wrap up functions #####
 def write_summary_and_statistics(summary_results, parameters, output_dir):
     """
-    Write summary statistics and parameters to output text files.
- 
-    The function creates two files in the specified output directory:
-    ``results_summary.txt`` containing per-file summary counts and
-    ``parameters.txt`` containing the parameter key-value pairs used
-    for the analysis.
-    
+    Write per-input read counts to results_summary.txt in output_dir.
+
+    The tab-separated file contains a "[Paired Reads]" table (one row per
+    paired or interleaved input: name prefix, kept pairs, kept R1
+    singletons, kept R2 singletons, rejected R1, rejected R2) and an
+    "[Unpaired Reads]" table (filename, kept, rejected). Each table is only
+    written if there are inputs of that kind. Run parameters are not
+    written here; they are recorded in the log file (see log_parameters()).
+
     Args:
-        summary_results (dict): Dictionary mapping file names to dictionaries
-            of summary statistics. Entries may contain either ``kept`` and
-            ``rejected`` counts, or ``kept_pairs``, ``kept_R1_singletons``,
-            ``kept_R2_singletons``, ``rejected_R1``, and ``rejected_R2``
-            counts for paired entries (R1/R2 rejects tracked separately
-            since the mates are filtered and split independently).
-        parameters (dict): Dictionary of parameter names and their values to
-            write to the parameters output file.
-        output_dir (str): Path to the directory where the output files will
-            be created.
-    
+        summary_results (dict): Output of input_handler(): input name ->
+            counts. Entries contain either ``kept`` and ``rejected``, or
+            ``kept_pairs``, ``kept_R1_singletons``, ``kept_R2_singletons``,
+            ``rejected_R1`` and ``rejected_R2`` for paired entries.
+        parameters (dict): Run parameters (currently unused).
+        output_dir (str): Directory in which to create the file.
+
     Returns:
         None
     """
@@ -3475,18 +3858,19 @@ def write_summary_and_statistics(summary_results, parameters, output_dir):
   
 def log_parameters(parameters):
     """
-    Log all run parameters to the logger, one per line, tagged [PARAMETER]
-    so they're easy to grep out of the log file. Replaces the old standalone
-    parameters.txt dump.
- 
+    Log all run parameters, sorted by name, one per line and tagged
+    [PARAMETER] so they are easy to grep out of the log file. Bytes values
+    are decoded, and lists, tuples and sets are joined with commas.
+
     Args:
         parameters (dict): Dictionary of parameter names and their values.
- 
+
     Returns:
         None
     """
     
     def _format_value(value):
+        """Convert a parameter value into a readable string."""
         if isinstance(value, bytes):
             return value.decode('utf-8', errors='replace')
         if isinstance(value, (list, tuple, set)):
@@ -3500,9 +3884,14 @@ def log_parameters(parameters):
         
 def print_final_message(stdout):
     """
-    Prints Readzor's completion message to the console and logs it to file only,
-    including a citation request and a randomly selected sign-off phrase.
-    Called at the end of a successful run.
+    Print Readzor's completion message (a citation request and a randomly
+    chosen sign-off) to stdout, and write the same text to the log file
+    only. Called at the end of a successful run.
+
+    Args:
+        stdout (bool): If True (reads are being streamed to stdout),
+            nothing is printed or logged, to keep the FASTQ stream clean.
+
     Returns:
         None
     """
@@ -3540,12 +3929,15 @@ def print_final_message(stdout):
 ##### Main #####
 def main():
     """
-    Main execution block for Readzor.
+    Readzor entry point.
 
-    Initializes command-line argument parsing and parameter configuration, creates the output
-    directory structure, handles input stream processing and multithreaded trimming
-    via the top-level orchestrator, and exports summary metrics and final parameters.
-    Finishes with a sign-off message.
+    Selects the multiprocessing start method (fork if available, otherwise
+    forkserver, otherwise spawn) and parses the command line. With
+    --testrun, hands over to test_run(). Otherwise creates the timestamped
+    results folder, starts file logging, logs all parameters, processes
+    all inputs (input_handler()), writes results_summary.txt and prints the
+    completion message. On Ctrl+C, exits with status 130. Temporary stdin
+    files are always removed.
     """
     for method in ['fork', 'forkserver', 'spawn']:
         if method in mp.get_all_start_methods():
@@ -3576,13 +3968,17 @@ def main():
 
 def test_run(parameters):
     """
-    Runs the full pipeline against a temporary output directory that is
-    deleted on exit, to let users validate their settings without keeping
-    any output. Limits each input file to one chunk per worker thread so
-    the run finishes quickly. Called when --testrun is set.
+    Run the full pipeline on a small sample of the input to validate the
+    settings, without keeping any output. Called when --testrun is set.
+
+    Works like a normal run, except that the results folder (including the
+    log file and summary) is created inside a temporary directory that is
+    deleted afterwards, console output is always verbose, and only the
+    first ``threads`` chunks of each input are processed (one chunk per
+    worker). Temporary stdin files are always removed.
 
     Args:
-        parameters (dict): Dictionary of configuration parameters.
+        parameters (dict): Run parameters.
     """
     try:
         with tempfile.TemporaryDirectory(prefix="readzor_testrun_") as tmp_dir:
