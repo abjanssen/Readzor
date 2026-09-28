@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""
-Readzor: a modular FASTQ quality trimming and filtering pipeline.
-
-Every enabled trimming module independently works out, for each read, the
-[left, right) window of bases it would keep. The windows of all modules are
-merged by taking the innermost boundary on each side (the most stringent
-result per end), after which the output length and average-quality filters
-are applied. Unpaired, paired (two-file) and interleaved inputs are
-supported, plain-text or gzip-compressed, and reads are processed in chunks
-by a multiprocessing pool.
-
-Run ``readzor --help`` for the full list of command-line options.
-"""
 
 ##### Import packages #####
 import argparse
@@ -41,7 +28,7 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq3", [
@@ -90,7 +77,7 @@ file_only_logger = logging.getLogger("readzor.file_only")
 class ProgressAwareStreamHandler(logging.StreamHandler):
     """
     A StreamHandler that clears any in-progress progress-bar line before
-    emitting a log record, so the two don't get interleaved on the same
+    printing a log record, so the two don't get interleaved on the same
     terminal line.
     """
     def emit(self, record):
@@ -104,9 +91,9 @@ class ProgressAwareStreamHandler(logging.StreamHandler):
 
 def setup_logging(output_dir = None, verbose = False, parameters = None):
     """
-    Configure Readzor's logger and attach its console and/or file handler.
+    Configure the logger.
 
-    Called from parse_args() twice: once before parsing, with no arguments,
+    Called from parse_args() twice: once before parsing, without arguments,
     to attach a console handler so early messages are visible, and again
     right after parsing to apply the user's --verbose choice to that same
     handler. Called a third time, from main() or test_run(), once the
@@ -185,7 +172,7 @@ def chunk_size_setter(chunk_size):
 
     Returns:
         int: ``chunk_size`` if given; otherwise 20000 when a scheduler
-            command is found, else 1000.
+            command is found, else 2000
     """
     if chunk_size is not None:
         return chunk_size
@@ -195,9 +182,9 @@ def chunk_size_setter(chunk_size):
     else:
         return 1000
 
-def count_reads_estimated(filepath, sample_size=10, default_gzip_ratio=4, gzip_sample_bytes=50 * 1024 * 1024):
+def count_reads_estimated(filepath, sample_size=50, default_gzip_ratio=4, gzip_sample_bytes=50 * 1024 * 1024):
     """
-    Estimate the number of reads in a FASTQ file without parsing all of it.
+    Estimate the number of reads in a FASTQ file.
 
     The average number of (uncompressed) bytes per read is estimated from
     the first ``sample_size`` records: the lengths of the four lines plus
@@ -381,21 +368,37 @@ class ProgressTracker:
         """
         if not sys.stderr.isatty():
             return
-        term_width = shutil.get_terminal_size(fallback=(80, 24)).columns
-        sys.stderr.write("\r" + " " * (term_width - 1) + "\r")
+        sys.stderr.write("\r\x1b[2K")
         sys.stderr.flush()
 
-    def close(self):
+    def close(self, interrupted=False):
         """
-        Draw the final line (100%, total reads processed, average rate and
-        total time) and end it with a newline. When stderr is not a
+        Draw the final line (progress, total reads processed, average rate
+        and total time) and end it with a newline. When stderr is not a
         terminal, only the statistics are written, as plain text.
+
+        On a terminal, the rest of the line is erased after the text, so
+        anything the terminal echoed onto it (such as "^C" after Ctrl+C) is
+        removed.
+
+        Args:
+            interrupted (bool): If True, the run did not finish (Ctrl+C or
+                an error). The line then says where it stopped ("Stopped at
+                6.1%") and the bar is only filled up to that point, instead
+                of claiming 100%. As the total is an estimate, the
+                percentage is capped at 99.9%. Defaults to False.
         """
         elapsed = time.time() - self._start_time
         rate = self.done / elapsed if elapsed > 0 else 0
         time_str = self._format_duration(elapsed, concise=False)
+        if interrupted:
+            frac = min(self.done / self.total, 0.999)
+            progress = f"Stopped at {frac*100:.1f}%"
+        else:
+            frac = 1.0
+            progress = "100%"
         stats = (
-            f" 100% ({self.done:,} reads analyzed). "
+            f" {progress} ({self.done:,} reads analyzed). "
             f"Average rate: {rate:,.0f} reads/s. Total time: {time_str}."
         )
         if not sys.stderr.isatty():
@@ -406,12 +409,13 @@ class ProgressTracker:
         max_bar_len = term_width - len(stats) - 3
         if max_bar_len >= 5:
             effective_bar_width = min(self.bar_width, max_bar_len)
-            progressbar = "#" * effective_bar_width
+            filled = int(effective_bar_width * frac)
+            progressbar = "#" * filled + "-" * (effective_bar_width - filled)
             line = f"\r[{progressbar}]{stats}"
         else:
             line = f"\r{stats.strip()}"
         line = line[: term_width - 1].ljust(term_width - 1)
-        sys.stderr.write(line + "\n")
+        sys.stderr.write(line + "\x1b[K\n")
         sys.stderr.flush()
 
 ##### Helper functions #####
@@ -655,6 +659,10 @@ def lazy_fastq(filepath, buffer_size = 2*1024*1024):
     """
     Lazily yield FASTQ records one at a time without loading the whole file.
 
+    Used for the small samples read by count_reads_estimated() and
+    detect_phred_offset(). The processing path reads files with
+    lazy_fastq_blobs() instead.
+
     Whether the file is gzip-compressed is looked up in GZIP_DETECTION,
     which must already contain ``filepath`` (see input_handler()).
 
@@ -726,6 +734,105 @@ def lazy_fastq(filepath, buffer_size = 2*1024*1024):
                 except StopIteration:
                     break
                 yield FIELD_SEP.join((header, sequence, plus, quality))
+
+def lazy_fastq_blobs(filepath, chunk_size, buffer_size = 2*1024*1024):
+    """
+    Lazily yield raw FASTQ text in blobs of exactly ``chunk_size`` records,
+    for sending to the workers.
+
+    The main process only frames the data: newline positions are found with
+    numpy, one pass per block read, and the stream is cut after every
+    4 * ``chunk_size`` lines. Each blob is sent as a single bytes object, so
+    it pickles as one copy instead of one object per read. Nothing is
+    split, stripped or validated here; the workers do that (parse_blob(),
+    validate_fastq()).
+
+    Newline positions already found are carried over between reads, so a
+    blob larger than ``buffer_size`` is assembled without rescanning.
+
+    At the end of the file, trailing blank lines are ignored. If the file
+    ends with an incomplete record, a warning is logged and that record is
+    skipped, for plain-text and gzip input alike.
+
+    Whether the file is gzip-compressed is looked up in GZIP_DETECTION,
+    which must already contain ``filepath`` (see input_handler()).
+
+    Args:
+        filepath (str): Path to the FASTQ file (plain or gzip-compressed).
+        chunk_size (int): Number of FASTQ records per blob.
+        buffer_size (int): Number of (decompressed) bytes requested per
+            read. Defaults to 2 MiB.
+
+    Yields:
+        tuple[bytes, int]: (blob, n_records). ``blob`` is raw FASTQ text
+            ending on a record boundary, including its final newline.
+            ``n_records`` equals ``chunk_size`` for every blob except
+            possibly the last.
+    """
+    lines_per_blob = 4 * chunk_size
+    if GZIP_DETECTION[filepath]:
+        fastq_file = igzip_threaded.open(filepath, 'rb', threads=1)
+    else:
+        fastq_file = open(filepath, 'rb')
+    with fastq_file:
+        pending = b""
+        pending_newlines = np.empty(0, dtype=np.intp)
+        while True:
+            block = fastq_file.read(buffer_size)
+            if not block:
+                break
+            new_newlines = np.flatnonzero(np.frombuffer(block, dtype=np.uint8) == 10)
+            if pending:
+                new_newlines += len(pending)
+                data = pending + block
+                newlines = np.concatenate((pending_newlines, new_newlines))
+            else:
+                data = block
+                newlines = new_newlines
+            n_blobs = len(newlines) // lines_per_blob
+            start = 0
+            for k in range(1, n_blobs + 1):
+                end = int(newlines[k * lines_per_blob - 1]) + 1
+                yield data[start:end], chunk_size
+                start = end
+            pending = data[start:]
+            pending_newlines = newlines[n_blobs * lines_per_blob:] - start
+        tail = pending.rstrip(b"\r\n")
+        if not tail:
+            return
+        tail_newlines = np.flatnonzero(np.frombuffer(tail, dtype=np.uint8) == 10)
+        n_lines = len(tail_newlines) + 1
+        usable = n_lines - (n_lines % 4)
+        if usable != n_lines:
+            logger.warning(
+                "%s: last record is incomplete (%d trailing line(s)); it was skipped. "
+                "The file may be truncated.",
+                os.path.basename(filepath), n_lines - usable)
+        if usable:
+            blob = tail + b"\n" if usable == n_lines else tail[:int(tail_newlines[usable - 1]) + 1]
+            yield blob, usable // 4
+
+def parse_blob(blob):
+    """
+    Split a raw FASTQ blob from lazy_fastq_blobs() into records. Runs in
+    the worker processes.
+
+    Carriage returns are removed (CRLF input); other whitespace is kept,
+    as in the gzip branch of lazy_fastq(). The blob always ends on a record
+    boundary; record contents are checked later by validate_fastq().
+
+    Args:
+        blob (bytes): Raw FASTQ text from lazy_fastq_blobs().
+
+    Returns:
+        Iterator[tuple[bytes, bytes, bytes, bytes]]: (header, sequence,
+            plus, quality) tuples, line endings removed. The iterator can
+            only be consumed once.
+    """
+    if b"\r" in blob:
+        blob = blob.replace(b"\r", b"")
+    line = iter(blob.split(b"\n"))
+    return zip(line, line, line, line)
 
 def find_paired_files(filepaths):
     """
@@ -2109,8 +2216,8 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
     encoding.
 
     Args:
-        chunk (list[bytes]): FIELD_SEP-joined (header, sequence, plus,
-            quality) records, as yielded by `lazy_fastq`.
+        chunk (Iterable[tuple[bytes, bytes, bytes, bytes]]): (header,
+            sequence, plus, quality) records, as produced by parse_blob().
         phred_offset (int): Phred encoding offset (33 or 64).
         minimum_average_qual_post (float): Minimum acceptable mean quality
             after trimming. 0 disables this filter.
@@ -2150,8 +2257,7 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
     valid_qualities = []
     rejected_reads = []
     rejected = 0
-    for r in chunk:
-        header, sequence, plus, quality = r.split(FIELD_SEP)
+    for header, sequence, plus, quality in chunk:
         if validate_fastq(header, sequence, plus, quality, n_filter = parameters["n_filter"], min_length_input = parameters["min_length_input"], max_length_input = parameters["max_length_input"]):
             valid_headers.append(header)
             valid_sequences.append(sequence)
@@ -2242,15 +2348,17 @@ def generate_unpaired_tasks(filepaths, chunk_size, parameters, filetype = None):
 
     For each file, logs basic file information, detects the Phred offset
     once, and then yields one task per chunk, so that a single global pool
-    can process chunks from many files. Logs the processing time and rate
-    once a file is exhausted.
+    can process chunks from many files. Chunks are raw FASTQ text from
+    lazy_fastq_blobs(); the workers parse them. Logs the processing time
+    and rate once a file is exhausted.
 
-      - filetype "unpaired": each task holds ``chunk_size`` records and has
-        type "unpaired".
-      - filetype "interleaved": each task holds 2 * ``chunk_size`` records,
-        split alternately into R1 (records 1, 3, 5, ...) and R2 (records
-        2, 4, 6, ...). The task has type "paired" with file1 == file2 ==
-        filepath, so it is processed exactly like a two-file pair.
+      - filetype "unpaired": each task holds a blob of ``chunk_size``
+        records and has type "unpaired".
+      - filetype "interleaved": each task holds a blob of 2 * ``chunk_size``
+        records. The task has type "paired", with file1 == file2 ==
+        filepath and "interleaved" set; the worker splits the records
+        alternately into R1 (records 1, 3, 5, ...) and R2 (records 2, 4,
+        6, ...), so it is processed exactly like a two-file pair.
 
     Args:
         filepaths (list[str]): Paths to unpaired or interleaved FASTQ files.
@@ -2261,9 +2369,9 @@ def generate_unpaired_tasks(filepaths, chunk_size, parameters, filetype = None):
         filetype (str | None): "unpaired" or "interleaved".
 
     Yields:
-        dict: A task dictionary with the task type, filepath(s), chunk data
-            and precomputed metadata (Phred offset(s), and for paired tasks
-            the gzip and discard_singles settings).
+        dict: A task dictionary with the task type, filepath(s), the chunk
+            as a raw FASTQ blob, and precomputed metadata (Phred offset(s),
+            and for paired tasks the gzip and discard_singles settings).
 
     Raises:
         TypeError: If filetype is neither "unpaired" nor "interleaved".
@@ -2287,67 +2395,57 @@ def generate_unpaired_tasks(filepaths, chunk_size, parameters, filetype = None):
         if ESTIMATED_READ_COUNTS.get(filepath) is not None:
             logger.info("%s: estimated bytes per read: %s.", os.path.basename(filepath), ESTIMATED_BYTE_PER_READ[filepath])
             logger.info("%s: (estimated) read count: %s.", os.path.basename(filepath), ESTIMATED_READ_COUNTS[filepath])
-        reads_iter = lazy_fastq(filepath)
         if filetype == "unpaired":
             total_reads = 0
-            while True:
-                chunk = list(itertools.islice(reads_iter, chunk_size))
-                if not chunk:
-                    elapsed = time.monotonic() - start_time
-                    if total_reads > 0 and elapsed > 0:
-                        reads_per_sec = total_reads / elapsed
-                        logger.info(
-                            "%s: finished processing %d reads in %.2fs (%.0f reads/sec).",
-                            os.path.basename(filepath), total_reads, elapsed, reads_per_sec
-                        )
-                    else:
-                        logger.info("%s: finished processing in %.2fs.", os.path.basename(filepath), elapsed)
-                    break
-        
-                total_reads += len(chunk)
+            for blob, n_records in lazy_fastq_blobs(filepath, chunk_size):
+                total_reads += n_records
                 yield {
                     "type": "unpaired",
                     "filepath": filepath,
-                    "chunk": chunk,
+                    "chunk": blob,
                     "phred_offset": phred_offset
                 }
+            elapsed = time.monotonic() - start_time
+            if total_reads > 0 and elapsed > 0:
+                logger.info(
+                    "%s: finished processing %d reads in %.2fs (%.0f reads/sec).",
+                    os.path.basename(filepath), total_reads, elapsed, total_reads / elapsed
+                )
+            else:
+                logger.info("%s: finished processing in %.2fs.", os.path.basename(filepath), elapsed)
         elif filetype == "interleaved":
             total_reads = 0
-            while True:
-                chunk = list(itertools.islice(reads_iter, 2*chunk_size))
-                if not chunk:
-                    elapsed = time.monotonic() - start_time
-                    if total_reads > 0 and elapsed > 0:
-                        reads_per_sec = total_reads / elapsed
-                        logger.info(
-                            "%s: finished processing %d reads in %.2fs (%.0f pairs/sec).",
-                            os.path.basename(filepath), total_reads, elapsed, reads_per_sec
-                        )
-                    else:
-                        logger.info("%s: finished processing in %.2fs.", os.path.basename(filepath), elapsed)
-                    break
-                chunk_1 = chunk[0::2]
-                chunk_2 = chunk[1::2]
-                total_reads += len(chunk_1)
+            for blob, n_records in lazy_fastq_blobs(filepath, 2 * chunk_size):
+                total_reads += (n_records + 1) // 2
                 yield {
                     "type": "paired",
+                    "interleaved": True,
                     "file1": filepath,
                     "file2": filepath,
-                    "chunk1": chunk_1,
-                    "chunk2": chunk_2,
+                    "chunk1": blob,
+                    "chunk2": None,
                     "phred_offset_1": phred_offset,
                     "phred_offset_2": phred_offset,
-                    "gzip_output": parameters["gzip_output"], 
+                    "gzip_output": parameters["gzip_output"],
                     "gzip_level": parameters["gzip_level"],
                     "discard_singles": parameters["discard_singles"]
                 }
+            elapsed = time.monotonic() - start_time
+            if total_reads > 0 and elapsed > 0:
+                logger.info(
+                    "%s: finished processing %d reads in %.2fs (%.0f pairs/sec).",
+                    os.path.basename(filepath), total_reads, elapsed, total_reads / elapsed
+                )
+            else:
+                logger.info("%s: finished processing in %.2fs.", os.path.basename(filepath), elapsed)
         else:
-            raise TypeError(f"file {filepath} returned filetype {filetype}, which is not recognized.")                
-                
+            raise TypeError(f"file {filepath} returned filetype {filetype}, which is not recognized.")
+
 def process_unpaired_task_flat(task, parameters):
     """
-    Worker wrapper for an unpaired task: runs process_unpaired_chunk() on
-    the task's chunk and tags the result with the task type and filepath.
+    Worker wrapper for an unpaired task: parses the task's blob
+    (parse_blob()), runs process_unpaired_chunk() on it and tags the result
+    with the task type and filepath.
 
     Args:
         task (dict): An "unpaired" task from generate_unpaired_tasks().
@@ -2360,7 +2458,7 @@ def process_unpaired_task_flat(task, parameters):
             process_unpaired_chunk()).
     """
     chunk_results, kept, rejected, rejected_reads = process_unpaired_chunk(
-        chunk=task["chunk"],
+        chunk=parse_blob(task["chunk"]),
         phred_offset=task["phred_offset"],
         minimum_average_qual_post=parameters["minimum_average_qual_post"],
         gzip_output = parameters["gzip_output"],
@@ -2377,9 +2475,11 @@ def process_unpaired_task_flat(task, parameters):
 ##### Paired reads workflow funtions #####
 def process_paired_task_flat(task, parameters):
     """
-    Worker wrapper for a paired task (two-file or interleaved): runs
-    process_paired_chunk() on the task's R1/R2 chunks and tags the result
-    with the task type and filepaths.
+    Worker wrapper for a paired task (two-file or interleaved): parses the
+    task's blob(s) (parse_blob()), runs process_paired_chunk() on the R1/R2
+    records and tags the result with the task type and filepaths. For an
+    interleaved task, the records of its single blob are split alternately
+    into R1 (records 1, 3, 5, ...) and R2 (records 2, 4, 6, ...).
 
     Args:
         task (dict): A "paired" task from generate_paired_tasks() or
@@ -2397,8 +2497,13 @@ def process_paired_task_flat(task, parameters):
     """
     file1 = task["file1"]
     file2 = task["file2"]
+    if task.get("interleaved"):
+        records = list(parse_blob(task["chunk1"]))
+        chunk1, chunk2 = records[0::2], records[1::2]
+    else:
+        chunk1, chunk2 = parse_blob(task["chunk1"]), parse_blob(task["chunk2"])
     paired_out_1, paired_out_2, R1_singles_out, R2_singles_out, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2, rejected_R1, rejected_R2 = process_paired_chunk(
-        chunks = (task["chunk1"],task["chunk2"] ),
+        chunks = (chunk1, chunk2),
         phred_offset_1=task["phred_offset_1"],
         phred_offset_2=task["phred_offset_2"],
         gzip_output = task["gzip_output"],
@@ -2414,8 +2519,9 @@ def generate_paired_tasks(files, chunk_size, parameters):
 
     For each (R1, R2) pair, logs basic file information, detects the Phred
     offset of each file once, and then yields one task per chunk of
-    ``chunk_size`` read pairs, so that a single global pool can process
-    chunks from many files. Mates are matched by position here; within a
+    ``chunk_size`` read pairs, as one raw FASTQ blob per file
+    (lazy_fastq_blobs()), so that a single global pool can process chunks
+    from many files. Mates are matched by position here; within a
     chunk they are reconciled by base read ID in process_paired_chunk().
     Logs the processing time and rate once both files are exhausted.
 
@@ -2427,8 +2533,8 @@ def generate_paired_tasks(files, chunk_size, parameters):
             the gzip and discard_singles settings copied into each task).
 
     Yields:
-        dict: A "paired" task dictionary with the filepaths, R1 and R2
-            chunk data and precomputed metadata.
+        dict: A "paired" task dictionary with the filepaths, the R1 and R2
+            blobs and precomputed metadata.
 
     Raises:
         ValueError: If one file of a pair runs out of reads before the
@@ -2453,55 +2559,40 @@ def generate_paired_tasks(files, chunk_size, parameters):
         logger.info("%s: Phred offset of %s detected.", os.path.basename(file2), phred_offset_2)
         logger.info("%s: (estimated) read count: %s.", os.path.basename(file1), ESTIMATED_READ_COUNTS.get(file1, "unknown"))
         logger.info("%s: (estimated) read count: %s.", os.path.basename(file2), ESTIMATED_READ_COUNTS.get(file2, "unknown"))
-        reads_iter_1 = lazy_fastq(file1)
-        reads_iter_2 = lazy_fastq(file2)
+        blobs_1 = lazy_fastq_blobs(file1, chunk_size)
+        blobs_2 = lazy_fastq_blobs(file2, chunk_size)
         total_pairs = 0
-        while True:
-            chunk1 = list(itertools.islice(reads_iter_1, chunk_size))
-            chunk2 = list(itertools.islice(reads_iter_2, chunk_size))
-            
-            if not chunk1 and not chunk2:
-                elapsed = time.monotonic() - start_time
-                if total_pairs > 0 and elapsed > 0:
-                    reads_per_sec = total_pairs / elapsed
-                    logger.info(
-                        "%s and %s: finished processing %d read pairs in %.2fs (%.0f pairs/sec).",
-                        os.path.basename(file1),
-                        os.path.basename(file2),
-                        total_pairs,
-                        elapsed,
-                        reads_per_sec,
-                    )
-                else:
-                    logger.info(
-                        "%s and %s: finished processing in %.2fs.",
-                        os.path.basename(file1),
-                        os.path.basename(file2),
-                        elapsed,
-                    )
-                return
-        
-            if len(chunk1) != len(chunk2):
+        for (blob1, n1), (blob2, n2) in itertools.zip_longest(blobs_1, blobs_2, fillvalue=(None, 0)):
+            if n1 != n2:
                 raise ValueError(
                     f"Mismatched read counts in paired files {file1} and {file2}. "
                     f"Files must have identical read counts (possible file corruption or truncation)."
                 )
-        
-            total_pairs += len(chunk1)
-        
+            total_pairs += n1
             yield {
                 "type": "paired",
                 "file1": file1,
                 "file2": file2,
-                "chunk1": chunk1,
-                "chunk2": chunk2,
+                "chunk1": blob1,
+                "chunk2": blob2,
                 "phred_offset_1": phred_offset_1,
                 "phred_offset_2": phred_offset_2,
-                "gzip_output": parameters["gzip_output"], 
+                "gzip_output": parameters["gzip_output"],
                 "gzip_level": parameters["gzip_level"],
                 "discard_singles": parameters["discard_singles"]
             }
-            
+        elapsed = time.monotonic() - start_time
+        if total_pairs > 0 and elapsed > 0:
+            logger.info(
+                "%s and %s: finished processing %d read pairs in %.2fs (%.0f pairs/sec).",
+                os.path.basename(file1), os.path.basename(file2), total_pairs, elapsed, total_pairs / elapsed,
+            )
+        else:
+            logger.info(
+                "%s and %s: finished processing in %.2fs.",
+                os.path.basename(file1), os.path.basename(file2), elapsed,
+            )
+
 def prepare_reads(records, phred_offset, write_rejected, parameters):
     """
     Validate one mate's batch of FASTQ records and build the arrays every
@@ -2512,8 +2603,8 @@ def prepare_reads(records, phred_offset, write_rejected, parameters):
     and their plus lines reset to "+".
 
     Args:
-        records (list[bytes]): FIELD_SEP-joined (header, sequence, plus,
-            quality) records, as yielded by `lazy_fastq`.
+        records (Iterable[tuple[bytes, bytes, bytes, bytes]]): (header,
+            sequence, plus, quality) records, as produced by parse_blob().
         phred_offset (int): Phred encoding offset (33 or 64).
         write_rejected (bool): If True, also collect invalid records.
         parameters (dict): Run parameters (N-filtering, input length
@@ -2540,8 +2631,7 @@ def prepare_reads(records, phred_offset, write_rejected, parameters):
     valid_qualities = []
     rejected_reads = []
     rejected = 0
-    for k, r in enumerate(records):
-        header, sequence, plus, quality = r.split(FIELD_SEP)
+    for k, (header, sequence, plus, quality) in enumerate(records):
         if validate_fastq(header, sequence, plus, quality, n_filter = parameters["n_filter"], min_length_input = parameters["min_length_input"], max_length_input = parameters["max_length_input"]):
             valid_reads.append(k)
             valid_headers.append(header)
@@ -2736,8 +2826,9 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
     first rejected output; the second outputs are then empty.
 
     Args:
-        chunks (tuple[list, list]): (chunk1, chunk2) — record lists for R1
-            and R2 respectively, covering the same reads in the same order.
+        chunks (tuple[Iterable, Iterable]): (chunk1, chunk2): R1 and R2
+            records as (header, sequence, plus, quality) tuples (see
+            parse_blob()), covering the same reads in the same order.
         phred_offset_1 (int): Phred encoding offset (33 or 64) for R1.
         phred_offset_2 (int): Phred encoding offset (33 or 64) for R2.
         gzip_output (bool): If True, compresses output records with isal gzip.
@@ -2968,7 +3059,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
     else:
         class _NullTracker:
             def update(self, n): pass
-            def close(self): pass
+            def close(self, interrupted=False): pass
             def clear_line(self): pass
         tracker = _NullTracker()
     global ACTIVE_PROGRESS_TRACKER
@@ -3092,7 +3183,8 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
         for item in chunk_stream:
             backpressure.acquire()
             yield item
-
+            
+    finished = False
     try:
         with mp.Pool(threads, initializer=worker_initilizer, initargs=(parameters,)) as pool:
             submit = pool.imap if parameters["ordered_output"] else pool.imap_unordered
@@ -3139,8 +3231,9 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
                     file_stats[common_prefix]["rejected_R1"] += rejected_1
                     file_stats[common_prefix]["rejected_R2"] += rejected_2
                     tracker.update(num_paired * 2 + num_R1_singles + num_R2_singles + rejected_1 + rejected_2)
+            finished = True
     finally:
-        tracker.close()
+        tracker.close(interrupted = not finished) 
         ACTIVE_PROGRESS_TRACKER = None
         for handle in file_writing_handles.values():
             if not handle.closed:
