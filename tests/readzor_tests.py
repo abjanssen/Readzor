@@ -35,7 +35,7 @@ def test_readzor(tmp_path):
          "--cut-flag", "--endqual-filter-flag",
          "--n-trimming-flag", "--slider-filter-flag",
          "--poly-filter-flag", "--adapter-filter-flag",
-         "--kmer-filter-flag"],
+         "--kmer-filter-flag", "--overlap-filter-flag"],
         cwd=tmp_path,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

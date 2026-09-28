@@ -211,6 +211,13 @@ Trim reads for Illumina adapter sequences. Standard sequences included are TruSe
 `--adapter-mismatch, -am`: Number of mismatches allowed in adapter finding. Default: 0.\
 `--adapter-fasta-add, -ad`: FASTA file with adapter sequences to trim for, in addition to defined sequences from --adapter-group.\
 `--adapter-fasta-excl, -ax`: Fasta file with adapter sequences to trim for, excluding predefined and additional sequences specified.
+
+### Overlap trimming
+Perform overlap analysis to find adapter sequences. Works independently of adapter sequence. Only available for paired and interleaved reads. Can be combined with --adapter-filter-flag.\
+`--overlap-filter-flag, -of`: [FLAG] Turn on overlap trimming module. Default: off.\
+`--overlap-mismatches, -om`: Maximum mismatches allowed in the overlapping region. Default: 5.\
+`--overlap-min-length, -ol`: Minimum overlap length between the paired reads. Default: 30.\
+`--overlap-portion-mismatch, -op`: Maximum percentage of mismatched bases allowed in the overlapping region. Default: 5.
     
 ### Low complexity filtering
 Detect complexity of reads using k-mer-based nucleotide frequencies. Low complexity reads are discarded entirely.\
