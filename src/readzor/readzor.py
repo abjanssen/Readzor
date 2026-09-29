@@ -28,7 +28,7 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.4.1"
+VERSION = "0.4.2"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq3", [
@@ -155,32 +155,6 @@ def setup_logging(output_dir = None, verbose = False, parameters = None):
         file_only_logger.addHandler(file_handler)
         
 ##### Progress tracker #####
-
-def chunk_size_setter(chunk_size):
-    """
-    Resolve the number of reads per chunk sent to each worker.
-
-    If a chunk size is given explicitly, it is returned unchanged.
-    Otherwise, the presence of a common job-scheduler command on PATH
-    (sinfo, sbatch, squeue, qsub, qstat, bsub or bjobs, i.e. SLURM,
-    PBS/Torque/SGE or LSF) is taken as a sign of an HPC system, which
-    typically has more resources and gets a larger default.
-
-    Args:
-        chunk_size (int | None): User-specified chunk size, or None to
-            auto-detect.
-
-    Returns:
-        int: ``chunk_size`` if given; otherwise 20000 when a scheduler
-            command is found, else 2000
-    """
-    if chunk_size is not None:
-        return chunk_size
-    scheduler_tools = ('sinfo','sbatch','squeue','qsub','qstat','bsub','bjobs')
-    if any(shutil.which(tool) is not None for tool in scheduler_tools):
-        return 1000
-    else:
-        return 1000
 
 def count_reads_estimated(filepath, sample_size=50, default_gzip_ratio=4, gzip_sample_bytes=50 * 1024 * 1024):
     """
@@ -3185,6 +3159,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
             yield item
             
     finished = False
+    sys.setswitchinterval(0.0005)
     try:
         with mp.Pool(threads, initializer=worker_initilizer, initargs=(parameters,)) as pool:
             submit = pool.imap if parameters["ordered_output"] else pool.imap_unordered
@@ -3370,8 +3345,7 @@ def parse_args():
       - With adapter trimming on, the adapter list is taken from
         --adapter-fasta-excl alone, or else from the selected
         --adapter-group(s) plus --adapter-fasta-add, and de-duplicated.
-      - The thread count and chunk size are resolved
-        (worker_determination(), chunk_size_setter()).
+      - The thread count is resolved (worker_determination())
 
     Returns:
         dict: Run parameters, keyed one-for-one with the resolved CLI
@@ -3707,8 +3681,8 @@ def parse_args():
         help="Number of reads to sample per file for detection of Phred quality encoding offset. Default: 500."
     )
     advanced_group.add_argument(
-        "--chunk-size", type=int, default = None, metavar="",
-        help="Number of reads per chunk sent to each worker. Default: platform-dependent (empirically set to 20,000 for HPC cluster systems, 1000 otherwise). Changing can alter processing speed."
+        "--chunk-size", type=int, default = 1500, metavar="",
+        help="Number of reads per chunk sent to each worker. Changing can alter processing speed. Default: 1500. "
     )
     advanced_group.add_argument(
         "--phred-offset", type = int, choices=[33, 64], default = None, metavar="",
@@ -3893,7 +3867,6 @@ def parse_args():
         parameters["adapter_sequences"] = []
 
     parameters["threads"] = worker_determination(parameters["threads"])
-    parameters["chunk_size"] = chunk_size_setter(parameters["chunk_size"])
     
     return parameters
 

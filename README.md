@@ -237,7 +237,7 @@ Convert read header from MGI (BGI) format to Illumina format. Original header wi
 Further options that can be specified to alter the behavior of Readzor.\
 `--threads, -t`: Number of threads to use. Default: platform-dependent through auto-detection (assigned CPUs on HPC cluster systems, all-1 otherwise. Fallback: 1).\
 `--reads-for-phred-offset`: Number of reads to sample per file for detection of Phred quality encoding offset. Default: 500.\
-`--chunk-size`: Number of reads per chunk sent to each worker. Default: platform-dependent (empirically set to 20,000 for HPC cluster systems, 1000 otherwise). Changing can alter processing speed\
+`--chunk-size`: Number of reads per chunk sent to each worker. Changing can alter processing speed. Default: 1500.\
 `--phred-offset`: Define phred offset for all FASTQ files. When set, per-file auto-detection will not be performed. Possible values: 33, 64. Default: off (auto-detection per file). \
 `--testrun`: [FLAG] Perform a limited test run according to specified settings. Also sets --verbose. Default: off. \
 `--ordered-output`: [FLAG] Force writing output reads in the same order as the input reads, with the exception of filtered reads. Default: off. \
