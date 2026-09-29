@@ -28,7 +28,7 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq3", [
@@ -178,7 +178,7 @@ def chunk_size_setter(chunk_size):
         return chunk_size
     scheduler_tools = ('sinfo','sbatch','squeue','qsub','qstat','bsub','bjobs')
     if any(shutil.which(tool) is not None for tool in scheduler_tools):
-        return 20000
+        return 1000
     else:
         return 1000
 
@@ -3655,7 +3655,7 @@ def parse_args():
         help="Minimum overlap length between the paired reads. Default: 30."
     )
     overlap_trimming.add_argument(
-        "--overlap-portion-mismatch", "-op", type = str, default = 5, metavar="",
+        "--overlap-portion-mismatch", "-op", type = int, default = 5, metavar="",
         help="Maximum percentgae of mismatched bases allowed in the overlapping region. Default: 5"
     )
 
