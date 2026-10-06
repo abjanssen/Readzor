@@ -28,7 +28,7 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.4.3"
+VERSION = "0.4.4"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq3", [
@@ -49,7 +49,6 @@ DEFAULT_ADAPTERS = [
     ]],
 ]
 FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "input_interleaved", "full_auto"}
-FIELD_SEP = b"\x1f"
 FULL_AUTO_OVERRIDES = {
     "endqual_filter_flag": True,
     "adapter_filter_flag": True,
@@ -190,17 +189,11 @@ def count_reads_estimated(filepath, sample_size=50, default_gzip_ratio=4, gzip_s
     Raises:
         ValueError: If the file contains no complete FASTQ records.
     """
-    total_bytes = 0
-    n_records = 0
-    for record in lazy_fastq(filepath, buffer_size=256 * 1024):
-        if n_records >= sample_size:
-            break
-        header, sequence, plus, quality = record.split(FIELD_SEP)
-        total_bytes += len(header) + len(sequence) + len(plus) + len(quality) + 4
-        n_records += 1
-    if n_records == 0:
+    blob = next(lazy_fastq_blobs(filepath, sample_size), (b"", 0))[0]
+    records = list(parse_blob(blob))
+    if not records:
         raise ValueError(f"No FASTQ records found in '{filepath}'; cannot estimate bytes per read.")
-    bytes_per_read = int(total_bytes / n_records)
+    bytes_per_read = len(blob) // len(records)
     ESTIMATED_BYTE_PER_READ[filepath] = bytes_per_read
 
     file_size = os.path.getsize(filepath)
@@ -629,86 +622,6 @@ def is_gz_file(filepath):
     except (IOError, OSError):
         return False
 
-def lazy_fastq(filepath, buffer_size = 2*1024*1024):
-    """
-    Lazily yield FASTQ records one at a time without loading the whole file.
-
-    Used for the small samples read by count_reads_estimated() and
-    detect_phred_offset(). The processing path reads files with
-    lazy_fastq_blobs() instead.
-
-    Whether the file is gzip-compressed is looked up in GZIP_DETECTION,
-    which must already contain ``filepath`` (see input_handler()).
-
-    - Gzip files are decompressed with isal (igzip_threaded, one thread)
-      in blocks of ``buffer_size`` bytes, with manual line-stitching across
-      block boundaries (the fastest path for isal's decompression
-      throughput). Carriage returns are removed. If the file ends with an
-      incomplete record, a warning is logged and that record is skipped.
-    - Plain-text files are read line by line through a buffered reader of
-      ``buffer_size`` bytes, and each line is stripped of surrounding
-      whitespace. An incomplete final record is skipped silently.
-
-    Records are not validated here; see validate_fastq().
-
-    Args:
-        filepath (str): Path to the FASTQ file (plain or gzip-compressed).
-        buffer_size (int): Block size (gzip) or read-buffer size (plain
-            text) in bytes. Defaults to 2 MiB.
-
-    Yields:
-        bytes: One record's header, sequence, plus and quality lines, with
-            line endings removed, joined by FIELD_SEP into a single bytes
-            object.
-    """
-    if GZIP_DETECTION[filepath]:
-        fastq_file = igzip_threaded.open(filepath, 'rb', threads=1)
-        with fastq_file:
-            leftover = b""
-            while True:
-                chunk = fastq_file.read(buffer_size)
-                if not chunk:
-                    if leftover:
-                        lines = leftover.replace(b"\r", b"").rstrip(b"\n").split(b"\n")
-                        usable = len(lines) - (len(lines) % 4)
-                        if usable != len(lines):
-                            logger.warning(
-                                "%s: last record is incomplete (%d trailing line(s)); it was skipped. "
-                                "The file may be truncated.",
-                                os.path.basename(filepath), len(lines) - usable)
-                        line = iter(lines[:usable])
-                        for header, sequence, plus, quality in zip(line, line, line, line):
-                            yield FIELD_SEP.join((header, sequence, plus, quality))
-                    break
-                data = leftover + chunk
-                last_newline = data.rfind(b"\n")
-                if last_newline == -1:
-                    leftover = data
-                    continue
-                lines = data[:last_newline].replace(b"\r", b"").split(b"\n")
-                usable = len(lines) - (len(lines) % 4)
-                line = iter(lines[:usable])
-                for header, sequence, plus, quality in zip(line, line, line, line):
-                    yield FIELD_SEP.join((header, sequence, plus, quality))
-                leftover_lines = lines[usable:]
-                if leftover_lines:
-                    leftover = b"\n".join(leftover_lines) + b"\n" + data[last_newline + 1:]
-                else:
-                    leftover = data[last_newline + 1:]
-    else:
-        fastq_file = open(filepath, 'rb', buffering=buffer_size)
-        with fastq_file:
-            lines = iter(fastq_file)
-            for header in lines:
-                header = header.strip()
-                try:
-                    sequence = next(lines).strip()
-                    plus = next(lines).strip()
-                    quality = next(lines).strip()
-                except StopIteration:
-                    break
-                yield FIELD_SEP.join((header, sequence, plus, quality))
-
 def lazy_fastq_blobs(filepath, chunk_size, buffer_size = 2*1024*1024):
     """
     Lazily yield raw FASTQ text in blobs of exactly ``chunk_size`` records,
@@ -1000,34 +913,26 @@ def detect_phred_offset(filepath, reads_for_phred_offset, phred_offset):
     """
     if phred_offset is not None:
         return phred_offset
-    min_ascii = 127
-    max_ascii = 0
-    count = 0
-    reader = lazy_fastq(filepath, buffer_size = 256*1024)
     try:
-        for record in reader:
-            if count >= reads_for_phred_offset:
-                break
-            _, _, _, quality = record.split(FIELD_SEP)
-            q_bytes = np.frombuffer(quality, dtype=np.uint8)
-            min_ascii = min(min_ascii, q_bytes.min())
-            max_ascii = max(max_ascii, q_bytes.max())
-            count += 1
+        blob = next(lazy_fastq_blobs(filepath, reads_for_phred_offset), (b"",))[0]
     except (FileNotFoundError, IOError) as error:
         raise ValueError(f"Cannot read FASTQ file '{filepath}': {error}") from error
-    finally:
-        reader.close()
+    qualities = b"".join(record[3] for record in parse_blob(blob))
+    if not qualities:
+        raise ValueError(f"No FASTQ records found in '{filepath}'; cannot detect Phred offset.")
+    q_bytes = np.frombuffer(qualities, dtype=np.uint8)
+    min_ascii = int(q_bytes.min())
+    max_ascii = int(q_bytes.max())
     if min_ascii < 64:
         return 33
     if max_ascii <= 104:
         return 64
-    else:
-        min_char = chr(min_ascii) if 32 <= min_ascii <= 126 else '?'
-        max_char = chr(max_ascii) if 32 <= max_ascii <= 126 else '?'
-        raise ValueError(
-            f"Ambiguous Phred encoding detected in {filepath} (ASCII range {min_ascii}-{max_ascii} ['{min_char}' - '{max_char}'])."
-            f"Please specify the Phred offset (33/64) manually using the --phred-offset option."
-        )
+    min_char = chr(min_ascii) if 32 <= min_ascii <= 126 else '?'
+    max_char = chr(max_ascii) if 32 <= max_ascii <= 126 else '?'
+    raise ValueError(
+        f"Ambiguous Phred encoding detected in {filepath} (ASCII range {min_ascii}-{max_ascii} ['{min_char}' - '{max_char}']). "
+        f"Please specify the Phred offset (33/64) manually using the --phred-offset option."
+    )
 
 def validate_fastq(header, sequence, plus, quality, n_filter, min_length_input, max_length_input):
     """
