@@ -28,7 +28,7 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.4.2"
+VERSION = "0.4.3"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq3", [
@@ -1795,16 +1795,12 @@ def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_til
     then equal the reverse complement of the first I bases of R2. For every
     candidate I from `min_overlap` upwards (only sizes that both mates cover
     and that at least one mate reads past), these two I-base regions are
-    compared, ignoring positions where either base is N. An insert size is
-    accepted if it has at most `max_mismatch` mismatches, a mismatch
-    fraction of at most `max_mismatch_frac` percent, and at least
-    `min_overlap` informative (non-N) positions. If several insert sizes
-    are accepted, the one with the lowest mismatch fraction wins (ties go to
-    the larger insert). Both mates are then cut at I.
-
-    As a speed-up, the first 3 * max_mismatch + 1 overlap positions are
-    compared first, and pairs that already exceed `max_mismatch` there are
-    skipped. This does not change the result.
+    compared. Any position where either base is N counts as a mismatch,
+    including N vs N. An insert size is accepted if it has at most
+    `max_mismatch` mismatches and a mismatch fraction of at most
+    `max_mismatch_frac` percent of the I overlap positions. If several
+    insert sizes are accepted, the one with the lowest mismatch fraction
+    wins (ties go to the larger insert). Both mates are then cut at I.
 
     Args:
         seq_arr_1 (numpy.ndarray): (n_reads, length_1) int8 ASCII array of R1.
@@ -1816,11 +1812,11 @@ def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_til
             bytes per R1 read, used when chunk_padding_bool_1 is True.
         chunk_padding_bool_2 (bool): As chunk_padding_bool_1, for R2.
         row_tilde_count_2 (numpy.ndarray | int): As row_tilde_count_1, for R2.
-        min_overlap (int): Shortest insert size tested; also the minimum number
-            of informative (non-N) bases an accepted overlap must contain.
-        max_mismatch (int): Maximum mismatches allowed in the overlap.
-        max_mismatch_frac (float): Maximum percentage (0-100) of informative
-            overlap positions that may mismatch.
+        min_overlap (int): Shortest insert size tested.
+        max_mismatch (int): Maximum mismatches allowed in the overlap
+            (N counts as a mismatch).
+        max_mismatch_frac (float): Maximum percentage (0-100) of overlap
+            positions that may mismatch (N counts as a mismatch).
 
     Returns:
         tuple[tuple[numpy.ndarray, numpy.ndarray], tuple[numpy.ndarray, numpy.ndarray]]:
@@ -1832,11 +1828,9 @@ def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_til
     Raises:
         ValueError: If seq_arr_1 and seq_arr_2 have different numbers of rows.
     """
-    prefix_length = 3 * max_mismatch + 1
+    prefix_length = 2 * max_mismatch + 6
     max_mismatch_frac = max_mismatch_frac / 100
-    comp = np.zeros(128, dtype=np.int8)
-    for a, b in zip(b"ACGTN", b"TGCAN"):
-        comp[a] = b
+
     n_base = np.int8(ord("N"))
 
     n_reads_1, length_1 = seq_arr_1.shape
@@ -1844,9 +1838,13 @@ def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_til
     if n_reads_1 != n_reads_2:
         raise ValueError(f"R1 has {n_reads_1} reads, R2 has {n_reads_2}")
 
-    rc_seq_arr_2 = comp[seq_arr_2[:, ::-1]]
+    comp_table = bytes.maketrans(b"ACGTN", b"TGCAN")
+    rc_seq_arr_2 = np.frombuffer(seq_arr_2[:, ::-1].tobytes().translate(comp_table), dtype=np.int8).reshape(n_reads_2, length_2)
+    
+    seq_arr_1 = np.where(seq_arr_1 == n_base, np.int8(-1), seq_arr_1)
+    rc_seq_arr_2 = np.where(rc_seq_arr_2 == n_base, np.int8(-2), rc_seq_arr_2)
+    
     best_insert = np.full(n_reads_1, -1, dtype=np.int32)
-    best_fraction = np.full(n_reads_1, np.inf)
     max_insert_size = min(length_1, length_2)
     any_padding = chunk_padding_bool_1 or chunk_padding_bool_2
 
@@ -1854,22 +1852,23 @@ def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_til
                       else np.full(n_reads_1, length_1)).astype(np.int32)
     real_lengths_2 = (length_2 - row_tilde_count_2 if chunk_padding_bool_2
                       else np.full(n_reads_2, length_2)).astype(np.int32)
+
     if any_padding:
         shorter_mate = np.minimum(real_lengths_1, real_lengths_2)
         longer_mate = np.maximum(real_lengths_1, real_lengths_2)
+        last_insert = int(np.minimum(shorter_mate, longer_mate - 1).max())
+    else:
+        last_insert = min(max_insert_size, max(length_1, length_2) - 1)
 
-    for insert_size in range(min_overlap, max_insert_size + 1):
-        if any_padding:
-            candidate = (insert_size <= shorter_mate) & (insert_size < longer_mate)
-            if not candidate.any():
-                continue
-            candidate_rows = np.flatnonzero(candidate)
-        else:
-            if insert_size >= max(length_1, length_2):
-                continue
-            candidate_rows = None
+    for insert_size in range(min_overlap, last_insert + 1):
         offset = length_2 - insert_size
         prefix = min(prefix_length, insert_size)
+        
+        if any_padding:
+            candidate = (insert_size <= shorter_mate) & (insert_size < longer_mate)
+            candidate_rows = np.flatnonzero(candidate)
+        else:
+            candidate_rows = None
 
         if candidate_rows is None:
             prefix_arr_1 = seq_arr_1[:, :prefix]
@@ -1877,30 +1876,23 @@ def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_til
         else:
             prefix_arr_1 = seq_arr_1[candidate_rows, :prefix]
             prefix_arr_2 = rc_seq_arr_2[candidate_rows, offset:offset + prefix]
-        prefix_informative = (prefix_arr_1 != n_base) & (prefix_arr_2 != n_base)
-        prefix_mismatches = ((prefix_arr_1 != prefix_arr_2) & prefix_informative).sum(axis=1)
+        prefix_mismatches = (prefix_arr_1 != prefix_arr_2).sum(axis=1)
 
         survive_bool = prefix_mismatches <= max_mismatch
         if not survive_bool.any():
             continue
         rows_survived = np.flatnonzero(survive_bool) if candidate_rows is None else candidate_rows[survive_bool]
         mismatches = prefix_mismatches[survive_bool]
-        n_informative = prefix_informative[survive_bool].sum(axis=1)
 
         if insert_size > prefix:
             rest_arr_1 = seq_arr_1[rows_survived, prefix:insert_size]
             rest_arr_2 = rc_seq_arr_2[rows_survived, offset + prefix:]
-            rest_informative = (rest_arr_1 != n_base) & (rest_arr_2 != n_base)
-            mismatches = mismatches + ((rest_arr_1 != rest_arr_2) & rest_informative).sum(axis=1)
-            n_informative = n_informative + rest_informative.sum(axis=1)
+            mismatches = mismatches + (rest_arr_1 != rest_arr_2).sum(axis=1)
 
-        fraction_mismatch = mismatches / np.maximum(n_informative, 1)
-        pass_bool = ((mismatches <= max_mismatch) & (fraction_mismatch <= max_mismatch_frac)
-                     & (n_informative >= min_overlap))
+        fraction_mismatch = mismatches / insert_size
+        pass_bool = (mismatches <= max_mismatch) & (fraction_mismatch <= max_mismatch_frac)
         rows_passed = rows_survived[pass_bool]
-        better_match_bool = fraction_mismatch[pass_bool] <= best_fraction[rows_passed]
-        best_insert[rows_passed[better_match_bool]] = insert_size
-        best_fraction[rows_passed[better_match_bool]] = fraction_mismatch[pass_bool][better_match_bool]
+        best_insert[rows_passed] = insert_size
 
     found = best_insert > 0
     right_cutoffs_1 = np.where(found, best_insert, real_lengths_1).astype(np.int32)
@@ -3629,8 +3621,8 @@ def parse_args():
         help="Minimum overlap length between the paired reads. Default: 30."
     )
     overlap_trimming.add_argument(
-        "--overlap-portion-mismatch", "-op", type = int, default = 5, metavar="",
-        help="Maximum percentgae of mismatched bases allowed in the overlapping region. Default: 5"
+        "--overlap-portion-mismatch", "-op", type = int, default = 10, metavar="",
+        help="Maximum percentage of mismatched bases allowed in the overlapping region. Default: 5"
     )
 
     low_complexity_group = parser.add_argument_group("Low complexity filtering",
