@@ -59,6 +59,7 @@ FULL_AUTO_OVERRIDES = {
 }
 NUCL_ATCG = b"ATCG"
 NUCL_ATCGN = b"ATCGN"
+COMP_TABLE = bytes.maketrans(NUCL_ATCGN, b"TAGCN")
 ACTIVE_PROGRESS_TRACKER = None
 PHRED64_TO_33 = bytes.maketrans(
     bytes(range(59, 127)),
@@ -1194,7 +1195,7 @@ def build_pipeline(parameters):
     if parameters.get("poly_filter_flag"):
         pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: homopolymer_nucleotide_trimming(seq, padding_mask_bool, row_tilde_count, chunk_padding_bool, poly_length_both=parameters["poly_length_both"], poly_length_start=parameters["poly_length_start"], poly_length_end=parameters["poly_length_end"], poly_bases_both=parameters["poly_bases_both"], poly_bases_start=parameters["poly_bases_start"], poly_bases_end=parameters["poly_bases_end"]))
     if parameters.get("adapter_filter_flag"):
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: adapter_trimming(seq, chunk_padding_bool, row_tilde_count, adapter_sequences=parameters["adapter_sequences"], mismatches=parameters["adapter_mismatch"]))
+        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: adapter_trimming(seq, chunk_padding_bool, row_tilde_count, adapter_sequences=parameters["adapter_sequences"], mismatches=parameters["adapter_mismatch"], adapter_seed = parameters["adapter_seed"]))
 
     #quality_based
     if parameters.get("endqual_filter_flag"):
@@ -1743,9 +1744,7 @@ def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_til
     if n_reads_1 != n_reads_2:
         raise ValueError(f"R1 has {n_reads_1} reads, R2 has {n_reads_2}")
 
-    comp_table = bytes.maketrans(b"ACGTN", b"TGCAN")
-    rc_seq_arr_2 = np.frombuffer(seq_arr_2[:, ::-1].tobytes().translate(comp_table), dtype=np.int8).reshape(n_reads_2, length_2)
-    
+    rc_seq_arr_2 = np.frombuffer(seq_arr_2[:, ::-1].tobytes().translate(COMP_TABLE), dtype=np.int8).reshape(n_reads_2, length_2)    
     seq_arr_1 = np.where(seq_arr_1 == n_base, np.int8(-1), seq_arr_1)
     rc_seq_arr_2 = np.where(rc_seq_arr_2 == n_base, np.int8(-2), rc_seq_arr_2)
     
@@ -1804,7 +1803,7 @@ def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_til
     right_cutoffs_2 = np.where(found, best_insert, real_lengths_2).astype(np.int32)
     return ((np.zeros(n_reads_1, dtype=np.int8), right_cutoffs_1), (np.zeros(n_reads_2, dtype=np.int8), right_cutoffs_2))
 
-def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_sequences, mismatches):
+def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_sequences, mismatches, adapter_seed):
     """
     Adapter trimming: cut each read at the earliest occurrence of any
     adapter sequence.
@@ -1839,32 +1838,37 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
     if mismatches == 0:
         all_bytes = sequence_arr.tobytes()
         if not chunk_padding_bool:
-            right_cutoffs = np.full(n_reads, length, dtype=np.int32)
-            for adapter_bytes in adapter_sequences:
-                adapter_len = len(adapter_bytes)
-                start = 0
-                while True:
-                    pos = all_bytes.find(adapter_bytes, start)
-                    if pos == -1:
-                        break
-                    i, pos_in_row = divmod(pos, length)
-                    if pos_in_row + adapter_len <= length and pos_in_row < right_cutoffs[i]:
-                        right_cutoffs[i] = pos_in_row
-                    start = pos + 1
+            real_lengths = np.full(n_reads, length, dtype=np.int32)
         else:
             real_lengths = length - row_tilde_count
-            right_cutoffs = np.full(n_reads, real_lengths, dtype=np.int32)
-            for adapter_bytes in adapter_sequences:
-                adapter_len = len(adapter_bytes)
-                start = 0
-                while True:
-                    pos = all_bytes.find(adapter_bytes, start)
-                    if pos == -1:
-                        break
-                    i, pos_in_row = divmod(pos, length)
-                    if pos_in_row + adapter_len <= real_lengths[i] and pos_in_row < right_cutoffs[i]:
+        right_cutoffs = np.array(real_lengths, dtype=np.int32)
+        for adapter_bytes in adapter_sequences:
+            adapter_len = len(adapter_bytes)
+            seed_len = min(adapter_seed, adapter_len)
+            seed = adapter_bytes[:seed_len]
+            start = 0
+            while True:
+                pos = all_bytes.find(seed, start)
+                if pos == -1:
+                    break
+                i, pos_in_row = divmod(pos, length)
+                avail = real_lengths[i] - pos_in_row
+                if avail >= adapter_len:
+                    if all_bytes.startswith(adapter_bytes, pos) and pos_in_row < right_cutoffs[i]:
                         right_cutoffs[i] = pos_in_row
-                    start = pos + 1
+                    start = (i + 1) * length
+                    continue
+                if avail == seed_len:
+                    if pos_in_row < right_cutoffs[i]:
+                        right_cutoffs[i] = pos_in_row
+                    start = (i + 1) * length
+                    continue
+                if avail > seed_len:
+                    if all_bytes[pos:pos + avail] == adapter_bytes[:avail] and pos_in_row < right_cutoffs[i]:
+                        right_cutoffs[i] = pos_in_row
+                    start = (i + 1) * length
+                    continue
+                start = pos + 1
     else:
         if not chunk_padding_bool:
             right_cutoffs = np.full(n_reads, length, dtype=np.int32)
@@ -3495,6 +3499,10 @@ def parse_args():
         help='[FLAG] Turn on adapter trimming module. Default: off.'
     )
     adapter_trimming.add_argument(
+        "--adapter-seed", "-as", type = int, default = 8, metavar="", choices=range(1,1000),
+        help="Minimal 5'-end match length. Shorter seeds can result in more partial hits found at end of reads. Default: 8."
+    )
+    adapter_trimming.add_argument(
         "--adapter-group", "-ag", nargs = "+", default = ["Nextera"], choices = [name for name, _ in DEFAULT_ADAPTERS], metavar="",
         help='Specify the group(s) of adapters to be used. Ignored if --adapter-fasta-excl is set. Choices: Illumina_RNA, Nextera, TruSeq2, TruSeq3, TruSeq_small_RNA. Default: Nextera.'
     )
@@ -3510,6 +3518,7 @@ def parse_args():
         "--adapter-fasta-excl", "-ax", type = str, default = None, metavar="",
         help="Fasta file with adapter sequences to trim for, excluding predefined and additional sequences specified."
     )
+    
 
     overlap_trimming = parser.add_argument_group("Overlap trimming",
                                                  "Perform overlap analysis to find adapter sequences. Works independently of adapter sequence. Only available for paired and interleaved reads. Can be combined with --adapter-filter-flag.")
@@ -3685,6 +3694,7 @@ def parse_args():
     parameters["adapter_filter_flag"] = args.adapter_filter_flag
     parameters["adapter_fasta_add"] = args.adapter_fasta_add
     parameters["adapter_fasta_excl"] = args.adapter_fasta_excl
+    parameters["adapter_seed"] = args.adapter_seed
     parameters["n_filter"] = args.n_filter
     parameters["phred_offset"] = args.phred_offset
     parameters["threads"] = args.threads
