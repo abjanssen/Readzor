@@ -28,25 +28,35 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.4.4"
+VERSION = "0.4.6"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
-    ["TruSeq3", [
-        ["TruSeq3_R1_short", "AGATCGGAAGAGCACA"],  # first 16 of full seq
-        ["TruSeq3_R2_short", "AGATCGGAAGAGCGTC"],  # first 16 of full seq
-    ]],
-    ["TruSeq2", [
-        ["TruSeq2", "AGATCGGAAGAGCGGTTCAG"],
+    ["TruSeq", [
+        ["Read_1", "AGATCGGAAGAGCACACGTCTGAACTCCAGTCA"],  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/UDIndexes.htm
+        ["Read_2", "AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"]  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/UDIndexes.htm
     ]],
     ["TruSeq_small_RNA", [
-        ["TruSeq_small_RNA", "TGGAATTCTCGGGTGCCAAGG"],
+        ["TruSeq_small_RNA", "TGGAATTCTCGGGTGCCAAGG"]    #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/TruSeq-SmallRNA.htm
+    ]],
+    ["Illumina_miRNA", [
+        ["TruSeq_small_RNA", "AGATCGGAAGAGCACACGTCTGAACTCCAGTCA"]     #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/Illumina-miRNA-Indexes.htm
     ]],
     ["Nextera", [
-        ["Nextera", "CTGTCTCTTATACACATCT"],
+        ["Nextera", "CTGTCTCTTATACACATCT"]  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/Nextera_Illumina-Sequences.htm
+    ]],
+    ["AmpliSeq", [
+        ["AmpliSeq", "CTGTCTCTTATACACATCT"]  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/AmpliSeq-Sequences.htm
+    ]],
+    ["TruSeq_DNA_methylation", [
+        ["Read_1", "AGATCGGAAGAGCACACGTCTGAAC"],  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/TruSeq-DNAMethyl.htm
+        ["Read_2", "AGATCGGAAGAGCGTCGTGTAGGGA"],  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/TruSeq-DNAMethyl.htm
+    ]],
+    ["TruSeq_Ribo_profile", [
+        ["TruSeq_Ribo_profile", "AGATCGGAAGAGCACACGTCT"]  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/TruSeq-RiboProfile.htm
     ]],
     ["Illumina_RNA", [
-        ["Illumina_RNA", "ACTGTCTCTTATACACATCT"],
-    ]],
+        ["Illumina_RNA", "ACTGTCTCTTATACACATCT"]    #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/Nextera_Illumina-Sequences.htm
+    ]]
 ]
 FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "input_interleaved", "full_auto"}
 FULL_AUTO_OVERRIDES = {
