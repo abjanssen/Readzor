@@ -28,7 +28,7 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.4.6"
+VERSION = "0.4.7"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq", [
@@ -1167,7 +1167,7 @@ def header_mgi_to_illumina(mgi_header, barcode5, barcode7, instrument, run):
     )
     return illumina_header
 
-def build_pipeline(parameters):
+def build_pipeline(parameters, read_direction=None):
     """
     Build the list of enabled trimming and filtering modules.
 
@@ -1204,9 +1204,9 @@ def build_pipeline(parameters):
         pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: n_end_trimming(seq, padding_mask_bool, chunk_padding_bool, row_tilde_count))
     if parameters.get("poly_filter_flag"):
         pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: homopolymer_nucleotide_trimming(seq, padding_mask_bool, row_tilde_count, chunk_padding_bool, poly_length_both=parameters["poly_length_both"], poly_length_start=parameters["poly_length_start"], poly_length_end=parameters["poly_length_end"], poly_bases_both=parameters["poly_bases_both"], poly_bases_start=parameters["poly_bases_start"], poly_bases_end=parameters["poly_bases_end"]))
-    if parameters.get("adapter_filter_flag"):
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: adapter_trimming(seq, chunk_padding_bool, row_tilde_count, adapter_sequences=parameters["adapter_sequences"], mismatches=parameters["adapter_mismatch"], adapter_seed = parameters["adapter_seed"]))
-
+    if parameters.get("adapter_filter_flag"): 
+        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: adapter_trimming(seq, chunk_padding_bool, row_tilde_count, adapter_sequences=parameters["adapter_sequences"], mismatches=parameters["adapter_mismatch"], adapter_seed=parameters["adapter_seed"], read_direction=read_direction, adapter_group=None if parameters.get("adapter_fasta_excl") else parameters.get("adapter_group")))
+        
     #quality_based
     if parameters.get("endqual_filter_flag"):
         pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: trim_ends_quality(qual, chunk_padding_bool, row_tilde_count, padding_mask_bool, min_quality_both=parameters["min_quality_both"], endqual_min_start=parameters["endqual_min_start"], endqual_min_end=parameters["endqual_min_end"]))
@@ -1813,7 +1813,29 @@ def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_til
     right_cutoffs_2 = np.where(found, best_insert, real_lengths_2).astype(np.int32)
     return ((np.zeros(n_reads_1, dtype=np.int8), right_cutoffs_1), (np.zeros(n_reads_2, dtype=np.int8), right_cutoffs_2))
 
-def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_sequences, mismatches, adapter_seed):
+def select_adapters_for_read(adapter_sequences, adapter_group, read_direction):
+    """
+    For paired reads (read_direction "read_1"/"read_2"), drop the other mate's
+    directional adapter (a DEFAULT_ADAPTERS entry named Read_1/Read_2) of the
+    selected adapter groups. Sequences that another selected entry also needs
+    are kept. With no direction or no group, the list is returned unchanged.
+    """
+    if read_direction not in ("read_1", "read_2") or not adapter_group:
+        return adapter_sequences
+    other_name = "Read_2" if read_direction == "read_1" else "Read_1"
+    drop, keep = set(), set()
+    for group, entries in DEFAULT_ADAPTERS:
+        if group not in adapter_group:
+            continue
+        for name, seq in entries:
+            data = seq.encode("utf-8")
+            if name == other_name:
+                drop.add(data)
+            else:
+                keep.add(data)
+    return [a for a in adapter_sequences if a not in drop or a in keep]
+
+def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_sequences, mismatches, adapter_seed, read_direction=None, adapter_group=None):
     """
     Adapter trimming: cut each read at the earliest occurrence of any
     adapter sequence.
@@ -1845,6 +1867,7 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
             read's real length if no adapter was found.
     """
     n_reads, length = sequence_arr.shape
+    adapter_sequences = select_adapters_for_read(adapter_sequences, adapter_group, read_direction)
     if mismatches == 0:
         all_bytes = sequence_arr.tobytes()
         if not chunk_padding_bool:
@@ -2587,7 +2610,7 @@ def paired_overlap_cutoffs(batch_1, batch_2, parameters):
     left_2[rows_2], right_2[rows_2] = l2, r2
     return (left_1, right_1), (left_2, right_2)    
 
-def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, overlap_cutoffs, parameters):
+def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, overlap_cutoffs, parameters, read_direction=None):
     """
     Trim and length/quality-filter one prepared batch (one mate of a paired
     chunk) and format the survivors, keyed by their base (mate-independent)
@@ -2635,7 +2658,7 @@ def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_outp
     n_reads, length = sequence_arr.shape
     left_list = [np.zeros(n_reads, dtype=np.int8)]
     right_list = [np.full(n_reads, length, dtype=np.int32) - row_tilde_count]
-    for step in build_pipeline(parameters):
+    for step in build_pipeline(parameters, read_direction):
         left, right = step(sequence_arr, quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool)
         left_list.append(left)
         right_list.append(right)
@@ -2755,8 +2778,8 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
     overlap_1 = overlap_2 = None
     if parameters["overlap_filter_flag"]:
         overlap_1, overlap_2 = paired_overlap_cutoffs(batch_1, batch_2, parameters)
-    survivors_1, filtered_1, filtered_R1 = finish_reads(batch_1, phred_offset_1, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_1, parameters = parameters)
-    survivors_2, filtered_2, filtered_R2 = finish_reads(batch_2, phred_offset_2, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_2, parameters = parameters)
+    survivors_1, filtered_1, filtered_R1 = finish_reads(batch_1, phred_offset_1, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_1, read_direction="read_1", parameters = parameters)
+    survivors_2, filtered_2, filtered_R2 = finish_reads(batch_2, phred_offset_2, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_2, read_direction="read_2", parameters = parameters)
     rejected_1 = invalid_1 + filtered_1
     rejected_2 = invalid_2 + filtered_2
     rejected_R1 = rejected_R1 + filtered_R1
@@ -3513,9 +3536,9 @@ def parse_args():
         help="Minimal 5'-end match length. Shorter seeds can result in more partial hits found at end of reads. Default: 8."
     )
     adapter_trimming.add_argument(
-        "--adapter-group", "-ag", nargs = "+", default = ["Nextera"], choices = [name for name, _ in DEFAULT_ADAPTERS], metavar="",
-        help='Specify the group(s) of adapters to be used. Ignored if --adapter-fasta-excl is set. Choices: Illumina_RNA, Nextera, TruSeq2, TruSeq3, TruSeq_small_RNA. Default: Nextera.'
-    )
+        "--adapter-group", "-ag", nargs = "+", default = ["TruSeq"], choices = [name for name, _ in DEFAULT_ADAPTERS], metavar="",
+        help='Specify the group(s) of adapters to be used. Ignored if --adapter-fasta-excl is set. Choices: ' + ", ".join(["all"] + [name for name, _ in DEFAULT_ADAPTERS]) + '. Default: TruSeq.'
+        )
     adapter_trimming.add_argument(
         "--adapter-mismatch", "-am", type = int, default = 0, metavar="",
         help="Number of mismatches allowed in adapter finding. Default: 0."
@@ -3743,7 +3766,10 @@ def parse_args():
     parameters["stdout"] = args.stdout
     parameters["interleaved_out"] = args.interleaved_out
     parameters["write_rejected"] = args.write_rejected
-    parameters["adapter_group"] = args.adapter_group
+    parameters["adapter_group"] = (
+        [name for name, _ in DEFAULT_ADAPTERS] if "all" in args.adapter_group
+        else list(dict.fromkeys(args.adapter_group))
+    )
     parameters["discard_singles"] = args.discard_singles
     parameters["overlap_filter_flag"] = args.overlap_filter_flag
     parameters["overlap_mismatches"] = args.overlap_mismatches
@@ -3769,12 +3795,8 @@ def parse_args():
             if raw_adapters == []:
                 raise ValueError(f"No sequences in file '{parameters['adapter_fasta_excl']}' detected.")
         else:
-            selected_groups = parameters.get("adapter_group")
-            if selected_groups:
-                selected_groups = set(selected_groups)
-                flat_default_adapters = [entry for name, entries in DEFAULT_ADAPTERS if name in selected_groups for entry in entries]
-            else:
-                flat_default_adapters = [entry for _, entries in DEFAULT_ADAPTERS for entry in entries]
+            selected_groups = set(parameters["adapter_group"])
+            flat_default_adapters = [entry for name, entries in DEFAULT_ADAPTERS if name in selected_groups for entry in entries]
             if parameters.get("adapter_fasta_add"):
                 raw_adapters = flat_default_adapters + load_adapters_from_fasta(parameters["adapter_fasta_add"])
             else:
