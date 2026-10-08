@@ -1887,9 +1887,12 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
                 i, pos_in_row = divmod(pos, length)
                 avail = real_lengths[i] - pos_in_row
                 if avail >= adapter_len:
-                    if all_bytes.startswith(adapter_bytes, pos) and pos_in_row < right_cutoffs[i]:
-                        right_cutoffs[i] = pos_in_row
-                    start = (i + 1) * length
+                    if all_bytes.startswith(adapter_bytes, pos):
+                        if pos_in_row < right_cutoffs[i]:
+                            right_cutoffs[i] = pos_in_row
+                        start = (i + 1) * length
+                    else:
+                        start = pos + 1
                     continue
                 if avail == seed_len:
                     if pos_in_row < right_cutoffs[i]:
@@ -1897,26 +1900,28 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
                     start = (i + 1) * length
                     continue
                 if avail > seed_len:
-                    if all_bytes[pos:pos + avail] == adapter_bytes[:avail] and pos_in_row < right_cutoffs[i]:
-                        right_cutoffs[i] = pos_in_row
-                    start = (i + 1) * length
+                    if all_bytes[pos:pos + avail] == adapter_bytes[:avail]:
+                        if pos_in_row < right_cutoffs[i]:
+                            right_cutoffs[i] = pos_in_row
+                        start = (i + 1) * length
+                    else:
+                        start = pos + 1
                     continue
                 start = pos + 1
     else:
         if not chunk_padding_bool:
             right_cutoffs = np.full(n_reads, length, dtype=np.int32)
+            pos = np.arange(length, dtype=np.int32)
             for adapter_bytes in adapter_sequences:
-                adapter_arr = np.frombuffer(adapter_bytes, dtype=np.int8)
                 adapter_len = len(adapter_bytes)
-                if adapter_len > length:
-                   continue
-                n_windows = length - adapter_len + 1
-                mismatch_matrix = np.zeros((n_reads, n_windows), dtype=np.uint8)
-                for j in range(adapter_len):
-                    mismatch_matrix += sequence_arr[:, j:j + n_windows] != adapter_arr[j]
-                valid_mask = mismatch_matrix <= mismatches
+                seed_len = min(adapter_seed, adapter_len)
+                mismatch_matrix = np.zeros((n_reads, length), dtype=np.uint8)
+                for j in range(min(adapter_len, length)):
+                    mismatch_matrix[:, :length - j] += sequence_arr[:, j:] != adapter_bytes[j]
+                overlap = np.minimum(adapter_len, length - pos)
+                allowed = np.minimum(mismatches, overlap * mismatches // adapter_len)
+                valid_mask = (overlap >= seed_len) & (mismatch_matrix <= allowed)
                 has_match = valid_mask.any(axis=1)
-
                 if has_match.any():
                     first_match_col = valid_mask.argmax(axis=1)
                     right_cutoffs[has_match] = np.minimum(
@@ -1925,21 +1930,19 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
                     )
         else:
             real_lengths = length - row_tilde_count
-            right_cutoffs = np.full(n_reads, real_lengths, dtype=np.int32)
+            right_cutoffs = np.array(real_lengths, dtype=np.int32)
+            pos = np.arange(length, dtype=np.int32)
             for adapter_bytes in adapter_sequences:
-                adapter_arr = np.frombuffer(adapter_bytes, dtype=np.int8)
                 adapter_len = len(adapter_bytes)
-                if adapter_len > length:
-                   continue
-                n_windows = length - adapter_len + 1
-                mismatch_matrix = np.zeros((n_reads, n_windows), dtype=np.uint8)
-                for j in range(adapter_len):
-                    mismatch_matrix += sequence_arr[:, j:j + n_windows] != adapter_arr[j]
-                window_ends = np.arange(adapter_len, length + 1)
-                within_bounds = window_ends <= real_lengths[:, None]
-                valid_mask = (mismatch_matrix <= mismatches) & within_bounds
+                seed_len = min(adapter_seed, adapter_len)
+                mismatch_matrix = np.zeros((n_reads, length), dtype=np.int16)
+                for j in range(min(adapter_len, length)):
+                    mismatch_matrix[:, :length - j] += sequence_arr[:, j:] != adapter_bytes[j]
+                mismatch_matrix -= np.clip(np.minimum(pos + adapter_len, length) - real_lengths[:, None], 0, None)
+                overlap = np.minimum(adapter_len, real_lengths[:, None] - pos)
+                allowed = np.minimum(mismatches, overlap * mismatches // adapter_len)
+                valid_mask = (overlap >= seed_len) & (mismatch_matrix <= allowed)
                 has_match = valid_mask.any(axis=1)
-
                 if has_match.any():
                     first_match_col = valid_mask.argmax(axis=1)
                     right_cutoffs[has_match] = np.minimum(
@@ -3532,7 +3535,7 @@ def parse_args():
         help='[FLAG] Turn on adapter trimming module. Default: off.'
     )
     adapter_trimming.add_argument(
-        "--adapter-seed", "-as", type = int, default = 8, metavar="", choices=range(1,1000),
+        "--adapter-seed", "-as", type = int, default = 6, metavar="", choices=range(1,1000),
         help="Minimal 5'-end match length. Shorter seeds can result in more partial hits found at end of reads. Default: 8."
     )
     adapter_trimming.add_argument(
