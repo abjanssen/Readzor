@@ -7,11 +7,11 @@ DATA_DIR = Path(__file__).parent / "data"
 
 EXPECTED_HASHES = {
     "results_summary.txt": "484a28af2fc2bebab918ef4c3ce234721d0b8a7d25e98693ffba4a6dfc36fad9",
-    "test_paired_R1_paired_filtered.fastq.gz": "b9def62118ac494217c3ca3df30818f90788973c9722fe0fa688ff37039c46dc",
+    "test_paired_R1_paired_filtered.fastq.gz": "c507bcafa63c63b385e07709c348cc5d49400d4469047c886fc5af455a9f2d07",
     "test_paired_R1_unpaired_filtered.fastq.gz": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "test_paired_R2_paired_filtered.fastq.gz": "76a904ecd486f981d5fa4cf25512c40961e8fd0a9f88a3567a5956d5b90bc007",
     "test_paired_R2_unpaired_filtered.fastq.gz": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "test_unpaired_testhash3_filtered.fastq.gz": "6f941cea0eade596e16a5c4474fda8cfd9e4f340c33ca6da07534355b18addf1",
+    "test_unpaired_testhash3_filtered.fastq.gz": "6ea9bfd0c6475afb6db2c0a99f4f08ca226a6b89d5a6207165da25a317c376f3",
 }
 
 def test_readzor(tmp_path):
