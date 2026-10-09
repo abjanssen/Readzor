@@ -28,25 +28,35 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.4.4"
+VERSION = "0.5.0"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
-    ["TruSeq3", [
-        ["TruSeq3_R1_short", "AGATCGGAAGAGCACA"],  # first 16 of full seq
-        ["TruSeq3_R2_short", "AGATCGGAAGAGCGTC"],  # first 16 of full seq
-    ]],
-    ["TruSeq2", [
-        ["TruSeq2", "AGATCGGAAGAGCGGTTCAG"],
+    ["TruSeq", [
+        ["Read_1", "AGATCGGAAGAGCACACGTCTGAACTCCAGTCA"],  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/UDIndexes.htm
+        ["Read_2", "AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"]  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/UDIndexes.htm
     ]],
     ["TruSeq_small_RNA", [
-        ["TruSeq_small_RNA", "TGGAATTCTCGGGTGCCAAGG"],
+        ["TruSeq_small_RNA", "TGGAATTCTCGGGTGCCAAGG"]    #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/TruSeq-SmallRNA.htm
+    ]],
+    ["Illumina_miRNA", [
+        ["TruSeq_small_RNA", "AGATCGGAAGAGCACACGTCTGAACTCCAGTCA"]     #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/Illumina-miRNA-Indexes.htm
     ]],
     ["Nextera", [
-        ["Nextera", "CTGTCTCTTATACACATCT"],
+        ["Nextera", "CTGTCTCTTATACACATCT"]  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/Nextera_Illumina-Sequences.htm
+    ]],
+    ["AmpliSeq", [
+        ["AmpliSeq", "CTGTCTCTTATACACATCT"]  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/AmpliSeq-Sequences.htm
+    ]],
+    ["TruSeq_DNA_methylation", [
+        ["Read_1", "AGATCGGAAGAGCACACGTCTGAAC"],  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/TruSeq-DNAMethyl.htm
+        ["Read_2", "AGATCGGAAGAGCGTCGTGTAGGGA"],  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/TruSeq-DNAMethyl.htm
+    ]],
+    ["TruSeq_Ribo_profile", [
+        ["TruSeq_Ribo_profile", "AGATCGGAAGAGCACACGTCT"]  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/TruSeq-RiboProfile.htm
     ]],
     ["Illumina_RNA", [
-        ["Illumina_RNA", "ACTGTCTCTTATACACATCT"],
-    ]],
+        ["Illumina_RNA", "ACTGTCTCTTATACACATCT"]    #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/Nextera_Illumina-Sequences.htm
+    ]]
 ]
 FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "input_interleaved", "full_auto"}
 FULL_AUTO_OVERRIDES = {
@@ -59,6 +69,7 @@ FULL_AUTO_OVERRIDES = {
 }
 NUCL_ATCG = b"ATCG"
 NUCL_ATCGN = b"ATCGN"
+COMP_TABLE = bytes.maketrans(NUCL_ATCGN, b"TAGCN")
 ACTIVE_PROGRESS_TRACKER = None
 PHRED64_TO_33 = bytes.maketrans(
     bytes(range(59, 127)),
@@ -160,9 +171,10 @@ def count_reads_estimated(filepath, sample_size=50, default_gzip_ratio=4, gzip_s
     Estimate the number of reads in a FASTQ file.
 
     The average number of (uncompressed) bytes per read is estimated from
-    the first ``sample_size`` records: the lengths of the four lines plus
-    4 for the newline characters that lazy_fastq() strips. The estimated
-    uncompressed file size is then divided by this value.
+    the first ``sample_size`` records (or all records, if the file has
+    fewer), read as one raw blob with lazy_fastq_blobs(): the size of the
+    blob, newline characters included, divided by the number of records in
+    it. The estimated uncompressed file size is then divided by this value.
 
     For gzip files, the uncompressed size is estimated as the file size
     times a compression ratio, measured by decompressing up to
@@ -177,7 +189,7 @@ def count_reads_estimated(filepath, sample_size=50, default_gzip_ratio=4, gzip_s
     Args:
         filepath (str): Path to the FASTQ file (plain or gzip-compressed).
         sample_size (int): Maximum number of records sampled for the
-            bytes-per-read estimate. Defaults to 10.
+            bytes-per-read estimate. Defaults to 50.
         default_gzip_ratio (float): Compression ratio used when the gzip
             sample is too small to be reliable. Defaults to 4.
         gzip_sample_bytes (int): Number of uncompressed bytes to decompress
@@ -260,7 +272,7 @@ class ProgressTracker:
         Returns:
             str: The formatted duration.
         """
-        if seconds_val == float('inf') or seconds_val < 0 or seconds_val is None:
+        if seconds_val is None or seconds_val == float('inf') or seconds_val < 0:
             return "?"
         total_seconds = int(round(seconds_val))
         hours, remainder = divmod(total_seconds, 3600)
@@ -704,9 +716,9 @@ def parse_blob(blob):
     Split a raw FASTQ blob from lazy_fastq_blobs() into records. Runs in
     the worker processes.
 
-    Carriage returns are removed (CRLF input); other whitespace is kept,
-    as in the gzip branch of lazy_fastq(). The blob always ends on a record
-    boundary; record contents are checked later by validate_fastq().
+    Carriage returns are removed (CRLF input); other whitespace is kept.
+    The blob always ends on a record boundary; record contents are checked
+    later by validate_fastq().
 
     Args:
         blob (bytes): Raw FASTQ text from lazy_fastq_blobs().
@@ -782,8 +794,11 @@ def find_paired_files(filepaths):
 
         header_1 = headers[0].strip().lstrip(b'@')
         base_id_1, read_num_1 = read_info_from_header(header_1)
-        header_2 = headers[1].strip().lstrip(b'@')
-        base_id_2, read_num_2 = read_info_from_header(header_2)
+        if len(headers) > 1:
+            header_2 = headers[1].strip().lstrip(b'@')
+            base_id_2, read_num_2 = read_info_from_header(header_2)
+        else:
+            base_id_2, read_num_2 = None, None
     
         base_ids[filepath] = (base_id_1, read_num_1)
         interleaved_flag[filepath] = (
@@ -852,13 +867,14 @@ def read_info_from_header(header):
 
     Handles two common conventions:
       - Modern Illumina (Casava 1.8+): "<id> 1:N:0:..." or "<id> 2:N:0:...".
-        The base ID is everything before the first space; the read number
-        is taken from the start of the second field.
-      - Legacy Illumina, and MGI: "<id>/1" or "<id>/2". The base ID is the
-        header without the trailing "/1" or "/2".
+        Used whenever the header contains a space. The base ID is everything
+        before the first space; the read number is taken from the start of
+        the second field (None if that field does not start with 1 or 2).
+      - Legacy Illumina, and MGI: "<id>/1" or "<id>/2", for headers without
+        a space. The base ID is the header without the trailing "/1" or "/2".
 
-    If neither convention matches, the entire header is used as the base ID
-    and the read number is set to None.
+    If a header without a space does not end in "/1" or "/2", the entire
+    header is used as the base ID and the read number is set to None.
 
     Args:
         header (bytes): The FASTQ header line. Surrounding whitespace is
@@ -899,6 +915,9 @@ def detect_phred_offset(filepath, reads_for_phred_offset, phred_offset):
         (older Illumina);
       - otherwise the encoding is ambiguous and an error is raised.
 
+    When sampling, requires GZIP_DETECTION[filepath] to be set (see
+    input_handler()).
+
     Args:
         filepath (str): Path to the FASTQ file to inspect.
         reads_for_phred_offset (int): Maximum number of reads to sample.
@@ -908,8 +927,9 @@ def detect_phred_offset(filepath, reads_for_phred_offset, phred_offset):
         int: 33 or 64, the detected or provided Phred offset.
 
     Raises:
-        ValueError: If the FASTQ file cannot be read, or if the observed
-            ASCII range fits neither encoding.
+        ValueError: If the FASTQ file cannot be read, contains no complete
+            FASTQ records, or if the observed ASCII range fits neither
+            encoding.
     """
     if phred_offset is not None:
         return phred_offset
@@ -1156,7 +1176,7 @@ def header_mgi_to_illumina(mgi_header, barcode5, barcode7, instrument, run):
     )
     return illumina_header
 
-def build_pipeline(parameters):
+def build_pipeline(parameters, read_direction=None):
     """
     Build the list of enabled trimming and filtering modules.
 
@@ -1181,6 +1201,11 @@ def build_pipeline(parameters):
 
     Args:
         parameters (dict): Run parameters (module flags and their settings).
+        read_direction (str | None): "read_1" or "read_2" for one mate of a
+            read pair, passed on to adapter trimming so that only that
+            mate's directional adapters are searched for (see
+            select_adapters_for_read()). None for unpaired reads.
+            Defaults to None.
 
     Returns:
         list[callable]: The enabled modules; empty if none are enabled.
@@ -1193,9 +1218,9 @@ def build_pipeline(parameters):
         pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: n_end_trimming(seq, padding_mask_bool, chunk_padding_bool, row_tilde_count))
     if parameters.get("poly_filter_flag"):
         pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: homopolymer_nucleotide_trimming(seq, padding_mask_bool, row_tilde_count, chunk_padding_bool, poly_length_both=parameters["poly_length_both"], poly_length_start=parameters["poly_length_start"], poly_length_end=parameters["poly_length_end"], poly_bases_both=parameters["poly_bases_both"], poly_bases_start=parameters["poly_bases_start"], poly_bases_end=parameters["poly_bases_end"]))
-    if parameters.get("adapter_filter_flag"):
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: adapter_trimming(seq, chunk_padding_bool, row_tilde_count, adapter_sequences=parameters["adapter_sequences"], mismatches=parameters["adapter_mismatch"]))
-
+    if parameters.get("adapter_filter_flag"): 
+        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: adapter_trimming(seq, chunk_padding_bool, row_tilde_count, adapter_sequences=parameters["adapter_sequences"], mismatches=parameters["adapter_mismatch"], adapter_seed=parameters["adapter_seed"], read_direction=read_direction, adapter_group=None if parameters.get("adapter_fasta_excl") else parameters.get("adapter_group")))
+        
     #quality_based
     if parameters.get("endqual_filter_flag"):
         pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: trim_ends_quality(qual, chunk_padding_bool, row_tilde_count, padding_mask_bool, min_quality_both=parameters["min_quality_both"], endqual_min_start=parameters["endqual_min_start"], endqual_min_end=parameters["endqual_min_end"]))
@@ -1704,8 +1729,12 @@ def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_til
     including N vs N. An insert size is accepted if it has at most
     `max_mismatch` mismatches and a mismatch fraction of at most
     `max_mismatch_frac` percent of the I overlap positions. If several
-    insert sizes are accepted, the one with the lowest mismatch fraction
-    wins (ties go to the larger insert). Both mates are then cut at I.
+    insert sizes are accepted, the largest one wins. Both mates are then
+    cut at I.
+
+    As a speed-up, each candidate is first compared on its first
+    2 * max_mismatch + 6 positions only; candidates that already exceed
+    `max_mismatch` there are skipped.
 
     Args:
         seq_arr_1 (numpy.ndarray): (n_reads, length_1) int8 ASCII array of R1.
@@ -1743,9 +1772,7 @@ def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_til
     if n_reads_1 != n_reads_2:
         raise ValueError(f"R1 has {n_reads_1} reads, R2 has {n_reads_2}")
 
-    comp_table = bytes.maketrans(b"ACGTN", b"TGCAN")
-    rc_seq_arr_2 = np.frombuffer(seq_arr_2[:, ::-1].tobytes().translate(comp_table), dtype=np.int8).reshape(n_reads_2, length_2)
-    
+    rc_seq_arr_2 = np.frombuffer(seq_arr_2[:, ::-1].tobytes().translate(COMP_TABLE), dtype=np.int8).reshape(n_reads_2, length_2)    
     seq_arr_1 = np.where(seq_arr_1 == n_base, np.int8(-1), seq_arr_1)
     rc_seq_arr_2 = np.where(rc_seq_arr_2 == n_base, np.int8(-2), rc_seq_arr_2)
     
@@ -1804,18 +1831,68 @@ def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_til
     right_cutoffs_2 = np.where(found, best_insert, real_lengths_2).astype(np.int32)
     return ((np.zeros(n_reads_1, dtype=np.int8), right_cutoffs_1), (np.zeros(n_reads_2, dtype=np.int8), right_cutoffs_2))
 
-def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_sequences, mismatches):
+def select_adapters_for_read(adapter_sequences, adapter_group, read_direction):
+    """
+    Select the adapter sequences to search for in one mate of a read pair.
+
+    For paired reads (read_direction "read_1" or "read_2"), the other mate's
+    directional adapter (a DEFAULT_ADAPTERS entry named "Read_1" or
+    "Read_2") of each selected adapter group is dropped, e.g. the TruSeq
+    Read_2 adapter is not searched for in R1. A dropped sequence is kept
+    anyway if another entry of a selected group uses the same sequence.
+    Other sequences (e.g. from --adapter-fasta-add) are kept unless they are
+    identical to a dropped one.
+
+    Args:
+        adapter_sequences (list[bytes]): All adapter sequences of the run.
+        adapter_group (list[str] | None): Selected built-in adapter groups,
+            or None (as with --adapter-fasta-excl) to skip the selection.
+        read_direction (str | None): "read_1", "read_2", or None for
+            unpaired reads.
+
+    Returns:
+        list[bytes]: The adapter sequences to search for. Returned unchanged
+            if read_direction is not "read_1"/"read_2" or adapter_group is
+            empty or None.
+    """
+    if read_direction not in ("read_1", "read_2") or not adapter_group:
+        return adapter_sequences
+    other_name = "Read_2" if read_direction == "read_1" else "Read_1"
+    drop, keep = set(), set()
+    for group, entries in DEFAULT_ADAPTERS:
+        if group not in adapter_group:
+            continue
+        for name, seq in entries:
+            data = seq.encode("utf-8")
+            if name == other_name:
+                drop.add(data)
+            else:
+                keep.add(data)
+    return [a for a in adapter_sequences if a not in drop or a in keep]
+
+def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_sequences, mismatches, adapter_seed, read_direction=None, adapter_group=None):
     """
     Adapter trimming: cut each read at the earliest occurrence of any
     adapter sequence.
 
     For each read, the earliest position where any of the adapters occurs is
     found, and everything from that position onwards is removed (3'-end
-    trimming). With mismatches == 0, exact substring search is used. With
-    mismatches > 0, a vectorized Hamming-distance search allows up to that
-    many substitutions (no insertions or deletions). The whole adapter must
-    lie within the read, so partial adapters at the very 3' end are not
-    detected (for paired reads, overlap trimming can catch those).
+    trimming). An adapter that runs off the 3' end of the read is also
+    detected, as long as at least `adapter_seed` of its bases (or the whole
+    adapter, if it is shorter) lie within the read. For paired reads,
+    overlap trimming can catch shorter adapter remnants.
+
+    With mismatches == 0, matching is exact: the adapter's first
+    `adapter_seed` bases are located with a substring search, and each hit
+    is then checked against the rest of the adapter, or against the part of
+    it that fits in the read. With mismatches > 0, a vectorized
+    Hamming-distance search allows substitutions (no insertions or
+    deletions). The allowed number scales with the overlap: L adapter bases
+    within the read may contain round(L * mismatches / adapter_length)
+    mismatches.
+
+    For paired reads, the adapters searched for can be narrowed down per
+    mate first (see select_adapters_for_read()).
 
     Args:
         sequence_arr (numpy.ndarray): (n_reads, read_length) array of
@@ -1826,8 +1903,17 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
             bytes per read, used to keep matches within each read's real
             length when chunk_padding_bool is True.
         adapter_sequences (list[bytes]): Adapter sequences to search for.
-        mismatches (int): Number of allowed substitutions. 0 means exact
-            matching.
+        mismatches (int): Number of substitutions allowed over the full
+            adapter length. 0 means exact matching.
+        adapter_seed (int): Minimum number of adapter bases that must lie
+            within the read. With exact matching, also the length of the
+            adapter prefix used for the substring search.
+        read_direction (str | None): "read_1" or "read_2" for one mate of a
+            read pair, or None for unpaired reads. Defaults to None.
+        adapter_group (list[str] | None): Selected built-in adapter groups,
+            used together with read_direction to select the adapters per
+            mate, or None to search for all of adapter_sequences.
+            Defaults to None.
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
@@ -1836,50 +1922,61 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
             read's real length if no adapter was found.
     """
     n_reads, length = sequence_arr.shape
+    adapter_sequences = select_adapters_for_read(adapter_sequences, adapter_group, read_direction)
     if mismatches == 0:
         all_bytes = sequence_arr.tobytes()
         if not chunk_padding_bool:
-            right_cutoffs = np.full(n_reads, length, dtype=np.int32)
-            for adapter_bytes in adapter_sequences:
-                adapter_len = len(adapter_bytes)
-                start = 0
-                while True:
-                    pos = all_bytes.find(adapter_bytes, start)
-                    if pos == -1:
-                        break
-                    i, pos_in_row = divmod(pos, length)
-                    if pos_in_row + adapter_len <= length and pos_in_row < right_cutoffs[i]:
-                        right_cutoffs[i] = pos_in_row
-                    start = pos + 1
+            real_lengths = np.full(n_reads, length, dtype=np.int32)
         else:
             real_lengths = length - row_tilde_count
-            right_cutoffs = np.full(n_reads, real_lengths, dtype=np.int32)
-            for adapter_bytes in adapter_sequences:
-                adapter_len = len(adapter_bytes)
-                start = 0
-                while True:
-                    pos = all_bytes.find(adapter_bytes, start)
-                    if pos == -1:
-                        break
-                    i, pos_in_row = divmod(pos, length)
-                    if pos_in_row + adapter_len <= real_lengths[i] and pos_in_row < right_cutoffs[i]:
+        right_cutoffs = np.array(real_lengths, dtype=np.int32)
+        for adapter_bytes in adapter_sequences:
+            adapter_len = len(adapter_bytes)
+            seed_len = min(adapter_seed, adapter_len)
+            seed = adapter_bytes[:seed_len]
+            start = 0
+            while True:
+                pos = all_bytes.find(seed, start)
+                if pos == -1:
+                    break
+                i, pos_in_row = divmod(pos, length)
+                avail = real_lengths[i] - pos_in_row
+                if avail >= adapter_len:
+                    if all_bytes.startswith(adapter_bytes, pos):
+                        if pos_in_row < right_cutoffs[i]:
+                            right_cutoffs[i] = pos_in_row
+                        start = (i + 1) * length
+                    else:
+                        start = pos + 1
+                    continue
+                if avail == seed_len:
+                    if pos_in_row < right_cutoffs[i]:
                         right_cutoffs[i] = pos_in_row
-                    start = pos + 1
+                    start = (i + 1) * length
+                    continue
+                if avail > seed_len:
+                    if all_bytes[pos:pos + avail] == adapter_bytes[:avail]:
+                        if pos_in_row < right_cutoffs[i]:
+                            right_cutoffs[i] = pos_in_row
+                        start = (i + 1) * length
+                    else:
+                        start = pos + 1
+                    continue
+                start = pos + 1
     else:
         if not chunk_padding_bool:
             right_cutoffs = np.full(n_reads, length, dtype=np.int32)
+            pos = np.arange(length, dtype=np.int32)
             for adapter_bytes in adapter_sequences:
-                adapter_arr = np.frombuffer(adapter_bytes, dtype=np.int8)
                 adapter_len = len(adapter_bytes)
-                if adapter_len > length:
-                   continue
-                n_windows = length - adapter_len + 1
-                mismatch_matrix = np.zeros((n_reads, n_windows), dtype=np.uint8)
-                for j in range(adapter_len):
-                    mismatch_matrix += sequence_arr[:, j:j + n_windows] != adapter_arr[j]
-                valid_mask = mismatch_matrix <= mismatches
+                seed_len = min(adapter_seed, adapter_len)
+                mismatch_matrix = np.zeros((n_reads, length), dtype=np.uint8)
+                for j in range(min(adapter_len, length)):
+                    mismatch_matrix[:, :length - j] += sequence_arr[:, j:] != adapter_bytes[j]
+                overlap = np.minimum(adapter_len, length - pos)
+                allowed = np.round(overlap * mismatches / adapter_len).astype(np.int32)
+                valid_mask = (overlap >= seed_len) & (mismatch_matrix <= allowed)
                 has_match = valid_mask.any(axis=1)
-
                 if has_match.any():
                     first_match_col = valid_mask.argmax(axis=1)
                     right_cutoffs[has_match] = np.minimum(
@@ -1888,21 +1985,19 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
                     )
         else:
             real_lengths = length - row_tilde_count
-            right_cutoffs = np.full(n_reads, real_lengths, dtype=np.int32)
+            right_cutoffs = np.array(real_lengths, dtype=np.int32)
+            pos = np.arange(length, dtype=np.int32)
             for adapter_bytes in adapter_sequences:
-                adapter_arr = np.frombuffer(adapter_bytes, dtype=np.int8)
                 adapter_len = len(adapter_bytes)
-                if adapter_len > length:
-                   continue
-                n_windows = length - adapter_len + 1
-                mismatch_matrix = np.zeros((n_reads, n_windows), dtype=np.uint8)
-                for j in range(adapter_len):
-                    mismatch_matrix += sequence_arr[:, j:j + n_windows] != adapter_arr[j]
-                window_ends = np.arange(adapter_len, length + 1)
-                within_bounds = window_ends <= real_lengths[:, None]
-                valid_mask = (mismatch_matrix <= mismatches) & within_bounds
+                seed_len = min(adapter_seed, adapter_len)
+                mismatch_matrix = np.zeros((n_reads, length), dtype=np.int16)
+                for j in range(min(adapter_len, length)):
+                    mismatch_matrix[:, :length - j] += sequence_arr[:, j:] != adapter_bytes[j]
+                mismatch_matrix -= np.clip(np.minimum(pos + adapter_len, length) - real_lengths[:, None], 0, None)
+                overlap = np.minimum(adapter_len, real_lengths[:, None] - pos)
+                allowed = np.round(overlap * mismatches / adapter_len).astype(np.int32)
+                valid_mask = (overlap >= seed_len) & (mismatch_matrix <= allowed)
                 has_match = valid_mask.any(axis=1)
-
                 if has_match.any():
                     first_match_col = valid_mask.argmax(axis=1)
                     right_cutoffs[has_match] = np.minimum(
@@ -1950,8 +2045,10 @@ def kmer_complexity_scan(sequence_arr, chunk_padding_bool, padding_mask_bool, km
 
     Bases are encoded with 3 bits each, which limits k to 21 (63 bits). The
     alphabet size is 5 (A, C, G, T, N) when `allow_n` is True, and 4
-    otherwise. In padded chunks, k-mer windows overlapping padding are
-    excluded from both the distinct count and the maximum.
+    otherwise; N is then not a separate letter (it is encoded like A), as
+    reads with N are expected to have been removed by --n-filter. In padded
+    chunks, k-mer windows overlapping padding are excluded from both the
+    distinct count and the maximum.
 
     Args:
         sequence_arr (numpy.ndarray): A 2D array of ASCII sequence codes
@@ -2083,8 +2180,10 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
       5. Kept reads are cut to their window and, if requested, their
          quality strings are re-encoded to parameters["phred_out"].
 
-    Rejected records are written untrimmed, with their original quality
-    encoding.
+    Rejected records are collected untrimmed, with their original quality
+    encoding. Records that failed validation are kept exactly as read;
+    records rejected after trimming carry the converted header and plus
+    line if MGI conversion is enabled.
 
     Args:
         chunk (Iterable[tuple[bytes, bytes, bytes, bytes]]): (header,
@@ -2573,7 +2672,7 @@ def paired_overlap_cutoffs(batch_1, batch_2, parameters):
     left_2[rows_2], right_2[rows_2] = l2, r2
     return (left_1, right_1), (left_2, right_2)    
 
-def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, overlap_cutoffs, parameters):
+def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, overlap_cutoffs, parameters, read_direction=None):
     """
     Trim and length/quality-filter one prepared batch (one mate of a paired
     chunk) and format the survivors, keyed by their base (mate-independent)
@@ -2601,6 +2700,9 @@ def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_outp
         overlap_cutoffs (tuple | None): (left, right) per batch row from
             paired_overlap_cutoffs, or None.
         parameters (dict): Run parameters (pipeline, Phred re-encoding).
+        read_direction (str | None): "read_1" or "read_2", passed on to
+            build_pipeline() for mate-specific adapter selection.
+            Defaults to None.
 
     Returns:
         tuple[dict[bytes, bytes], int, list[bytes]]:
@@ -2621,7 +2723,7 @@ def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_outp
     n_reads, length = sequence_arr.shape
     left_list = [np.zeros(n_reads, dtype=np.int8)]
     right_list = [np.full(n_reads, length, dtype=np.int32) - row_tilde_count]
-    for step in build_pipeline(parameters):
+    for step in build_pipeline(parameters, read_direction):
         left, right = step(sequence_arr, quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool)
         left_list.append(left)
         right_list.append(right)
@@ -2739,10 +2841,10 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
     batch_1, invalid_1, rejected_R1 = prepare_reads(chunk1, phred_offset_1, write_rejected = parameters["write_rejected"], parameters = parameters)
     batch_2, invalid_2, rejected_R2 = prepare_reads(chunk2, phred_offset_2, write_rejected = parameters["write_rejected"], parameters = parameters)
     overlap_1 = overlap_2 = None
-    if parameters["overlap_filter_flag"]:
+    if parameters["overlap_filter_flag"] and batch_1 is not None and batch_2 is not None:
         overlap_1, overlap_2 = paired_overlap_cutoffs(batch_1, batch_2, parameters)
-    survivors_1, filtered_1, filtered_R1 = finish_reads(batch_1, phred_offset_1, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_1, parameters = parameters)
-    survivors_2, filtered_2, filtered_R2 = finish_reads(batch_2, phred_offset_2, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_2, parameters = parameters)
+    survivors_1, filtered_1, filtered_R1 = finish_reads(batch_1, phred_offset_1, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_1, read_direction="read_1", parameters = parameters)
+    survivors_2, filtered_2, filtered_R2 = finish_reads(batch_2, phred_offset_2, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_2, read_direction="read_2", parameters = parameters)
     rejected_1 = invalid_1 + filtered_1
     rejected_2 = invalid_2 + filtered_2
     rejected_R1 = rejected_R1 + filtered_R1
@@ -3116,11 +3218,12 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
 
 ##### Input handling #####
 class CleanHelpFormatter(argparse.HelpFormatter):
-    """Custom argparse HelpFormatter that cleans up comma spacing, adjusts
-    the starting column position of help explanations, removes the
-    empty line between a description and the options that follow it,
-    suppresses empty metavar placeholder artifacts (like '[ ...]'),
-    and allows manual paragraph breaks (via '\\n\\n') in descriptions.
+    """
+    Custom argparse HelpFormatter that cleans up comma spacing, starts the
+    help explanations at column 50 at most (instead of argparse's 24),
+    removes the blank line between a group's description and its first
+    option, suppresses empty metavar placeholder artifacts (like '[ ...]'),
+    and keeps manual paragraph breaks ('\\n\\n') in descriptions.
     """
     def __init__(
         self, prog, indent_increment=2, max_help_position=50, width=None
@@ -3133,24 +3236,27 @@ class CleanHelpFormatter(argparse.HelpFormatter):
         )
 
     def _format_args(self, action, default_metavar):
-        """Suppress argument placeholder formatting (e.g., '[ ...]') when
-
-        metavar is empty.
+        """
+        Return an empty string instead of the argument placeholder (e.g.
+        '[ ...]') when the action's metavar is empty.
         """
         if action.metavar == "" or action.metavar == ("",):
             return ""
         return super()._format_args(action, default_metavar)
 
     def _format_action_invocation(self, action):
-        """Fixes ' --cut-both , -cb' -> ' --cut-both, -cb'."""
+        """
+        Remove the space before commas in option lists, e.g.
+        '--cut-both , -cb' -> '--cut-both, -cb'.
+        """
         invocation = super()._format_action_invocation(action)
         return invocation.replace(" ,", ",")
 
     def _fill_text(self, text, width, indent):
-        """Preserve manual '\\n\\n' paragraph breaks in description text,
-
-        wrapping each paragraph individually rather than collapsing the
-        whole description into one wrapped block.
+        """
+        Wrap each '\\n\\n'-separated paragraph of a description separately,
+        so manual paragraph breaks are preserved instead of the whole text
+        being collapsed into one wrapped block.
         """
         paragraphs = text.split("\n\n")
         return "\n\n".join(
@@ -3161,10 +3267,10 @@ class CleanHelpFormatter(argparse.HelpFormatter):
         )
 
     def format_help(self):
-        """Removes the blank line argparse inserts between a group's
-
-        description and its first option, while leaving blank lines
-        between groups (and manual '\\n\\n' description breaks) intact.
+        """
+        Remove the blank line argparse inserts between a group's description
+        and its first option, while keeping the blank lines between groups
+        and manual '\\n\\n' breaks within descriptions.
         """
         help_text = super().format_help()
         help_text = re.sub(r"\n\n(?=  -)", "\n", help_text)
@@ -3233,16 +3339,20 @@ def parse_args():
     default, apart from the values listed in FULL_AUTO_OVERRIDES.
 
     After parsing, some settings are resolved or adjusted:
+      - --input-paired files are grouped into (R1, R2) tuples
+        (group_paired_input_into_pairs()).
+      - --output defaults to the current working directory.
       - --gzip turns --stdout off.
       - --stdout turns off verbose output, the progress bar and
         --write-rejected, and turns on --discard-singles and
         --interleaved-out.
       - --n-filter turns off N end trimming (there would be nothing left
-        to trim).
+        to trim), and N is no longer counted as a separate letter in k-mer
+        complexity filtering ("allow_n_kmer").
       - With adapter trimming on, the adapter list is taken from
         --adapter-fasta-excl alone, or else from the selected
         --adapter-group(s) plus --adapter-fasta-add, and de-duplicated.
-      - The thread count is resolved (worker_determination())
+      - The thread count is resolved (worker_determination()).
 
     Returns:
         dict: Run parameters, keyed one-for-one with the resolved CLI
@@ -3255,9 +3365,11 @@ def parse_args():
         Sets up console logging. When run without any arguments, prints the
         help to stderr and exits with status 1. With --help (optionally
         combined with --full-auto), --version or --list-adapters, prints
-        the corresponding output and exits. Calls parser.error() (which
-        exits with status 2) if no input can be found. May create a
-        temporary file holding stdin data.
+        the corresponding output and exits. With --full-auto (and without
+        --verbose), prints a warning that other options are ignored. Calls
+        parser.error() (which exits with status 2) if no input can be
+        found, if --input-paired has an odd number of files, or if piped
+        stdin is empty. May create a temporary file holding stdin data.
 
     Raises:
         ValueError: If an adapter FASTA file is malformed, or
@@ -3495,9 +3607,13 @@ def parse_args():
         help='[FLAG] Turn on adapter trimming module. Default: off.'
     )
     adapter_trimming.add_argument(
-        "--adapter-group", "-ag", nargs = "+", default = ["Nextera"], choices = [name for name, _ in DEFAULT_ADAPTERS], metavar="",
-        help='Specify the group(s) of adapters to be used. Ignored if --adapter-fasta-excl is set. Choices: Illumina_RNA, Nextera, TruSeq2, TruSeq3, TruSeq_small_RNA. Default: Nextera.'
+        "--adapter-seed", "-as", type = int, default = 6, metavar="", choices=range(1,1000),
+        help="Minimal 5'-end match length. Shorter seeds can result in more partial hits found at end of reads. Default: 6."
     )
+    adapter_trimming.add_argument(
+        "--adapter-group", "-ag", nargs = "+", default = ["TruSeq"], choices = ["all"] + [name for name, _ in DEFAULT_ADAPTERS], metavar="",
+        help='Specify the group(s) of adapters to be used. Ignored if --adapter-fasta-excl is set. Choices: ' + ", ".join(["all"] + [name for name, _ in DEFAULT_ADAPTERS]) + '. Default: TruSeq.'
+        )
     adapter_trimming.add_argument(
         "--adapter-mismatch", "-am", type = int, default = 0, metavar="",
         help="Number of mismatches allowed in adapter finding. Default: 0."
@@ -3510,6 +3626,7 @@ def parse_args():
         "--adapter-fasta-excl", "-ax", type = str, default = None, metavar="",
         help="Fasta file with adapter sequences to trim for, excluding predefined and additional sequences specified."
     )
+    
 
     overlap_trimming = parser.add_argument_group("Overlap trimming",
                                                  "Perform overlap analysis to find adapter sequences. Works independently of adapter sequence. Only available for paired and interleaved reads. Can be combined with --adapter-filter-flag.")
@@ -3527,7 +3644,7 @@ def parse_args():
     )
     overlap_trimming.add_argument(
         "--overlap-portion-mismatch", "-op", type = int, default = 10, metavar="",
-        help="Maximum percentage of mismatched bases allowed in the overlapping region. Default: 5"
+        help="Maximum percentage of mismatched bases allowed in the overlapping region. Default: 10"
     )
 
     low_complexity_group = parser.add_argument_group("Low complexity filtering",
@@ -3685,6 +3802,7 @@ def parse_args():
     parameters["adapter_filter_flag"] = args.adapter_filter_flag
     parameters["adapter_fasta_add"] = args.adapter_fasta_add
     parameters["adapter_fasta_excl"] = args.adapter_fasta_excl
+    parameters["adapter_seed"] = args.adapter_seed
     parameters["n_filter"] = args.n_filter
     parameters["phred_offset"] = args.phred_offset
     parameters["threads"] = args.threads
@@ -3723,7 +3841,10 @@ def parse_args():
     parameters["stdout"] = args.stdout
     parameters["interleaved_out"] = args.interleaved_out
     parameters["write_rejected"] = args.write_rejected
-    parameters["adapter_group"] = args.adapter_group
+    parameters["adapter_group"] = (
+        [name for name, _ in DEFAULT_ADAPTERS] if "all" in args.adapter_group
+        else list(dict.fromkeys(args.adapter_group))
+    )
     parameters["discard_singles"] = args.discard_singles
     parameters["overlap_filter_flag"] = args.overlap_filter_flag
     parameters["overlap_mismatches"] = args.overlap_mismatches
@@ -3749,12 +3870,8 @@ def parse_args():
             if raw_adapters == []:
                 raise ValueError(f"No sequences in file '{parameters['adapter_fasta_excl']}' detected.")
         else:
-            selected_groups = parameters.get("adapter_group")
-            if selected_groups:
-                selected_groups = set(selected_groups)
-                flat_default_adapters = [entry for name, entries in DEFAULT_ADAPTERS if name in selected_groups for entry in entries]
-            else:
-                flat_default_adapters = [entry for _, entries in DEFAULT_ADAPTERS for entry in entries]
+            selected_groups = set(parameters["adapter_group"])
+            flat_default_adapters = [entry for name, entries in DEFAULT_ADAPTERS if name in selected_groups for entry in entries]
             if parameters.get("adapter_fasta_add"):
                 raw_adapters = flat_default_adapters + load_adapters_from_fasta(parameters["adapter_fasta_add"])
             else:
