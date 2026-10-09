@@ -28,7 +28,7 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.4.7"
+VERSION = "0.5.0"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq", [
@@ -1919,7 +1919,7 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
                 for j in range(min(adapter_len, length)):
                     mismatch_matrix[:, :length - j] += sequence_arr[:, j:] != adapter_bytes[j]
                 overlap = np.minimum(adapter_len, length - pos)
-                allowed = np.minimum(mismatches, overlap * mismatches // adapter_len)
+                allowed = np.round(overlap * mismatches / adapter_len).astype(np.int32)
                 valid_mask = (overlap >= seed_len) & (mismatch_matrix <= allowed)
                 has_match = valid_mask.any(axis=1)
                 if has_match.any():
@@ -1940,7 +1940,7 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
                     mismatch_matrix[:, :length - j] += sequence_arr[:, j:] != adapter_bytes[j]
                 mismatch_matrix -= np.clip(np.minimum(pos + adapter_len, length) - real_lengths[:, None], 0, None)
                 overlap = np.minimum(adapter_len, real_lengths[:, None] - pos)
-                allowed = np.minimum(mismatches, overlap * mismatches // adapter_len)
+                allowed = np.round(overlap * mismatches / adapter_len).astype(np.int32)
                 valid_mask = (overlap >= seed_len) & (mismatch_matrix <= allowed)
                 has_match = valid_mask.any(axis=1)
                 if has_match.any():
