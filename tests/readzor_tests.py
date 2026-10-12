@@ -9,7 +9,7 @@ EXPECTED_HASHES = {
     "results_summary.txt": "484a28af2fc2bebab918ef4c3ce234721d0b8a7d25e98693ffba4a6dfc36fad9",
     "test_paired_R1_paired_filtered.fastq.gz": "c232e53b823ca6a7c6a2aeb4a938f51277ade6b4273ec4aa7313864ff515124e",
     "test_paired_R1_unpaired_filtered.fastq.gz": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "test_paired_R2_paired_filtered.fastq.gz": "02f9cefb6724c14d0875b399c1d1cf4415fada0e498f93f7b06869390dd4f78ca904ecd486f981d5fa4cf25512c40961e8fd0a9f88a3567a5956d5b90bc007",
+    "test_paired_R2_paired_filtered.fastq.gz": "02f9cefb6724c14d0875b399c1d1cf4415fada0e498f93f7b06869390dd4f78c",
     "test_paired_R2_unpaired_filtered.fastq.gz": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "test_unpaired_testhash3_filtered.fastq.gz": "2f59a391ed824685e93b1a0dbc9562050319fd91fb5da444b1babd18e36b04dd",
 }
