@@ -28,7 +28,7 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.5.1"
+VERSION = "0.5.2"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq", [
@@ -1944,7 +1944,7 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
                 n_steps = min(adapter_len, length)
                 overlap = np.minimum(adapter_len, length - pos)
                 allowed = np.where(overlap >= seed_len,(2 * overlap * mismatches + adapter_len) // (2 * adapter_len),-1,).astype(np.int16)
-                check_step = max(mismatches, int(adapter_len * 0.75))
+                check_step = 14 + 2 * mismatches
                 n_open = length - check_step
                 do_check = check_step < n_steps and n_open > 0
                 mismatch_matrix = np.zeros((n_reads, length), dtype=np.uint8)
