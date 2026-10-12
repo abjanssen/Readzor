@@ -3578,8 +3578,8 @@ def parse_args():
         help='Base(s) to check for a homopolymer run at both read ends. Comma-separated bases are checked independently. Overwritten by poly_bases_start and poly_bases_end. Default: none.'
     )
     homopolymer_nucleotide_trimming.add_argument(
-        "--poly-length-start", "-pls", type = int, default = None, metavar = "",
-        help="Minimum length of homopolymer run at start of read required to trigger trimming. Default: off."
+        "--poly-length-start", "-pls", type = int, default = 0, metavar = "",
+        help="Minimum length of homopolymer run at start of read required to trigger trimming. Default: 0."
     )
     homopolymer_nucleotide_trimming.add_argument(
         "--poly-length-end", "-ple", type = int, default = 10, metavar = "",
