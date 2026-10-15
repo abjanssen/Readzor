@@ -997,6 +997,21 @@ def validate_fastq(header, sequence, plus, quality, n_filter, min_length_input, 
         return False
     return True
 
+def load_adapters_from_arg(value):
+    """FASTA file path or comma-separated sequences -> list[tuple[str, str]]."""
+    if os.path.isfile(value):
+        adapters = load_adapters_from_fasta(value)
+        if not adapters:
+            raise ValueError(f"No sequences in file '{value}' detected.")
+        return adapters
+    seqs = [s.strip().upper() for s in value.split(",") if s.strip()]
+    if not seqs:
+        raise ValueError("No adapter sequences detected.")
+    for s in seqs:
+        if not re.fullmatch(r"[ACGTN]+", s):
+            raise ValueError(f"'{s}' is neither an existing FASTA file nor a valid sequence.")
+    return [(f"custom_{i}", s) for i, s in enumerate(seqs, 1)]
+
 def load_adapters_from_fasta(fasta_file):
     """
     Parse adapter sequences from a FASTA file.
@@ -1211,7 +1226,7 @@ def build_pipeline(parameters, read_direction=None):
     if parameters.get("poly_filter_flag"):
         pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: homopolymer_nucleotide_trimming(seq, padding_mask_bool, row_tilde_count, chunk_padding_bool, poly_length_start=parameters["poly_length_start"], poly_length_end=parameters["poly_length_end"], poly_bases_start=parameters["poly_bases_start"], poly_bases_end=parameters["poly_bases_end"]))
     if parameters.get("adapter_filter_flag"): 
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: adapter_trimming(seq, chunk_padding_bool, row_tilde_count, adapter_sequences=parameters["adapter_sequences"], mismatches=parameters["adapter_mismatch"], adapter_seed=parameters["adapter_seed"], read_direction=read_direction, adapter_group=None if parameters.get("adapter_fasta_excl") else parameters.get("adapter_group")))
+        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: adapter_trimming(seq, chunk_padding_bool, row_tilde_count, adapter_sequences=parameters["adapter_sequences"], mismatches=parameters["adapter_mismatch"], adapter_seed=parameters["adapter_seed"], adapter_per_read = parameters["adapter_per_read"], read_direction=read_direction, adapter_group=None if parameters.get("adapter_fasta_excl") else parameters.get("adapter_group")))
         
     #quality_based
     if parameters.get("endqual_filter_flag"):
@@ -1792,7 +1807,7 @@ def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_til
     right_cutoffs_2 = np.where(found, best_insert, real_lengths_2).astype(np.int32)
     return ((np.zeros(n_reads_1, dtype=np.int8), right_cutoffs_1), (np.zeros(n_reads_2, dtype=np.int8), right_cutoffs_2))
 
-def select_adapters_for_read(adapter_sequences, adapter_group, read_direction):
+def select_adapters_for_read(adapter_sequences, adapter_group, read_direction,adapter_per_read=None):
     """
     Select the adapter sequences to search for in one mate of a read pair.
 
@@ -1816,6 +1831,11 @@ def select_adapters_for_read(adapter_sequences, adapter_group, read_direction):
             if read_direction is not "read_1"/"read_2" or adapter_group is
             empty or None.
     """
+    if adapter_per_read:
+        if read_direction in adapter_per_read:
+            return adapter_per_read[read_direction]
+        return adapter_sequences
+    
     if read_direction not in ("read_1", "read_2") or not adapter_group:
         return adapter_sequences
     other_name = "Read 2" if read_direction == "read_1" else "Read 1"
@@ -1831,7 +1851,7 @@ def select_adapters_for_read(adapter_sequences, adapter_group, read_direction):
                 keep.add(data)
     return [a for a in adapter_sequences if a not in drop or a in keep]
 
-def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_sequences, mismatches, adapter_seed, read_direction=None, adapter_group=None):
+def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_sequences, mismatches, adapter_seed, adapter_per_read, read_direction=None, adapter_group=None):
     """
     Adapter trimming: cut each read at the earliest occurrence of any
     adapter sequence.
@@ -1883,7 +1903,7 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
             read's real length if no adapter was found.
     """
     n_reads, length = sequence_arr.shape
-    adapter_sequences = select_adapters_for_read(adapter_sequences, adapter_group, read_direction)
+    adapter_sequences = select_adapters_for_read(adapter_sequences, adapter_group, read_direction, adapter_per_read)
     if mismatches == 0:
         all_bytes = sequence_arr.tobytes()
         if not chunk_padding_bool:
@@ -3598,19 +3618,27 @@ def parse_args():
     )
     adapter_trimming.add_argument(
         "--adapter-group", "-ag", nargs = "+", default = ["TruSeq"], choices = ["all"] + [name for name, _ in DEFAULT_ADAPTERS], metavar="",
-        help='[STR] Specify the group(s) of adapters to be used. Ignored if --adapter-fasta-excl is set. Choices: ' + ", ".join(["all"] + [name for name, _ in DEFAULT_ADAPTERS]) + '. For matched paired reads, forward reads will only be trimmed for "Read 1", and reverse reads for "Read 2" adapters (when applicable). Default: TruSeq.'
+        help='[STR] Specify the group(s) of adapters to be used. Ignored if --adapter-excl is set. Choices: ' + ", ".join(["all"] + [name for name, _ in DEFAULT_ADAPTERS]) + '. For matched paired reads, forward reads will only be trimmed for "Read 1", and reverse reads for "Read 2" adapters (when applicable). Default: TruSeq.'
         )
     adapter_trimming.add_argument(
         "--adapter-mismatch", "-am", type = int, default = 0, metavar="",
         help="[INT] Number of mismatches allowed in adapter finding. Default: 0."
     )
     adapter_trimming.add_argument(
-        "--adapter-fasta-add", "-ad", type = str, default = None, metavar="",
-        help="[STR] Fasta file with adapter sequences to trim for, in addition to predefined sequences."
+        "--adapter-add", "-ad", type = str, default = None, metavar="",
+        help="[STR] FASTA file or comma-separated sequences to add to built-in sequences."
     )
     adapter_trimming.add_argument(
-        "--adapter-fasta-excl", "-ax", type = str, default = None, metavar="",
-        help="[STR] Fasta file with adapter sequences to trim for, excluding predefined and additional sequences specified."
+        "--adapter-excl", "-ax", type = str, default = None, metavar="",
+        help="[STR] FASTA file or comma-separated sequences to trim instead of the built-in sequences."
+    )
+    adapter_trimming.add_argument(
+        "--adapter-read-1", "-a1", type = str, default = None, metavar="",
+        help="[STR] Sequence of read 1 specific adapter. Specifying this, will override other adapter specifications. Leaving this empty when --adapter-read-2 is set, will disable read 1 adapter trimming. Default: none"
+    )
+    adapter_trimming.add_argument(
+        "--adapter-read-2", "-a2", type = str, default = None, metavar="",
+        help="[STR] Sequence of read 2 specific adapter. Specifying this, will override other adapter specifications. Leaving this empty when --adapter-read-1 is set,  will disable read 2 adapter trimming. Default: none"
     )
     
     overlap_trimming = parser.add_argument_group(
@@ -3795,8 +3823,8 @@ def parse_args():
     parameters["gzip_level"] = args.gzip_level
     parameters["reads_for_phred_offset"] = args.reads_for_phred_offset
     parameters["adapter_filter_flag"] = args.adapter_filter_flag
-    parameters["adapter_fasta_add"] = args.adapter_fasta_add
-    parameters["adapter_fasta_excl"] = args.adapter_fasta_excl
+    parameters["adapter_add"] = args.adapter_add
+    parameters["adapter_excl"] = args.adapter_excl
     parameters["adapter_seed"] = args.adapter_seed
     parameters["n_filter"] = args.n_filter
     parameters["phred_offset"] = args.phred_offset
@@ -3834,6 +3862,8 @@ def parse_args():
         [name for name, _ in DEFAULT_ADAPTERS] if "all" in args.adapter_group
         else list(dict.fromkeys(args.adapter_group))
     )
+    parameters["adapter_read_1"] = args.adapter_read_1
+    parameters["adapter_read_2"] = args.adapter_read_2
     parameters["discard_singles"] = args.discard_singles
     parameters["overlap_filter_flag"] = args.overlap_filter_flag
     parameters["overlap_mismatches"] = args.overlap_mismatches
@@ -3847,7 +3877,8 @@ def parse_args():
     parameters["poly_length_end"] = priority_arguments(args.poly_length_end, args.poly_length_both)
     parameters["poly_bases_start"] = priority_arguments(args.poly_bases_start, args.poly_bases_both)
     parameters["poly_bases_end"] = priority_arguments(args.poly_bases_end, args.poly_bases_both)
-
+    parameters["adapter_per_read"] = None
+    
     if parameters["gzip_output"]:
         parameters["stdout"] = False
         
@@ -3859,18 +3890,26 @@ def parse_args():
         parameters["interleaved_out"] = True
 
     if parameters.get("adapter_filter_flag"):
-        if parameters.get("adapter_fasta_excl"):
-            raw_adapters = load_adapters_from_fasta(parameters["adapter_fasta_excl"])
-            if raw_adapters == []:
-                raise ValueError(f"No sequences in file '{parameters['adapter_fasta_excl']}' detected.")
+        read1 = parameters.get("adapter_read_1")
+        read2 = parameters.get("adapter_read_2")
+        if read1 or read2:
+            r1 = [seq.encode("utf-8") for _, seq in load_adapters_from_arg(read1)] if read1 else []
+            r2 = [seq.encode("utf-8") for _, seq in load_adapters_from_arg(read2)] if read2 else []
+            parameters["adapter_sequences"] = r1 + r2
+            parameters["adapter_per_read"] = {"read_1": r1, "read_2": r2}
         else:
-            selected_groups = set(parameters["adapter_group"])
-            flat_default_adapters = [entry for name, entries in DEFAULT_ADAPTERS if name in selected_groups for entry in entries]
-            if parameters.get("adapter_fasta_add"):
-                raw_adapters = flat_default_adapters + load_adapters_from_fasta(parameters["adapter_fasta_add"])
+            if parameters.get("adapter_excl"):
+                raw_adapters = load_adapters_from_arg(parameters["adapter_excl"])
+                if raw_adapters == []:
+                    raise ValueError(f"No sequences in file '{parameters['adapter_excl']}' detected.")
             else:
-                raw_adapters = flat_default_adapters
-        parameters["adapter_sequences"] = list({seq.encode('utf-8') for _, seq in raw_adapters})
+                selected_groups = set(parameters["adapter_group"])
+                flat_default_adapters = [entry for name, entries in DEFAULT_ADAPTERS if name in selected_groups for entry in entries]
+                if parameters.get("adapter_add"):
+                    raw_adapters = flat_default_adapters + load_adapters_from_arg(parameters["adapter_add"])
+                else:
+                    raw_adapters = flat_default_adapters
+            parameters["adapter_sequences"] = list({seq.encode('utf-8') for _, seq in raw_adapters})
     else:
         parameters["adapter_sequences"] = []
 
