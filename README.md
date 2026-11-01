@@ -262,7 +262,9 @@ Readzor has been compared against the following tools:
 All commands used for benchmarking, and subsequent results, are available from the [benchmarking folder](benchmarking/) in this repository. 
 
 ## Performance 
-Readzor leverages `python-isal` for a high-performance implementation of the gzip algorithm. The compression level (ranging from 0 for minimal compression to 3 for maximum compression) directly impacts processing time, memory usage, and final output size, as illustrated below:
+Readzor leverages `python-isal` for a high-performance implementation of the gzip algorithm. 
+A compression level beyond `1` has no appreciable impact on final output size. Setting compression level to `3` does not substantialy reduce file size, yet increase processing time. The peak memory usage does not increase with compression level. 
+From these results, the standard compression level (`--gzip-level`) for when `--gzip` is set, has ben set to `1`.
 
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
   <tr>
