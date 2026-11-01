@@ -264,7 +264,7 @@ All commands used for benchmarking, and subsequent results, are available from t
 ## Performance 
 Readzor uses python-isal for gzip functionality. The compression level (0-3; 0 being minimal compression, 3 being maximum), influences processing time, memory usage, and output file size as follow.
 
-<table>
+<table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
   <tr>
     <td align="center">
       <img src="benchmarking/figures/compression_levels_output_size.png" width="250" alt="Compression level versus total output files size"><br>
