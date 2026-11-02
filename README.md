@@ -252,8 +252,139 @@ Further options that can be specified to alter the behavior of Readzor.\
 `--ordered-output`: Force writing output reads in the same order as the input reads, with the exception of filtered reads. Default: off.\
 `--phred-out`: Convert Phred encoding from 33 to 64, and vice versa. Possible values: 33, 64. Default: off.
 
+## Performance 
+
+### Adapter sequence trimming
+The removal of adapter sequences is an important step in the cleanup of short read sequences. Readzor can employ two methods, either alone or together, to find and trim these sequences.
+
+#### Adapter sequence search approach
+Using provided adapter sequences, Readzor employs a seed-and-trim approach for adapter removal. It scans every read in its entirety to match the initial bases specified by `--adapter-seed`. When only a portion of the adapter can be matched at the read end, mismatches are proportionally scaled.
+As a consequence of the seed-and-trim approach, adapter sequences shorter than the length specified by `--adapter-seed` will not be found.
+From these results, the default `--adapter-seed` has been set to `6`, and `--adapter-mismatch` to `0`.
+
+<table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
+   <tr>
+     <th colspan="2" align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 16px;">
+       <b>Adapter sequence search performance</b>
+     </th>
+   </tr>
+   <tr>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
+      <img src="benchmarking/figures/adapter_heatmap_adapter_recall.png" width="250" alt="Recall of adapter trimming."><br>
+      <sub><b>Figure 1:</b> Recall (adapters successfully found).</sub>
+    </td>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
+      <img src="benchmarking/figures/adapter_heatmap_precision.png" width="250" alt="Precision of adapter trimming."><br>
+      <sub><b>Figure 2:</b> Precision (portion of removed bases that were from adapters).</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
+      <img src="benchmarking/figures/adapter_heatmap_f1.png" width="250" alt="F1 score of adapter trimming"><br>
+      <sub><b>Figure 3:</b> F1 score (harmonic mean combining precision and recall).</sub>
+    </td>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
+      <img src="benchmarking/figures/adapter_heatmap_genomic_bases_lost.png" width="250" alt="Genomic bases lost of adapter trimming"><br>
+      <sub><b>Figure 4:</b> Genomic bases lost.</sub>
+    </td>
+  </tr>
+</table>
+
+#### Overlapping sequences approach
+For paired-end data, when an insert is shorter than the read length, the reads extend past the fragment boundaries into the opposite adapters
+Readzor can identifies adapter sequences by aligning paired reads against each other, by clipping the non-overlapping 3' adapter tails—without requiring pre-specified adapter sequences.
+Overlaps shorter than `--overlap-min-length` (i.e. an insert shorter than this value) will not be found.
+From these results, the default `--overlap-min-length` has been set to `60`, `--overlap-mismatches` to 2, and `--overlap-portion-mismatch` to `10`.
+
+<table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
+  <tr>
+    <th colspan="2" align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 16px;">
+      <b>Overlapping sequences search performance</b>
+    </th>
+  </tr>
+  <tr>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
+      <img src="benchmarking/figures/compression_levels_output_size.png" width="250" alt="Recall benchmark figure"><br>
+      <sub><b>Figure 1:</b> Recall (adapters successfully found).</sub>
+    </td>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
+      <img src="benchmarking/figures/compression_levels_processing_time.png" width="250" alt="Precision benchmark figure"><br>
+      <sub><b>Figure 2:</b> Precision (portion of removed bases that were from adapters).</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
+      <img src="benchmarking/figures/compression_levels_memory_usage.png" width="250" alt="F1 score benchmark figure"><br>
+      <sub><b>Figure 3:</b> F1 score (harmonic mean of precision and recall).</sub>
+    </td>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
+      <img src="benchmarking/figures/compression_levels_memory_usage.png" width="250" alt="Genomic bases lost benchmark figure"><br>
+      <sub><b>Figure 4:</b> Genomic bases lost.</sub>
+    </td>
+  </tr>
+</table>
+
+#### Combined adapter and overlap approach
+When desired, both adapter sequence search and overlapping sequences search can be run.
+
+<table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
+  <tr>
+    <th colspan="2" align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 16px;">
+      <b>Combined adapter search performance</b>
+    </th>
+  </tr>
+  <tr>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
+      <img src="benchmarking/figures/compression_levels_output_size.png" width="250" alt="Recall benchmark figure"><br>
+      <sub><b>Figure 1:</b> Recall (adapters successfully found).</sub>
+    </td>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
+      <img src="benchmarking/figures/compression_levels_processing_time.png" width="250" alt="Precision benchmark figure"><br>
+      <sub><b>Figure 2:</b> Precision (portion of removed bases that were from adapters).</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
+      <img src="benchmarking/figures/compression_levels_memory_usage.png" width="250" alt="F1 score benchmark figure"><br>
+      <sub><b>Figure 3:</b> F1 score (harmonic mean of precision and recall).</sub>
+    </td>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
+      <img src="benchmarking/figures/compression_levels_memory_usage.png" width="250" alt="Genomic bases lost benchmark figure"><br>
+      <sub><b>Figure 4:</b> Genomic bases lost.</sub>
+    </td>
+  </tr>
+</table>
+
+### File compression
+Readzor uses [`python-isal`](https://github.com/pycompression/python-isal) for its high-performance implementation of the gzip algorithm.
+A compression level beyond `1` has no appreciable impact on final output size, yet increases processing time (when set to `3`). The peak memory usage does not increase with compression level. 
+From these results, the default compression level (`--gzip-level`) for when `--gzip` is set, has been set to `1`.
+
+<table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
+  <tr>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 33.33%;">
+      <img src="benchmarking/figures/compression_levels_output_size.png" width="250" alt="Compression level versus total output files size"><br>
+      <sub><b>Figure 1:</b> Compression level versus total output files size.</sub>
+    </td>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 33.33%;">
+      <img src="benchmarking/figures/compression_levels_processing_time.png" width="250" alt="Compression level versus processing time"><br>
+      <sub><b>Figure 2:</b> Compression level versus processing time.</sub>
+    </td>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 33.33%;">
+      <img src="benchmarking/figures/compression_levels_memory_usage.png" width="250" alt="Compression level versus maximum memory usage"><br>
+      <sub><b>Figure 3:</b> Compression level versus maximum memory usage.</sub>
+    </td>
+  </tr>
+</table>
+
+### Resource usage across additional modules
+Evaluation of the impact of individual Readzor modules on processing time and memory usage.
+
+### Comparison with other short read sequence trimmers
+
+
 ## Performance benchmarking
-Readzor has been benchmarked using the Curnagl high-performance computering cluster of the University of Lausanne.
+Readzor has been benchmarked using the [Curnagl](https://wiki.unil.ch/ci/books/high-performance-computing-hpc/page/curnagl) high-performance computering cluster of the University of Lausanne.
 Readzor has been compared against the following tools:
 * Trimmomatic (version X.X.X)
 * fastp (version X.X.X)
@@ -261,27 +392,6 @@ Readzor has been compared against the following tools:
 
 All commands used for benchmarking, and subsequent results, are available from the [benchmarking folder](benchmarking/) in this repository. 
 
-## Performance 
-Readzor leverages `python-isal` for a high-performance implementation of the gzip algorithm. 
-A compression level beyond `1` has no appreciable impact on final output size. Setting compression level to `3` does not substantialy reduce file size, yet increase processing time. The peak memory usage does not increase with compression level. 
-From these results, the standard compression level (`--gzip-level`) for when `--gzip` is set, has ben set to `1`.
-
-<table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
-  <tr>
-    <td align="center">
-      <img src="benchmarking/figures/compression_levels_output_size.png" width="250" alt="Compression level versus total output files size"><br>
-      <sub><b>Figure 1:</b> Compression level versus total output files size.</sub>
-    </td>
-    <td align="center">
-      <img src="benchmarking/figures/compression_levels_processing_time.png" width="250" alt="Compression level versus processing time"><br>
-      <sub><b>Figure 2:</b> Compression level versus processing time.</sub>
-    </td>
-    <td align="center">
-      <img src="benchmarking/figures/compression_levels_memory_usage.png" width="250" alt="Compression level versus maximum memory usage"><br>
-      <sub><b>Figure 3:</b> Compression level versus maximum memory usage.</sub>
-    </td>
-  </tr>
-</table>
 
 ## Software version
 Readzor depends on the following software packages:
