@@ -270,21 +270,21 @@ From these results, the default `--adapter-seed` has been set to `6`, and `--ada
    </tr>
    <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/adapter_heatmap_adapter_recall.png" width="250" alt="Recall of adapter trimming."><br>
+      <img src="benchmarking/figures/adapter_heatmap_adapter_recall.png" width="300" alt="Recall of adapter trimming."><br>
       <sub><b>Figure 1:</b> Recall (adapters successfully found).</sub>
     </td>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/adapter_heatmap_precision.png" width="250" alt="Precision of adapter trimming."><br>
+      <img src="benchmarking/figures/adapter_heatmap_precision.png" width="300" alt="Precision of adapter trimming."><br>
       <sub><b>Figure 2:</b> Precision (portion of removed bases that were from adapters).</sub>
     </td>
   </tr>
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/adapter_heatmap_f1.png" width="250" alt="F1 score of adapter trimming"><br>
+      <img src="benchmarking/figures/adapter_heatmap_f1.png" width="300" alt="F1 score of adapter trimming"><br>
       <sub><b>Figure 3:</b> F1 score (harmonic mean combining precision and recall).</sub>
     </td>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/adapter_heatmap_genomic_bases_lost.png" width="250" alt="Genomic bases lost of adapter trimming"><br>
+      <img src="benchmarking/figures/adapter_heatmap_genomic_bases_lost.png" width="300" alt="Genomic bases lost of adapter trimming"><br>
       <sub><b>Figure 4:</b> Genomic bases lost.</sub>
     </td>
   </tr>
