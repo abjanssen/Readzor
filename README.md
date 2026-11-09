@@ -255,169 +255,187 @@ Further options that can be specified to alter the behavior of Readzor.\
 ## Performance 
 
 ### Production of synthetic short read sequences
-To provide for a repeatable benchmarking method, and ground-truth for adapter removal, we produced a synthetic dataset from the _Streptococcus pneumoniae_ BHN418 (NCBI Accession [CP155538.1](https://www.ncbi.nlm.nih.gov/nuccore/CP155538.1) genome using [NEAT](https://github.com/ncsa/NEAT).
-Using NEAT, we produced a 151 bp, paired-end dataset, with a mean fragment size of 280 bp and standard deviation of 50 bp, with TruSeq adapters ligated where necessary. Frpm the provided results (i.e. read headers and golden BAM file), the exact adapter content was parsed for use in adapter removal benchmarking.
-This resulted in a paired-end dataset totalling 56,009,434 reads, with 267,114 (0.476%) containing adapter sequences.
+To provide for a repeatable benchmarking method, and ground-truth for adapter removal, we produced a synthetic dataset from the _Streptococcus pneumoniae_ BHN418 (NCBI Accession [CP155538.1](https://www.ncbi.nlm.nih.gov/nuccore/CP155538.1)) genome using [NEAT](https://github.com/ncsa/NEAT).
+We produced a 151 bp, paired-end dataset, with a mean fragment size of 280 bp and standard deviation of 50 bp, with TruSeq adapters ligated where necessary. This resulted in a paired-end dataset totalling 56,009,434 reads, with 267,114 (0.476%) reads containing adapter sequences. 
+From the provided results (i.e. read headers and golden BAM file), the exact adapter content was parsed for use in adapter removal benchmarking.
 
 ### Adapter sequence trimming
 The removal of adapter sequences is an important step in the cleanup of short read sequences. Readzor can employ two methods, either alone or together, to find and trim these sequences.
+To benchmark the performance of these methods, we determined the recall (share of adapters succesfully found), precision (portion of removed bases that belonged to adapter sequences), F1 (harmonic mean combining precision and recall), and genomic basese lost.
+Using a grid-search approach, we measured the ability of both methods, and their combination, in removing adapter sequences.
 
 #### Adapter sequence search approach
-Using provided adapter sequences, Readzor employs a seed-and-trim approach for adapter removal. It scans every read in its entirety to match the initial bases specified by `--adapter-seed`. When only a portion of the adapter can be matched at the read end, mismatches are proportionally scaled.
-As a consequence of the seed-and-trim approach, adapter sequences shorter than the length specified by `--adapter-seed` will not be found.
-From these results, the default `--adapter-seed` has been set to `6`, and `--adapter-mismatch` to `0`.
-These settings balance adapter recall, precision, and loss of genomic base pairs.
+Using known adapter sequences, Readzor employs a seed-and-trim approach for adapter removal. Readzor scans every read in its entirety to match the starting bases (specified by `--adapter-seed`). After finding the seed sequence, the remaining bases in the adapter sequence are checked. When only a portion of the adapter can be matched at the read end, mismatches are proportionally scaled.
+As a consequence of this seed-and-trim approach, adapter sequences shorter than the length specified by `--adapter-seed` will not be found.
+To optimize the ratio between adapter sequences cut, and genomic bases lost, the default `--adapter-seed` has been set to `6`, and `--adapter-mismatch` to `0`.
 
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
    <tr>
-     <th colspan="2" align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 16px;">
+     <th colspan="2" align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 24px;">
        <b>Adapter sequence search performance</b>
      </th>
    </tr>
    <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/adapter_heatmap_adapter_recall.png" width="400" alt="Recall of adapter trimming."><br>
-      <sub><b>Figure 1:</b> Recall (adapters successfully found).</sub>
+      <img src="benchmarking/figures/adapter_heatmap_adapter_recall.png" alt="Recall of adapter trimming."><br>
+      <sub><b>Figure 1:</b> Recall.</sub>
     </td>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/adapter_heatmap_precision.png" width="400" alt="Precision of adapter trimming."><br>
-      <sub><b>Figure 2:</b> Precision (portion of removed bases that were from adapters).</sub>
+      <img src="benchmarking/figures/adapter_heatmap_precision.png" alt="Precision of adapter trimming."><br>
+      <sub><b>Figure 2:</b> Precision.</sub>
     </td>
   </tr>
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/adapter_heatmap_f1.png" width="400" alt="F1 score of adapter trimming"><br>
-      <sub><b>Figure 3:</b> F1 score (harmonic mean combining precision and recall).</sub>
+      <img src="benchmarking/figures/adapter_heatmap_f1.png" alt="F1 score of adapter trimming"><br>
+      <sub><b>Figure 3:</b> F1 score.</sub>
     </td>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/adapter_heatmap_genomic_bases_lost.png" width="400" alt="Genomic bases lost of adapter trimming"><br>
+      <img src="benchmarking/figures/adapter_heatmap_genomic_bases_lost.png" alt="Genomic bases lost of adapter trimming"><br>
       <sub><b>Figure 4:</b> Genomic bases lost.</sub>
     </td>
   </tr>
 </table>
 
 #### Overlapping sequences approach
-For paired-end data, when an insert is shorter than the read length, the reads extend past the fragment boundaries into the opposite adapters
-Readzor can identifies adapter sequences by aligning paired reads against each other, by clipping the non-overlapping 3' adapter tails—without requiring pre-specified adapter sequences.
+For paired-end data, when an insert is shorter than the read length, the reads extend past the fragment boundaries into the adapters.
+By aligning paired reads against each other, Readzor can clip the non-overlapping adapter tails, without requiring specification of adapter sequences.
 Overlaps shorter than `--overlap-min-length` (i.e. an insert shorter than this value) will not be found.
-Benchmarking for both an approach in which the absolute number of mismatches in the overlap region was leading, and one in which a proportional number of mismatches was leading, has been performed.
+In the overlap-based adapter trimming, the mismatch count can be set to a specified number using `--overlap-mismatches`, and/or be specified as a portion of the overlap using `--overlap-portion-mismatch`.
+
+
+By setting `--overlap-portion-mismatch` to `100`, we can isolate the effect of the number of mismatches set through `--overlap-mismatches` on the adapter sequences found.
+Vice versa, by setting `--overlap-mismatches` to `999`, we could query the behaviour of `--overlap-portion-mismatch`.
+
+
+Using this approach, we observe that a minimum amount of 2 mismatches is needed within this synthetic dataset, to efficiently trim adapter sequences. Although a higher number of mismatches allowed increases the adapter recall, it reduces precision and the F1 score. In contrast, increasing the minimal overlap reduces recall, whilst increasing precision.
 
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
   <tr>
-    <th colspan="2" align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 16px;">
+    <th colspan="2" align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 24px;">
       <b>Overlapping sequences search performance: absolute number of mismatches.</b>
      </th>
    </tr>
    <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/overlap_mismatches_heatmap_adapter_recall.png" width="400" alt="Recall of adapter trimming."><br>
+      <img src="benchmarking/figures/overlap_mismatches_heatmap_adapter_recall.png" alt="Recall of adapter trimming."><br>
       <sub><b>Figure 1:</b> Recall (adapters successfully found).</sub>
     </td>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/overlap_mismatches_heatmap_precision.png" width="400" alt="Precision of adapter trimming."><br>
+      <img src="benchmarking/figures/overlap_mismatches_heatmap_precision.png" alt="Precision of adapter trimming."><br>
       <sub><b>Figure 2:</b> Precision (portion of removed bases that were from adapters).</sub>
     </td>
   </tr>
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/overlap_mismatches_heatmap_f1.png" width="400" alt="F1 score of adapter trimming"><br>
+      <img src="benchmarking/figures/overlap_mismatches_heatmap_f1.png" alt="F1 score of adapter trimming"><br>
       <sub><b>Figure 3:</b> F1 score (harmonic mean combining precision and recall).</sub>
     </td>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/overlap_mismatches_heatmap_genomic_bases_lost.png" width="400" alt="Genomic bases lost of adapter trimming"><br>
+      <img src="benchmarking/figures/overlap_mismatches_heatmap_genomic_bases_lost.png" alt="Genomic bases lost of adapter trimming"><br>
       <sub><b>Figure 4:</b> Genomic bases lost.</sub>
     </td>
   </tr>
 </table>
 
+Similarly, when the `--overlap-portion-mismatch` is isolated, we observe that requiring a (near-)perfect match (i.e. low `--overlap-portion-mismatch`), fails to efficiently trim sequences.
+
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
   <tr>
-    <th colspan="2" align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 16px;">
+    <th align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 24px;">
       <b>Overlapping sequences search performance: relative number of mismatches.</b>
-     </th>
-   </tr>
-   <tr>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/overlap_portion_heatmap_adapter_recall.png" width="400" alt="Recall of adapter trimming."><br>
+    </th>
+  </tr>
+  <tr>
+    <td align="center" style="border: 1px solid black; padding: 8px;">
+      <img src="benchmarking/figures/overlap_portion_heatmap_adapter_recall.png" alt="Recall of adapter trimming."><br>
       <sub><b>Figure 1:</b> Recall (adapters successfully found).</sub>
     </td>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/overlap_portion_heatmap_precision.png" width="400" alt="Precision of adapter trimming."><br>
+  </tr>
+  <tr>
+    <td align="center" style="border: 1px solid black; padding: 8px;">
+      <img src="benchmarking/figures/overlap_portion_heatmap_precision.png" alt="Precision of adapter trimming."><br>
       <sub><b>Figure 2:</b> Precision (portion of removed bases that were from adapters).</sub>
     </td>
   </tr>
   <tr>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/overlap_portion_heatmap_f1.png" width="400" alt="F1 score of adapter trimming"><br>
+    <td align="center" style="border: 1px solid black; padding: 8px;">
+      <img src="benchmarking/figures/overlap_portion_heatmap_f1.png" alt="F1 score of adapter trimming"><br>
       <sub><b>Figure 3:</b> F1 score (harmonic mean combining precision and recall).</sub>
     </td>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/overlap_portion_heatmap_genomic_bases_lost.png" width="400" alt="Genomic bases lost of adapter trimming"><br>
+  </tr>
+  <tr>
+    <td align="center" style="border: 1px solid black; padding: 8px;">
+      <img src="benchmarking/figures/overlap_portion_heatmap_genomic_bases_lost.png" alt="Genomic bases lost of adapter trimming"><br>
       <sub><b>Figure 4:</b> Genomic bases lost.</sub>
     </td>
   </tr>
 </table>
 
-Readzor's code dictates that the smallest number of mismatches (either given through `--overlap-mismatches` or coming from `--overlap-portion-mismatch`), determines whether a candidate overlap will be accepted or rejected.
-Thus, the combination of these two can be used to finetune the overlap search.
-
-From these results, the default `--overlap-min-length` has been set to `60`, `--overlap-mismatches` to 2, and `--overlap-portion-mismatch` to `10`.
-These settings balance adapter recall, precision, and loss of genomic base pairs.
+From both these datasets, we observe an inverse correlation between the precision and F1, and number of allowed mismathches, through the rapid increase in genomic bases lost.
+A minimal overlap of 50 bp seems to strike a balance between different outcomes.
+To further characterize the behaviour of this trimming method, we set the `--overlap-min-length` ot `50`, and varied the mismatch parameters.
+As Readzor uses the lowest number of these two settings determines the allowed number of mismatches for a given overlap, we can finetune the overlap search.
+For shorter overlaps, `--overlap-portion-mismatch` will determine the number of mismatches allowed, but at longer overlaps, mismatches are capped by `--overlap-mismatches`, preventing widespread aspecific matching.
+As the combination of these two methods determine the allowed number of mismatches, a grid-search only needs to perform a limited number of searches, as one of both parameters can act as a _de facto_ cap.
 
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
   <tr>
-    <th colspan="2" align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 16px;">
+    <th colspan="2" align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 24px;">
       <b>Overlapping sequences search performance</b>
     </th>
   </tr>
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/compression_levels_output_size.png" width="250" alt="Recall benchmark figure"><br>
-      <sub><b>Figure 1:</b> Recall (adapters successfully found).</sub>
+      <img src="benchmarking/figures/overlap_length50_heatmap_adapter_recall.png" alt="Recall"><br>
+      <sub><b>Figure 1:</b> Recall.</sub>
     </td>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/compression_levels_processing_time.png" width="250" alt="Precision benchmark figure"><br>
-      <sub><b>Figure 2:</b> Precision (portion of removed bases that were from adapters).</sub>
+      <img src="benchmarking/figures/overlap_length50_heatmap_precision.png" alt="Precision"><br>
+      <sub><b>Figure 2:</b> Precision.</sub>
     </td>
   </tr>
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/compression_levels_memory_usage.png" width="250" alt="F1 score benchmark figure"><br>
-      <sub><b>Figure 3:</b> F1 score (harmonic mean of precision and recall).</sub>
+      <img src="benchmarking/figures/overlap_length50_heatmap_f1.png" alt="F1 score"><br>
+      <sub><b>Figure 3:</b> F1 score.</sub>
     </td>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/compression_levels_memory_usage.png" width="250" alt="Genomic bases lost benchmark figure"><br>
-      <sub><b>Figure 4:</b> Absolute number of genomic bases lost.</sub>
+      <img src="benchmarking/figures/overlap_length50_heatmap_genomic_bases_lost.png" alt="Genomic bases lost"><br>
+      <sub><b>Figure 4:</b> Genomic bases lost.</sub>
     </td>
   </tr>
 </table>
+
+From these results, the default `--overlap-min-length` has been set to `50`, `--overlap-mismatches` to `5`, and `--overlap-portion-mismatch` to `4`.
+These settings balance adapter recall, precision, and loss of genomic base pairs.
 
 #### Combined adapter and overlap approach
 When desired, both adapter sequence search and overlapping sequences search can be run.
 
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
   <tr>
-    <th colspan="2" align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 16px;">
+    <th colspan="2" align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 24px;">
       <b>Combined adapter search performance</b>
     </th>
   </tr>
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/compression_levels_output_size.png" width="250" alt="Recall benchmark figure"><br>
+      <img src="benchmarking/figures/compression_levels_output_size.png" alt="Recall benchmark figure"><br>
       <sub><b>Figure 1:</b> Recall (adapters successfully found).</sub>
     </td>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/compression_levels_processing_time.png" width="250" alt="Precision benchmark figure"><br>
+      <img src="benchmarking/figures/compression_levels_processing_time.png" alt="Precision benchmark figure"><br>
       <sub><b>Figure 2:</b> Precision (portion of removed bases that were from adapters).</sub>
     </td>
   </tr>
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/compression_levels_memory_usage.png" width="250" alt="F1 score benchmark figure"><br>
+      <img src="benchmarking/figures/compression_levels_memory_usage.png" alt="F1 score benchmark figure"><br>
       <sub><b>Figure 3:</b> F1 score (harmonic mean of precision and recall).</sub>
     </td>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/compression_levels_memory_usage.png" width="250" alt="Genomic bases lost benchmark figure"><br>
+      <img src="benchmarking/figures/compression_levels_memory_usage.png" alt="Genomic bases lost benchmark figure"><br>
       <sub><b>Figure 4:</b> Genomic bases lost.</sub>
     </td>
   </tr>
@@ -442,15 +460,17 @@ For these comparisons, we benchmarked across a number of CPU threads, and compar
 
 
 ### File compression
-Readzor uses [`python-isal`](https://github.com/pycompression/python-isal) for its high-performance implementation of the DEFLATE algorithm.
-A compression level beyond `1` has no appreciable impact on final output size, yet increases processing time (when set to `3`). The peak memory usage does not increase with compression level. 
-The use of Gzip would result in a significant increase in processing time, when compressed to comparable file size (gzip compression level `5`).
+Readzor uses [`isal`](https://github.com/pycompression/python-isal) for its high-performance implementation of the DEFLATE algorithm.
+Using a version of Readzor in which both gzip and isal were available, the difference between gzip and isal was benchmarked.For isal, a compression level beyond `1` has no appreciable impact on final output size, yet increases processing time (when set to `3`). The peak memory usage does not increase with compression level. 
+For isal, a compression level beyond `1` has no appreciable impact on final output size, yet increases processing time (when set to `3`). The peak memory usage does not increase with compression level. 
+The use of isal reduces processing time, when compressed to comparable file size (isal compression level `1` versus gzip compression level `5`).
+
 From these results, the default compression level (`--gzip-level`) for when `--gzip` is set, has been set to `1`.
 
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 100%;">
-      <img src="benchmarking/figures/compression_methods.png" width="250" alt="Isal compression is faster than gzip."><br>
+      <img src="benchmarking/figures/compression_methods.png" alt="Compression benchmarking within Readzor."><br>
       <sub><b>Figure 1:</b> Isal compression is faster than gzip.</sub>
   </tr>
 </table>
