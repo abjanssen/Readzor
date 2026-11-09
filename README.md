@@ -261,7 +261,7 @@ From the provided results (i.e. read headers and golden BAM file), the exact ada
 
 ### Adapter sequence trimming
 The removal of adapter sequences is an important step in the cleanup of short read sequences. Readzor can employ two methods, either alone or together, to find and trim these sequences.
-To benchmark the performance of these methods, we determined the recall (share of adapters succesfully found), precision (portion of removed bases that belonged to adapter sequences), F1 (harmonic mean combining precision and recall), and genomic basese lost.
+To benchmark the performance of these methods, we determined the recall (share of adapters succesfully found), precision (portion of removed bases that belonged to adapter sequences), F1 (harmonic mean combining precision and recall, $`F_1 = 2 \cdot \frac{\text{precision} \cdot \text{recall}}{\text{precision} + \text{recall}}`$), and genomic basese lost.
 Using a grid-search approach, we measured the ability of both methods, and their combination, in removing adapter sequences.
 
 #### Adapter sequence search approach
@@ -413,11 +413,15 @@ These settings balance adapter recall, precision, and loss of genomic base pairs
 #### Combined adapter and overlap approach
 When desired, both adapter sequence search and overlapping sequences search can be run at the same time.
 
+<div align="center">
+
 | Method         | Recall | Precision |    F1 | Genomic bases lost |
 |:---------------|-------:|----------:|------:|-------------------:|
 | Adapter search |  0.926 |     0.993 | 0.958 |             27,172 |
 | Overlap search |  0.951 |     0.990 | 0.970 |              3,876 |
 | Combined       |  0.982 |     0.780 | 0.869 |          1,202,900 |
+
+</div>
 
 The preset parameters strike a balance between the portion of adapters found, precision, and genomic bases lost. When a more rigorous adapter trimming is desired, the modification of the preset parameters can give the desired outcomes. 
 A more detailed overview of the effect of different settings on these parameters can be found in the [benchmarking folder](benchmarking/) in this repository. 
@@ -426,8 +430,16 @@ A more detailed overview of the effect of different settings on these parameters
 To further characterize the performance of Readzor's adpater trimming capabilities, we compared its performance in this area to other popular tools.
 As different tools can have different preset parameters, we ran these tools either with preset parameters, or by adapting their paramters to mimick each other (as far as possible).
 The majority of the tools can perform adapter trimming based on sequence search, and overlap search. However, some tools perform these analyses without the specification of the user, and without the ability to turn these off. To accurately determine the efficiency of each tools and aproach, their commands have sometimes been altered. The commands used are listed in the [benchmarking folder](benchmarking/) in this repository. 
+Furthermore, other tools sometimes hardcode parameters that can be specified in Readzor (e.g. mismatches allowed), where possible, this has been controlled for.
 In addition, we have provided each tools with the same adapter sequences, to further standardize this process.
 
+XXXXX
+XXXXX
+XXXXX
+XXXXX
+
+### Resource usage across processing modules
+Evaluation of the impact of individual Readzor modules on processing time and memory usage.
 
 XXXXX
 XXXXX
@@ -461,12 +473,6 @@ From these results, the default compression level (`--gzip-level`) for when `--g
       <sub><b>Figure 1:</b> Isal compression is faster than gzip.</sub>
   </tr>
 </table>
-
-### Resource usage across additional modules
-Evaluation of the impact of individual Readzor modules on processing time and memory usage.
-
-### Comparison with other short read sequence trimmers
-
 
 ## Benchmarking software and facilities
 Readzor has been benchmarked using the [Curnagl](https://wiki.unil.ch/ci/books/high-performance-computing-hpc/page/curnagl) high-performance computering cluster of the University of Lausanne.
