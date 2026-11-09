@@ -4,6 +4,7 @@
 import argparse
 from collections import defaultdict
 import datetime
+import gzip
 import itertools
 import logging
 import multiprocessing as mp
@@ -28,7 +29,7 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.5.3"
+VERSION = "0.5.4"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq", [
@@ -61,7 +62,11 @@ DEFAULT_ADAPTERS = [
 FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "input_interleaved", "full_auto"}
 FULL_AUTO_OVERRIDES = {
     "endqual_filter_flag": True,
+    "endqual_min_both": 20,
     "adapter_filter_flag": True,
+    "adapter_group": "TruSeq",
+    "adapter_seed": 6,
+    "adapter_mismatch": 0,
     "n_filter": True,
     "min_length_output_perc": 33,
     "gzip": True,
@@ -82,6 +87,22 @@ PHRED33_TO_64 = bytes.maketrans(
 
 logger = logging.getLogger("readzor")
 file_only_logger = logging.getLogger("readzor.file_only")
+
+def compress_bytes(data, level, method):
+    """
+    Gzip-compress ``data`` with the chosen backend.
+
+    Args:
+        data (bytes): Data to compress.
+        level (int): Compression level (isal: 0-3, gzip: 1-9).
+        method (str): "isal" (python-isal) or "gzip" (standard library).
+
+    Returns:
+        bytes: A complete gzip member.
+    """
+    if method == "gzip":
+        return gzip.compress(data, compresslevel=level)
+    return igzip.compress(data, compresslevel=level)
 
 class ProgressAwareStreamHandler(logging.StreamHandler):
     """
@@ -244,52 +265,55 @@ class ProgressTracker:
         total_reads (int): Estimated total number of reads (clamped to >= 1).
         bar_width (int): Maximum width of the bar in characters. Defaults to 50.
         min_interval (float): Minimum number of seconds between redraws.
-            Defaults to 0.2.
+            Defaults to 0.1.
     """
-    def __init__(self, total_reads, bar_width=50, min_interval=0.2):
+    def __init__(self, total_reads, bar_width=50, min_interval=0.1):
         self.total = max(total_reads, 1)
         self.done = 0
         self.bar_width = bar_width
         self.min_interval = min_interval
-        self._last_render = 0.0
-        self._start_time = time.time()
+        self.last_render = time.time()
+        self.start_time = time.time()
 
-    @staticmethod
-    def _format_duration(seconds_val, concise=False):
+    def format_duration(self, seconds_val, concise=False):
         """
-        Format a duration for display.
+        Format time duration for display.
 
         Args:
-            seconds_val (float): Duration in seconds. Infinite or negative
-                values are shown as "?".
-            concise (bool): If True, use a compact form ("1h 02m 03s",
-                "2m 05s", "7s"); otherwise a spelled-out form
-                ("1 hour, 2 minutes, 3 seconds").
+            seconds_val (float): Duration in seconds. Infinite or negative values are shown as "?".
+            concise (bool): If True, return a compact form ("1h 02m 03s"); 
+            otherwise a spelled-out form ("1 hour, 2 minutes, 3 seconds").
 
         Returns:
             str: The formatted duration.
         """
         if seconds_val is None or seconds_val == float('inf') or seconds_val < 0:
-            return "?"
+            return "Calculating..."
         total_seconds = int(round(seconds_val))
         hours, remainder = divmod(total_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
+        def plural(value, unit):
+            if value != 1:
+                return f"{value} {unit}{'s'}"
+            else:
+                return f"{value} {unit}"
+        
         if concise:
             if hours > 0:
-                return f"{hours}h {minutes:02d}m {seconds:02d}s"
+                return f"{hours}h {minutes:02d}m {seconds:02d}s."
             if minutes > 0:
-                return f"{minutes}m {seconds:02d}s"
-            return f"{seconds}s"
-        def plural(value, unit):
-            return f"{value} {unit}{'s' if value != 1 else ''}"
-        parts = []
-        if hours > 0:
-            parts.append(plural(hours, 'hour'))
-        if minutes > 0:
-            parts.append(plural(minutes, 'minute'))
-        if seconds > 0 or total_seconds < 60:
-            parts.append(plural(seconds, 'second'))
-        return ", ".join(parts)
+                return f"{minutes}m {seconds:02d}s."
+            return f"{seconds}s."
+        
+        else:
+            parts = []
+            if hours > 0:
+                parts.append(plural(hours, 'hour'))
+            if minutes > 0:
+                parts.append(plural(minutes, 'minute'))
+            if seconds > 0 or total_seconds < 60:
+                parts.append(plural(seconds, 'second'))
+            return ", ".join(parts) + "."
 
     def update(self, n):
         """
@@ -301,11 +325,11 @@ class ProgressTracker:
         """
         self.done += n
         now = time.time()
-        if now - self._last_render >= self.min_interval:
-            self._render()
-            self._last_render = now
+        if now - self.last_render >= self.min_interval:
+            self.render()
+            self.last_render = now
 
-    def _render(self):
+    def render(self):
         """
         Draw the current progress line on stderr, overwriting the previous
         one. Does nothing if stderr is not a terminal.
@@ -314,12 +338,28 @@ class ProgressTracker:
             return
         term_width = shutil.get_terminal_size(fallback=(80, 24)).columns
         frac = min(self.done / self.total, 0.999)
-        elapsed = time.time() - self._start_time
-        rate = self.done / elapsed if elapsed > 0 else 0
-        eta = (self.total - self.done) / rate if rate > 0 else float('inf')
-        eta_str = self._format_duration(eta, concise=True)
+        elapsed = time.time() - self.start_time
+        rate = self.done / elapsed
+        
+        if self.done >= self.total:
+            eta_messages = [
+            "Finishing up...",
+            "Almost done...",
+            "Nearly there...",
+            "Wrappping up..."
+            ]
+            eta_str = random.choice(eta_messages)
+        else:
+            if rate > 0:
+                eta = (self.total - self.done) / rate
+                if eta < 1.0:
+                    eta = 1.0
+            else:
+                eta = float('inf')
+            eta_str = self.format_duration(eta, concise=False)
+            
         stats = (
-            f" {frac*100:5.1f}% "
+            f" {frac*100:4.1f}% "
             f"({self.done:,}/{self.total:,} reads). "
             f"Rate: {rate:,.0f} reads/s. Estimated time remaining: {eta_str}"
         )
@@ -364,18 +404,18 @@ class ProgressTracker:
                 of claiming 100%. As the total is an estimate, the
                 percentage is capped at 99.9%. Defaults to False.
         """
-        elapsed = time.time() - self._start_time
-        rate = self.done / elapsed if elapsed > 0 else 0
-        time_str = self._format_duration(elapsed, concise=False)
+        elapsed = time.time() - self.start_time
+        rate = self.done / elapsed
+        time_str = self.format_duration(elapsed, concise=False)
         if interrupted:
             frac = min(self.done / self.total, 0.999)
-            progress = f"Stopped at {frac*100:.1f}%"
+            progress = f"Interrupted at {frac*100:.1f}%"
         else:
             frac = 1.0
             progress = "100%"
         stats = (
             f" {progress} ({self.done:,} reads analyzed). "
-            f"Average rate: {rate:,.0f} reads/s. Total time: {time_str}."
+            f"Average rate: {rate:,.0f} reads/s. Total time: {time_str}"
         )
         if not sys.stderr.isatty():
             sys.stderr.write(stats.strip() + "\n")
@@ -1226,7 +1266,7 @@ def build_pipeline(parameters, read_direction=None):
     if parameters.get("poly_filter_flag"):
         pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: homopolymer_nucleotide_trimming(seq, padding_mask_bool, row_tilde_count, chunk_padding_bool, poly_length_start=parameters["poly_length_start"], poly_length_end=parameters["poly_length_end"], poly_bases_start=parameters["poly_bases_start"], poly_bases_end=parameters["poly_bases_end"]))
     if parameters.get("adapter_filter_flag"): 
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: adapter_trimming(seq, chunk_padding_bool, row_tilde_count, adapter_sequences=parameters["adapter_sequences"], mismatches=parameters["adapter_mismatch"], adapter_seed=parameters["adapter_seed"], adapter_per_read = parameters["adapter_per_read"], read_direction=read_direction, adapter_group=None if parameters.get("adapter_fasta_excl") else parameters.get("adapter_group")))
+        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: adapter_trimming(seq, chunk_padding_bool, row_tilde_count, adapter_sequences=parameters["adapter_sequences"], mismatches=parameters["adapter_mismatch"], adapter_seed=parameters["adapter_seed"], adapter_per_read = parameters["adapter_per_read"], read_direction=read_direction, adapter_group=None if parameters.get("adapter_excl") else parameters.get("adapter_group")))
         
     #quality_based
     if parameters.get("endqual_filter_flag"):
@@ -1739,7 +1779,7 @@ def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_til
         ValueError: If seq_arr_1 and seq_arr_2 have different numbers of rows.
     """
     prefix_length = 2 * max_mismatch + 6
-    max_mismatch_frac = max_mismatch_frac / 100
+    max_mismatch_frac = max_mismatch_frac
 
     n_base = np.int8(ord("N"))
 
@@ -1797,8 +1837,7 @@ def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_til
             rest_arr_2 = rc_seq_arr_2[rows_survived, offset + prefix:]
             mismatches = mismatches + (rest_arr_1 != rest_arr_2).sum(axis=1)
 
-        fraction_mismatch = mismatches / insert_size
-        pass_bool = (mismatches <= max_mismatch) & (fraction_mismatch <= max_mismatch_frac)
+        pass_bool = (mismatches <= max_mismatch) & (mismatches * 100 <= insert_size * max_mismatch_frac)
         rows_passed = rows_survived[pass_bool]
         best_insert[rows_passed] = insert_size
 
@@ -1895,7 +1934,6 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
             used together with read_direction to select the adapters per
             mate, or None to search for all of adapter_sequences.
             Defaults to None.
-
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
             each of shape (n_reads,). Left cutoffs are always 0 (int8);
@@ -2182,8 +2220,8 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
         phred_offset (int): Phred encoding offset (33 or 64).
         minimum_average_qual_post (float): Minimum acceptable mean quality
             after trimming. 0 disables this filter.
-        gzip_output (bool): If True, compresses output records with isal gzip.
-        gzip_level (int): isal gzip compression level (0-3).
+        gzip_output (bool): If True, compresses output records (method: parameters["gzip_method"]).
+        gzip_level (int): Gzip compression level (isal: 0-3, gzip: 1-9).
         min_length_output (int | None): Minimum acceptable read length
             after trimming, as an absolute count.
         max_length_output (int | None): Maximum acceptable read length
@@ -2231,7 +2269,7 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
     if not valid_headers:
         rejected_data = b"".join(rejected_reads) if write_rejected else []
         if gzip_output and rejected_data:
-            rejected_data = igzip.compress(rejected_data, compresslevel=gzip_level)
+            rejected_data = compress_bytes(rejected_data, gzip_level, parameters["gzip_method"])
         return b"", 0, rejected, rejected_data
     if parameters["mgi_convert_flag"]:
         valid_pluses = [b"+"] * len(valid_headers)
@@ -2296,9 +2334,9 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
         rejected_reads = b"".join(rejected_reads)
     if gzip_output:
         try:
-            results = igzip.compress(results, compresslevel=gzip_level)
+            results = compress_bytes(results, gzip_level, parameters["gzip_method"])
             if write_rejected:
-                rejected_reads = igzip.compress(rejected_reads, compresslevel=gzip_level)
+                rejected_reads = compress_bytes(rejected_reads, gzip_level, parameters["gzip_method"])
         except Exception as e:
             raise RuntimeError(f"Compression failed inside worker: {str(e)}") from None
     return results, len_results, rejected, rejected_reads
@@ -2794,8 +2832,8 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
             parse_blob()), covering the same reads in the same order.
         phred_offset_1 (int): Phred encoding offset (33 or 64) for R1.
         phred_offset_2 (int): Phred encoding offset (33 or 64) for R2.
-        gzip_output (bool): If True, compresses output records with isal gzip.
-        gzip_level (int): isal gzip compression level (0-3).
+        gzip_output (bool): If True, compresses output records (method: parameters["gzip_method"]).
+        gzip_level (int): Gzip compression level (isal: 0-3, gzip: 1-9).
         discard_singles (bool): If True, singleton records are dropped
             (their counts are still reported).
         parameters (dict): Run parameters, including "interleaved_out",
@@ -2877,17 +2915,17 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
     if gzip_output:
         try:
             if paired_out_1:
-                paired_out_1 = igzip.compress(paired_out_1, compresslevel=gzip_level)
+                paired_out_1 = compress_bytes(paired_out_1, gzip_level, parameters["gzip_method"])
             if paired_out_2:
-                paired_out_2 = igzip.compress(paired_out_2, compresslevel=gzip_level)
+                paired_out_2 = compress_bytes(paired_out_2, gzip_level, parameters["gzip_method"])
             if rejected_R1:
-                rejected_R1 = igzip.compress(rejected_R1, compresslevel=gzip_level)
+                rejected_R1 = compress_bytes(rejected_R1, gzip_level, parameters["gzip_method"])
             if rejected_R2:
-                rejected_R2 = igzip.compress(rejected_R2, compresslevel=gzip_level)
+                rejected_R2 = compress_bytes(rejected_R2, gzip_level, parameters["gzip_method"])
             if singles_out_1:
-                singles_out_1 = igzip.compress(singles_out_1, compresslevel=gzip_level)
+                singles_out_1 = compress_bytes(singles_out_1, gzip_level, parameters["gzip_method"])
             if singles_out_2:
-                singles_out_2 = igzip.compress(singles_out_2, compresslevel=gzip_level)
+                singles_out_2 = compress_bytes(singles_out_2, gzip_level, parameters["gzip_method"])
         except Exception as e:
             raise RuntimeError(f"Compression failed inside worker: {str(e)}") from None
     return paired_out_1, paired_out_2, singles_out_1, singles_out_2, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2, rejected_R1, rejected_R2
@@ -3017,13 +3055,13 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
             ESTIMATED_READ_COUNTS[f1] = count_reads_estimated(f1)
             ESTIMATED_READ_COUNTS[f2] = count_reads_estimated(f2)
         total_reads = sum(ESTIMATED_READ_COUNTS.values())
-        tracker = ProgressTracker(total_reads)
+        tracker = ProgressTracker(total_reads = total_reads)
     else:
-        class _NullTracker:
+        class NullTracker:
             def update(self, n): pass
             def close(self, interrupted=False): pass
             def clear_line(self): pass
-        tracker = _NullTracker()
+        tracker = NullTracker()
     global ACTIVE_PROGRESS_TRACKER
     ACTIVE_PROGRESS_TRACKER = tracker
     file_stats = {}
@@ -3201,7 +3239,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
         for handle in file_writing_handles.values():
             if not handle.closed:
                 if parameters["gzip_output"] and handle.tell() == 0:
-                    handle.write(igzip.compress(b""))
+                    handle.write(compress_bytes(b"", parameters["gzip_level"], parameters["gzip_method"]))
                 handle.close()
     return file_stats
 
@@ -3437,8 +3475,12 @@ def parse_args():
         help="[FLAG] Compress filtered FASTQ files in gzip format. Default: off."
     )
     output_group.add_argument(
-        "--gzip-level", type=int, default = 1, metavar = "", choices=range(0, 4),
-        help="[INT] Set gzip compression level. Higher compression decreases processing speed. Possible values: 0-3. Default: 1."
+        "--gzip-method", type=str, default = "isal", metavar = "", choices=["isal", "gzip"],
+        help="[STR] Gzip implementation used for compression. Possible values: isal, gzip. Default: isal."
+    )
+    output_group.add_argument(
+        "--gzip-level", type=int, default = 1, metavar = "",
+        help="[INT] Set gzip compression level. Higher compression decreases processing speed. Possible values: 0-3 for isal, 1-9 for gzip. Default: 1."
     )
     output_group.add_argument(
         "--output", "-o", type=str, default = None, metavar = "",
@@ -3626,7 +3668,7 @@ def parse_args():
     )
     adapter_trimming.add_argument(
         "--adapter-add", "-ad", type = str, default = None, metavar="",
-        help="[STR] FASTA file or comma-separated sequences to add to built-in sequences."
+        help="[STR] FASTA file or comma-separated sequences to add to selected built-in sequences."
     )
     adapter_trimming.add_argument(
         "--adapter-excl", "-ax", type = str, default = None, metavar="",
@@ -3634,11 +3676,11 @@ def parse_args():
     )
     adapter_trimming.add_argument(
         "--adapter-read-1", "-a1", type = str, default = None, metavar="",
-        help="[STR] Sequence of read 1 specific adapter. Specifying this, will override other adapter specifications. Leaving this empty when --adapter-read-2 is set, will disable read 1 adapter trimming. Default: none"
+        help="[STR] FASTA file or comma-separated sequences of read 1 specific adapter. Specifying this, will override other adapter specifications. Leaving this empty when --adapter-read-2 is set, will disable read 1 adapter trimming. Default: none"
     )
     adapter_trimming.add_argument(
         "--adapter-read-2", "-a2", type = str, default = None, metavar="",
-        help="[STR] Sequence of read 2 specific adapter. Specifying this, will override other adapter specifications. Leaving this empty when --adapter-read-1 is set,  will disable read 2 adapter trimming. Default: none"
+        help="[STR] FASTA file or comma-separated sequences of read 2 specific adapter. Specifying this, will override other adapter specifications. Leaving this empty when --adapter-read-1 is set,  will disable read 2 adapter trimming. Default: none"
     )
     
     overlap_trimming = parser.add_argument_group(
@@ -3656,12 +3698,12 @@ def parse_args():
         help='[INT] Maximum mismatches allowed in the overlapping region. Default: 5.'
     )
     overlap_trimming.add_argument(
-        "--overlap-min-length", "-ol", type = int, default = 30, metavar="",
-        help="[INT] Minimum overlap length between the paired reads.  Default: 30."
+        "--overlap-min-length", "-ol", type = int, default = 50, metavar="",
+        help="[INT] Minimum overlap length between the paired reads. Default: 50."
     )
     overlap_trimming.add_argument(
-        "--overlap-portion-mismatch", "-op", type = int, default = 10, metavar="",
-        help="[INT] Maximum percentage of mismatched bases allowed in the overlapping region. Default: 10"
+        "--overlap-portion-mismatch", "-op", type = int, default = 4, metavar="",
+        help="[INT] Maximum percentage of mismatched bases allowed in the overlapping region. Default: 4"
     )
 
     low_complexity_group = parser.add_argument_group(
@@ -3821,6 +3863,10 @@ def parse_args():
     parameters["slider_quality"] = args.slider_quality
     parameters["gzip_output"] = args.gzip
     parameters["gzip_level"] = args.gzip_level
+    parameters["gzip_method"] = args.gzip_method
+    allowed_levels = range(0, 4) if args.gzip_method == "isal" else range(1, 10)
+    if args.gzip_level not in allowed_levels:
+        parser.error(f"argument --gzip-level: invalid value {args.gzip_level} for --gzip-method {args.gzip_method} (choose from {allowed_levels[0]}-{allowed_levels[-1]}).")
     parameters["reads_for_phred_offset"] = args.reads_for_phred_offset
     parameters["adapter_filter_flag"] = args.adapter_filter_flag
     parameters["adapter_add"] = args.adapter_add
