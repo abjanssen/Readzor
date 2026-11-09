@@ -411,35 +411,15 @@ From these results, the default `--overlap-min-length` has been set to `50`, `--
 These settings balance adapter recall, precision, and loss of genomic base pairs.
 
 #### Combined adapter and overlap approach
-When desired, both adapter sequence search and overlapping sequences search can be run.
+When desired, both adapter sequence search and overlapping sequences search can be run at the same time.
 
-<table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
-  <tr>
-    <th colspan="2" align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 24px;">
-      <b>Combined adapter search performance</b>
-    </th>
-  </tr>
-  <tr>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/compression_levels_output_size.png" alt="Recall benchmark figure"><br>
-      <sub><b>Figure 1:</b> Recall (adapters successfully found).</sub>
-    </td>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/compression_levels_processing_time.png" alt="Precision benchmark figure"><br>
-      <sub><b>Figure 2:</b> Precision (portion of removed bases that were from adapters).</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/compression_levels_memory_usage.png" alt="F1 score benchmark figure"><br>
-      <sub><b>Figure 3:</b> F1 score (harmonic mean of precision and recall).</sub>
-    </td>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="benchmarking/figures/compression_levels_memory_usage.png" alt="Genomic bases lost benchmark figure"><br>
-      <sub><b>Figure 4:</b> Genomic bases lost.</sub>
-    </td>
-  </tr>
-</table>
+| Method         | Recall | Precision |    F1 | Genomic bases lost |
+|:---------------|-------:|----------:|------:|-------------------:|
+| Adapter search |  0.926 |     0.993 | 0.958 |             27,172 |
+| Overlap search |  0.951 |     0.990 | 0.970 |              3,876 |
+| Combined       |  0.982 |     0.780 | 0.869 |          1,202,900 |
+
+A more detailed overview of the effect of different settings on these parameters can be found in the [benchmarking folder](benchmarking/) in this repository. 
 
 #### Comparison to other short-read trimming tools
 Adapter trimming is an important step in quality trimming of short-read sequences, and thus we compared the performance of Readzor in this area to other popular tools.
