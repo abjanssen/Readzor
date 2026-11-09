@@ -254,6 +254,11 @@ Further options that can be specified to alter the behavior of Readzor.\
 
 ## Performance 
 
+### Production of synthetic short read sequences
+To provide for a repeatable benchmarking method, and ground-truth for adapter removal, we produced a synthetic dataset from the _Streptococcus pneumoniae_ BHN418 (NCBI Accession [CP155538.1](https://www.ncbi.nlm.nih.gov/nuccore/CP155538.1) genome using [NEAT](https://github.com/ncsa/NEAT).
+Using NEAT, we produced a 151 bp, paired-end dataset, with a mean fragment size of 280 bp and standard deviation of 50 bp, with TruSeq adapters ligated where necessary. Frpm the provided results (i.e. read headers and golden BAM file), the exact adapter content was parsed for use in adapter removal benchmarking.
+This resulted in a paired-end dataset totalling 56,009,434 reads, with 267,114 (0.476%) containing adapter sequences.
+
 ### Adapter sequence trimming
 The removal of adapter sequences is an important step in the cleanup of short read sequences. Readzor can employ two methods, either alone or together, to find and trim these sequences.
 
@@ -261,6 +266,7 @@ The removal of adapter sequences is an important step in the cleanup of short re
 Using provided adapter sequences, Readzor employs a seed-and-trim approach for adapter removal. It scans every read in its entirety to match the initial bases specified by `--adapter-seed`. When only a portion of the adapter can be matched at the read end, mismatches are proportionally scaled.
 As a consequence of the seed-and-trim approach, adapter sequences shorter than the length specified by `--adapter-seed` will not be found.
 From these results, the default `--adapter-seed` has been set to `6`, and `--adapter-mismatch` to `0`.
+These settings balance adapter recall, precision, and loss of genomic base pairs.
 
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
    <tr>
@@ -294,7 +300,69 @@ From these results, the default `--adapter-seed` has been set to `6`, and `--ada
 For paired-end data, when an insert is shorter than the read length, the reads extend past the fragment boundaries into the opposite adapters
 Readzor can identifies adapter sequences by aligning paired reads against each other, by clipping the non-overlapping 3' adapter tails—without requiring pre-specified adapter sequences.
 Overlaps shorter than `--overlap-min-length` (i.e. an insert shorter than this value) will not be found.
+Benchmarking for both an approach in which the absolute number of mismatches in the overlap region was leading, and one in which a proportional number of mismatches was leading, has been performed.
+
+<table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
+  <tr>
+    <th colspan="2" align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 16px;">
+      <b>Overlapping sequences search performance: absolute number of mismatches.</b>
+     </th>
+   </tr>
+   <tr>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
+      <img src="benchmarking/figures/overlap_mismatches_heatmap_adapter_recall.png" width="400" alt="Recall of adapter trimming."><br>
+      <sub><b>Figure 1:</b> Recall (adapters successfully found).</sub>
+    </td>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
+      <img src="benchmarking/figures/overlap_mismatches_heatmap_precision.png" width="400" alt="Precision of adapter trimming."><br>
+      <sub><b>Figure 2:</b> Precision (portion of removed bases that were from adapters).</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
+      <img src="benchmarking/figures/overlap_mismatches_heatmap_f1.png" width="400" alt="F1 score of adapter trimming"><br>
+      <sub><b>Figure 3:</b> F1 score (harmonic mean combining precision and recall).</sub>
+    </td>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
+      <img src="benchmarking/figures/overlap_mismatches_heatmap_genomic_bases_lost.png" width="400" alt="Genomic bases lost of adapter trimming"><br>
+      <sub><b>Figure 4:</b> Genomic bases lost.</sub>
+    </td>
+  </tr>
+</table>
+
+<table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
+  <tr>
+    <th colspan="2" align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 16px;">
+      <b>Overlapping sequences search performance: relative number of mismatches.</b>
+     </th>
+   </tr>
+   <tr>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
+      <img src="benchmarking/figures/overlap_portion_heatmap_adapter_recall.png" width="400" alt="Recall of adapter trimming."><br>
+      <sub><b>Figure 1:</b> Recall (adapters successfully found).</sub>
+    </td>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
+      <img src="benchmarking/figures/overlap_portion_heatmap_precision.png" width="400" alt="Precision of adapter trimming."><br>
+      <sub><b>Figure 2:</b> Precision (portion of removed bases that were from adapters).</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
+      <img src="benchmarking/figures/overlap_portion_heatmap_f1.png" width="400" alt="F1 score of adapter trimming"><br>
+      <sub><b>Figure 3:</b> F1 score (harmonic mean combining precision and recall).</sub>
+    </td>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
+      <img src="benchmarking/figures/overlap_portion_heatmap_genomic_bases_lost.png" width="400" alt="Genomic bases lost of adapter trimming"><br>
+      <sub><b>Figure 4:</b> Genomic bases lost.</sub>
+    </td>
+  </tr>
+</table>
+
+Readzor's code dictates that the smallest number of mismatches (either given through `--overlap-mismatches` or coming from `--overlap-portion-mismatch`), determines whether a candidate overlap will be accepted or rejected.
+Thus, the combination of these two can be used to finetune the overlap search.
+
 From these results, the default `--overlap-min-length` has been set to `60`, `--overlap-mismatches` to 2, and `--overlap-portion-mismatch` to `10`.
+These settings balance adapter recall, precision, and loss of genomic base pairs.
 
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
   <tr>
@@ -319,7 +387,7 @@ From these results, the default `--overlap-min-length` has been set to `60`, `--
     </td>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
       <img src="benchmarking/figures/compression_levels_memory_usage.png" width="250" alt="Genomic bases lost benchmark figure"><br>
-      <sub><b>Figure 4:</b> Genomic bases lost.</sub>
+      <sub><b>Figure 4:</b> Absolute number of genomic bases lost.</sub>
     </td>
   </tr>
 </table>
@@ -355,25 +423,35 @@ When desired, both adapter sequence search and overlapping sequences search can 
   </tr>
 </table>
 
+#### Comparison to other short-read trimming tools
+Adapter trimming is an important step in quality trimming of short-read sequences, and thus we compared the performance of Readzor in this area to other popular tools.
+We adapted the commands of each tools to compare the ability of different read trimmers to selectivelly remove adapter sequences, and leave genomic bases untouched.
+In addition, we provided each tools with the same adapter sequences, to further standardize this process.
+
+Besides the 
+
+### Processing time and memory usage (compared to other tools)s
+
+For this comparison, two seperate approaches have been studied:
+* Finetuning of settings between different short-read trimmers to achieve a similar trimming regime.
+* Minimal user-defined settings, to simulate a more straight-forward, low-input approach.
+
+For these comparisons, we benchmarked across a number of CPU threads, and compared the processing time and maximum memory usage.
+
+
+
+
 ### File compression
-Readzor uses [`python-isal`](https://github.com/pycompression/python-isal) for its high-performance implementation of the gzip algorithm.
+Readzor uses [`python-isal`](https://github.com/pycompression/python-isal) for its high-performance implementation of the DEFLATE algorithm.
 A compression level beyond `1` has no appreciable impact on final output size, yet increases processing time (when set to `3`). The peak memory usage does not increase with compression level. 
+The use of Gzip would result in a significant increase in processing time, when compressed to comparable file size (gzip compression level `5`).
 From these results, the default compression level (`--gzip-level`) for when `--gzip` is set, has been set to `1`.
 
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
   <tr>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 33.33%;">
-      <img src="benchmarking/figures/compression_levels_output_size.png" width="250" alt="Compression level versus total output files size"><br>
-      <sub><b>Figure 1:</b> Compression level versus total output files size.</sub>
-    </td>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 33.33%;">
-      <img src="benchmarking/figures/compression_levels_processing_time.png" width="250" alt="Compression level versus processing time"><br>
-      <sub><b>Figure 2:</b> Compression level versus processing time.</sub>
-    </td>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 33.33%;">
-      <img src="benchmarking/figures/compression_levels_memory_usage.png" width="250" alt="Compression level versus maximum memory usage"><br>
-      <sub><b>Figure 3:</b> Compression level versus maximum memory usage.</sub>
-    </td>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 100%;">
+      <img src="benchmarking/figures/compression_methods.png" width="250" alt="Isal compression is faster than gzip."><br>
+      <sub><b>Figure 1:</b> Isal compression is faster than gzip.</sub>
   </tr>
 </table>
 
@@ -383,12 +461,14 @@ Evaluation of the impact of individual Readzor modules on processing time and me
 ### Comparison with other short read sequence trimmers
 
 
-## Performance benchmarking
+## Benchmarking software and facilities
 Readzor has been benchmarked using the [Curnagl](https://wiki.unil.ch/ci/books/high-performance-computing-hpc/page/curnagl) high-performance computering cluster of the University of Lausanne.
-Readzor has been compared against the following tools:
-* Trimmomatic (version X.X.X)
-* fastp (version X.X.X)
-* Cutadapt (version X.X.X)
+During the benchmarking, the following software packages and versions were used:
+* [Trimmomatic](https://github.com/usadellab/trimmomatic) (version X.X.X)
+* [fastp](https://github.com/opengene/fastp) (version X.X.X)
+* [Cutadapt](https://github.com/marcelm/cutadapt/) (version X.X.X)
+* [NEAT](https://github.com/ncsa/NEAT) (version 4.7.1)
+* [psutil](https://github.com/giampaolo/psutil) (version 7.2.2)
 
 All commands used for benchmarking, and subsequent results, are available from the [benchmarking folder](benchmarking/) in this repository. 
 

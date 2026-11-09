@@ -2865,7 +2865,10 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
     rejected_R1 = rejected_R1 + filtered_R1
     rejected_R2 = rejected_R2 + filtered_R2
 
-    paired_out_1, paired_out_2, singles_out_1, singles_out_2 = [], [], [], []
+    paired_out_1 = []
+    paired_out_2 = []
+    singles_out_1 = []
+    singles_out_2 = []
     for r1, r2 in zip(survivors_1, survivors_2):
         if r1 is not None:
             if r2 is not None:
