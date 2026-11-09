@@ -29,7 +29,7 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.5.4"
+VERSION = "0.5.5"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq", [
@@ -2700,7 +2700,7 @@ def paired_overlap_cutoffs(batch_1, batch_2, parameters):
     left_2[rows_2], right_2[rows_2] = l2, r2
     return (left_1, right_1), (left_2, right_2)    
 
-def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, overlap_cutoffs, parameters, read_direction=None):
+def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, overlap_cutoffs, parameters, read_direction=None, chunk_length = 0):
     """
     Trim and length/quality-filter one prepared batch (one mate of a paired
     chunk) and format the survivors, keyed by their base (mate-independent)
@@ -2741,8 +2741,10 @@ def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_outp
     """
     rejected_reads = []
     rejected = 0
+    survivors = [None] * chunk_length
     if batch is None:
-        return {}, rejected, rejected_reads
+        return survivors, rejected, rejected_reads
+    original_index = batch["valid_reads"].tolist()
     valid_headers, valid_sequences = batch["headers"], batch["sequences"]
     valid_pluses, valid_qualities = batch["pluses"], batch["qualities"]
     sequence_arr, quality_arr = batch["sequence_arr"], batch["quality_arr"]
@@ -2794,7 +2796,6 @@ def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_outp
         qual_table = PHRED33_TO_64
     else:
         qual_table = None
-    survivors = {}
     for i, keep in enumerate(keep_mask):
         if not keep:
             rejected += 1
@@ -2806,8 +2807,7 @@ def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_outp
         qual_out = valid_qualities[i][left:right]
         if qual_table is not None:
             qual_out = qual_out.translate(qual_table)
-        base_id, _ = read_info_from_header(valid_headers[i])
-        survivors[base_id] = b"\n".join((valid_headers[i], seq_out, valid_pluses[i], qual_out)) + b"\n"
+        survivors[original_index[i]] = b"\n".join((valid_headers[i], seq_out, valid_pluses[i], qual_out)) + b"\n"
     return survivors, rejected, rejected_reads
         
 def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gzip_level, discard_singles, parameters):
@@ -2866,13 +2866,17 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
         RuntimeError: If gzip compression fails.
     """
     chunk1, chunk2 = chunks
+    chunk1, chunk2 = list(chunk1), list(chunk2)
+    n_chunk = len(chunk1)
+    if n_chunk != len(chunk2):
+        raise ValueError("R1/R2 chunks have different numbers of reads.")
     batch_1, invalid_1, rejected_R1 = prepare_reads(chunk1, phred_offset_1, write_rejected = parameters["write_rejected"], parameters = parameters)
     batch_2, invalid_2, rejected_R2 = prepare_reads(chunk2, phred_offset_2, write_rejected = parameters["write_rejected"], parameters = parameters)
     overlap_1 = overlap_2 = None
     if parameters["overlap_filter_flag"] and batch_1 is not None and batch_2 is not None:
         overlap_1, overlap_2 = paired_overlap_cutoffs(batch_1, batch_2, parameters)
-    survivors_1, filtered_1, filtered_R1 = finish_reads(batch_1, phred_offset_1, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_1, read_direction="read_1", parameters = parameters)
-    survivors_2, filtered_2, filtered_R2 = finish_reads(batch_2, phred_offset_2, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_2, read_direction="read_2", parameters = parameters)
+    survivors_1, filtered_1, filtered_R1 = finish_reads(batch_1, phred_offset_1, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_1, read_direction="read_1", parameters = parameters, chunk_length = n_chunk)
+    survivors_2, filtered_2, filtered_R2 = finish_reads(batch_2, phred_offset_2, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_2, read_direction="read_2", parameters = parameters, chunk_length = n_chunk)
     rejected_1 = invalid_1 + filtered_1
     rejected_2 = invalid_2 + filtered_2
     rejected_R1 = rejected_R1 + filtered_R1
@@ -2882,14 +2886,15 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
     paired_out_2 = []
     singles_out_1 = []
     singles_out_2 = []
-    for bid, record in survivors_1.items():
-        mate = survivors_2.pop(bid, None)
-        if mate is not None:
-            paired_out_1.append(record)
-            paired_out_2.append(mate)
-        else:
-            singles_out_1.append(record)
-    singles_out_2 = list(survivors_2.values())
+    for r1, r2 in zip(survivors_1, survivors_2):
+        if r1 is not None:
+            if r2 is not None:
+                paired_out_1.append(r1)
+                paired_out_2.append(r2)
+            else:
+                singles_out_1.append(r1)
+        elif r2 is not None:
+            singles_out_2.append(r2)
     num_R1_singles = len(singles_out_1)
     num_R2_singles = len(singles_out_2)
     num_paired = len(paired_out_1)
