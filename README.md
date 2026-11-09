@@ -419,25 +419,32 @@ When desired, both adapter sequence search and overlapping sequences search can 
 | Overlap search |  0.951 |     0.990 | 0.970 |              3,876 |
 | Combined       |  0.982 |     0.780 | 0.869 |          1,202,900 |
 
+The preset parameters strike a balance between the portion of adapters found, precision, and genomic bases lost. When a more rigorous adapter trimming is desired, the modification of the preset parameters can give the desired outcomes. 
 A more detailed overview of the effect of different settings on these parameters can be found in the [benchmarking folder](benchmarking/) in this repository. 
 
 #### Comparison to other short-read trimming tools
-Adapter trimming is an important step in quality trimming of short-read sequences, and thus we compared the performance of Readzor in this area to other popular tools.
-We adapted the commands of each tools to compare the ability of different read trimmers to selectivelly remove adapter sequences, and leave genomic bases untouched.
-In addition, we provided each tools with the same adapter sequences, to further standardize this process.
+To further characterize the performance of Readzor's adpater trimming capabilities, we compared its performance in this area to other popular tools.
+As different tools can have different preset parameters, we ran these tools either with preset parameters, or by adapting their paramters to mimick each other (as far as possible).
+The majority of the tools can perform adapter trimming based on sequence search, and overlap search. However, some tools perform these analyses without the specification of the user, and without the ability to turn these off. To accurately determine the efficiency of each tools and aproach, their commands have sometimes been altered. The commands used are listed in the [benchmarking folder](benchmarking/) in this repository. 
+In addition, we have provided each tools with the same adapter sequences, to further standardize this process.
 
-Besides the 
 
-### Processing time and memory usage (compared to other tools)s
+XXXXX
+XXXXX
+XXXXX
+XXXXX
 
-For this comparison, two seperate approaches have been studied:
+### Processing time and memory usage (compared to other tools)
+
+Finally, we characterized the processing speed and maximum memory usage of Readzor and other short read trimming tools. For this characterization, two seperate approaches have been studied:
 * Finetuning of settings between different short-read trimmers to achieve a similar trimming regime.
 * Minimal user-defined settings, to simulate a more straight-forward, low-input approach.
 
 For these comparisons, we benchmarked across a number of CPU threads, and compared the processing time and maximum memory usage.
 
-
-
+XXXXX
+XXXXX
+XXXXX
 
 ### File compression
 Readzor uses [`isal`](https://github.com/pycompression/python-isal) for its high-performance implementation of the DEFLATE algorithm.
