@@ -418,8 +418,8 @@ When desired, both adapter sequence search and overlapping sequences search can 
 | Method         | Recall | Precision |    F1 | Genomic bases lost |
 |:---------------|-------:|----------:|------:|-------------------:|
 | Adapter search |  0.926 |     0.993 | 0.958 |             27,172 |
-| Overlap search |  0.951 |     0.990 | 0.970 |              3,876 |
-| Combined       |  0.982 |     0.780 | 0.869 |          1,202,900 |
+| Overlap search |  0.982 |     0.780 | 0.869 |          1,202,900 |
+| Combined       |  0.998 |     0.779 | 0.875 |          1,230,072 |
 
 </div>
 
@@ -428,23 +428,83 @@ A more detailed overview of the effect of different settings on these parameters
 
 #### Comparison to other short-read trimming tools
 To further characterize the performance of Readzor's adpater trimming capabilities, we compared its performance in this area to other popular tools.
-As different tools can have different preset parameters, we ran these tools either with preset parameters, or by adapting their paramters to mimick each other (as far as possible).
-The majority of the tools can perform adapter trimming based on sequence search, and overlap search. However, some tools perform these analyses without the specification of the user, and without the ability to turn these off. To accurately determine the efficiency of each tools and aproach, their commands have sometimes been altered. The commands used are listed in the [benchmarking folder](benchmarking/) in this repository. 
-Furthermore, other tools sometimes hardcode parameters that can be specified in Readzor (e.g. mismatches allowed), where possible, this has been controlled for.
-In addition, we have provided each tools with the same adapter sequences, to further standardize this process.
+As different tools can have different preset parameters, we ran these tools either with preset parameters, or by adapting their paramters to mimick each other (when possible).
+The majority of the tools can perform adapter trimming based on sequence search, and overlap search. However, some tools perform these analyses without the specification of the user, and without the ability to turn these off. To accurately determine the efficiency of each tool and aproach, their commands have sometimes been altered to run in single-ended mode instead. For example, fastp was run in single-ended mode as a workaround. The commands used are listed in the [benchmarking folder](benchmarking/) in this repository. 
+We provided each tool with the same adapter sequences, to further standardize adapter trimming.
 
-XXXXX
-XXXXX
-XXXXX
-XXXXX
+##### Preset parameters
+| Tool            | Configuration                                       | Recall | Precision |    F1 | Genomic bases lost | Note                                     |
+|:----------------|:----------------------------------------------------|-------:|----------:|------:|-------------------:|:-----------------------------------------|
+| **fastp**       | PE, overlap                                         |  0.994 |     0.654 | 0.789 |          2,285,459 |                                          |
+|                 | PE, overlap + adapter detection                     |  0.994 |     0.654 | 0.789 |          2,285,459 |                                          |
+|                 | PE, overlap + Readzor adapters (per read)           |  0.998 |     0.622 | 0.766 |          2,645,431 |                                          |
+|                 | PE, overlap + Readzor adapters (overall)            |  0.998 |     0.616 | 0.761 |          2,712,500 |                                          |
+|                 | SE, adapter detection                               |  0.000 |         — | 0.000 |                  0 | No adapters detected                     |
+|                 | SE, adapter detection + Readzor adapters (per read) |  0.968 |     0.921 | 0.944 |            360,242 |                                          |
+|                 | SE, adapter detection + Readzor adapters (overall)  |  0.968 |     0.908 | 0.937 |            426,429 |                                          |
+| **Cutadapt**    | PE, Readzor adapters (per read)                     |  0.989 |     0.467 | 0.634 |          4,914,110 |                                          |
+|                 | SE, Readzor adapters (per read)                     |  0.989 |     0.467 | 0.634 |          4,914,110 |                                          |
+| **Trimmomatic** | PE, Readzor adapters (none-prefix paired)           |  0.710 |     1.000 | 0.830 |                  0 |                                          | 
+|                 | PE, Readzor adapters (prefix paired)                |  0.124 |     0.964 | 0.219 |             20,310 |                                          | 
+|                 | PE, Readzor adapters (none-prefix + prefix paired)  |  0.831 |     0.994 | 0.905 |             20,310 |                                          |
+|                 | PE, TruSeq3-SE adapters                             |  0.710 |     0.998 | 0.830 |                387 |                                          |
+|                 | PE, TruSeq3-PE adapters                             |  0.907 |     0.995 | 0.949 |             20,867 |                                          |
+|                 | PE, TruSeq3-PE-2 adapters                           |  0.918 |     0.995 | 0.955 |             21,466 |                                          |
+|                 | SE, Readzor adapters (none-prefix paired)           |  0.710 |     1.000 | 0.830 |                  0 |                                          | 
+|                 | SE, Readzor adapters (prefix paired)                |  0.000 |         - | 0.000 |                  0 | No paired read for overlap filtering     | 
+|                 | SE, Readzor adapters (none-prefix + prefix paired)  |  0.710 |     1.000 | 0.830 |                  0 | No paired read for overlap filtering     |  
+|                 | SE, TruSeq3-SE adapters                             |  0.710 |     0.999 | 0.830 |                387 |                                          |
+|                 | SE, TruSeq3-PE adapters                             |  0.000 |         - | 0.000 |                  0 |                                          |
+|                 | SE, TruSeq3-PE-2 adapters                           |  0.710 |     0.999 | 0.830 |                599 |                                          |
+| **Readzor**     | PE, per read adapter specified                      |  0.926 |     0.993 | 0.958 |             27,172 |                                          | 
+|                 | PE, overall adapters specified                      |  0.926 |     0.993 | 0.958 |             27,172 |                                          | 
+|                 | SE, per read adapter specified                      |  0.926 |     0.993 | 0.958 |             27,172 |                                          | 
+|                 | SE, overall adapters specified                      |  0.926 |     0.993 | 0.958 |             27,172 |                                          | 
+|                 | PE, per read adapter specified + overlap            |  0.998 |     0.779 | 0.875 |          1,230,072 |                                          | 
+|                 | PE, overall adapters specified + overlap            |  0.998 |     0.779 | 0.875 |          1,230,072 |                                          | 
+
+
+From these tests, fastp and Cutadapt perform high on adapter recall, but with trade-offs in precision. 
+Trimmomatic on the other hand, is highly precise, but trades this for a lower adapter recall.
+Readzor on the other hand, finds a balance between precision and recall, allowing for highly accurate trimming of reads, whilst minimizing loss of genomic bases.
+
+##### Mimicking parameters
+To investigate how the behaviour of adapter trimming across tools holds when mimicking other tools' settings, we adapted the settings of Readzor and other tools to mimick the parameters of other methods.
+
+| Tool            | Configuration                                       | Recall | Precision |    F1 | Genomic bases lost | Note                                     |
+|:----------------|:----------------------------------------------------|-------:|----------:|------:|-------------------:|:-----------------------------------------|
+| **fastp**       |                                                     |  XXXXX |     XXXXX | XXXXX |                  X |                                          |
+| **Cutadapt**    | PE, Readzor adapters (per read), Readzor-like       |  0.926 |     0.993 | 0.958 |             27,172 | --overlap 6, --errors 0                  |
+| **Trimmomatic** |                                                     |  XXXXX |     XXXXX | XXXXX |                  X |                                          | 
+| **Readzor**     | PE, Readzor adapters (per read), Cutadapt-like      |  0.989 |     0.399 | 0.568 |          6,489,760 | --adapter-seed 3, --adapter-mismatch 3   | 
+|                 | PE, Readzor adapters (per read), fastp-like         |  0.955 |     0.716 | 0.818 |          1,645,274 | --adapter-seed 6, --adapter-mismatch 4   |  
+|                 | PE, Readzor adapters (overall), fastp-like          |  0.955 |     0.717 | 0.819 |          1,637,650 | --adapter-seed 6, --adapter-mismatch 4   |  X
+
+
 
 ### Resource usage across processing modules
-Evaluation of the impact of individual Readzor modules on processing time and memory usage.
+To evaluate the impact of individual Readzor modules on processing time and memory usage, we processed the synthetic dataset with each module switched on separately. 
+Runs without any module (baseline) and with all modules combined were included for reference. 
+As adapter trimming uses a different search strategy when mismatches are allowed, we performed both perfect (`--adapter-mismatch 0`), and one mismatch (`--adapter-mismatch 1`) search, to investigate the impact of this change.
 
-XXXXX
-XXXXX
-XXXXX
-XXXXX
+Without any module, Readzor's processing time and memory usage are spent on unpacking, reading, validating, and compressing, writing gzipped files. 
+Most modules have a low processing burden: set-length end trimming (`--cut-flag`), N-filtering (`--n-filter`), homopolymer trimming (`--poly-filter-flag`), and adapter trimming (`--adapter-filter-flag`), and quality-dependent end trimming (`--endqual-filter-flag`) added limited extra time and memory usage. 
+Sliding window quality trimming (`--slider-filter-flag`), overlap trimming (`--overlap-filter-flag`, +47 s) and k-mer based low complexity filtering (`--kmer-filter-flag`, +54 s), all added substantial time to the processing.
+When all modules were combined, processing took about 2.4-2,7× the baseline, or roughly the sum of the individual module costs. Memory usage is largely independent of the modules used, peaking when all modules were combined.
+
+<table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
+   <tr>
+     <th align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 24px;">
+       <b>Resource usage across processing modules</b>
+     </th>
+   </tr>
+   <tr>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 100%;">
+      <img src="benchmarking/figures/resource_usage_modules.png" alt="Processing time and peak memory usage per module."><br>
+      <sub><b>Figure X:</b> Processing time and peak memory usage per Readzor module.</sub>
+    </td>
+  </tr>
+</table>
 
 ### Processing time and memory usage (compared to other tools)
 
