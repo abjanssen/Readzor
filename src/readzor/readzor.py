@@ -29,7 +29,7 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.5.5"
+VERSION = "0.5.6"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq", [
@@ -1623,6 +1623,9 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
     """
     n_reads, length = quality_arr.shape
 
+    cs_dtype = np.int16 if (length * 93 < 32000 and slider_quality * slider_window < 32000) else np.int32
+    pad_dtype = np.int16 if length < 32000 else np.int32
+
     if not chunk_padding_bool:
         if length < slider_window:
             return np.zeros(n_reads, dtype=np.int8), np.full(n_reads, length, dtype=np.int32)
@@ -1632,8 +1635,8 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
         if window_starts[-1] != last_possible_start:
             window_starts = np.append(window_starts, last_possible_start)
 
-        cumsum = np.cumsum(quality_arr, axis=1, dtype=np.int32)
-        cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int32), cumsum], axis=1)
+        cumsum = np.cumsum(quality_arr, axis=1, dtype=cs_dtype)
+        cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=cs_dtype), cumsum], axis=1)
         window_sums = cumsum[:, window_starts + slider_window] - cumsum[:, window_starts]
         failed_mask = window_sums < (slider_quality * slider_window)
 
@@ -1656,10 +1659,10 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
             right_cutoffs = real_lengths.astype(np.int32)
             return left_cutoffs, right_cutoffs
 
-        cumsum = np.cumsum(quality_arr, axis=1, dtype=np.int32)
-        cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int32), cumsum], axis=1)
-        pad_cumsum = np.cumsum(padding_mask_bool.astype(np.int32), axis=1)
-        pad_cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int32), pad_cumsum], axis=1)
+        cumsum = np.cumsum(quality_arr, axis=1, dtype=cs_dtype)
+        cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=cs_dtype), cumsum], axis=1)
+        pad_cumsum = np.cumsum(padding_mask_bool, axis=1, dtype=pad_dtype)
+        pad_cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=pad_dtype), pad_cumsum], axis=1)
 
         last_possible_start = length - slider_window
         window_starts = np.arange(0, last_possible_start + 1, slider_step)
@@ -1694,6 +1697,7 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
 
         bad_positions |= padding_mask_bool
 
+    # ... everything from `good_positions = ~bad_positions` onward is unchanged
     good_positions = ~bad_positions
     no_bad = ~bad_positions.any(axis=1)
     all_bad = bad_positions.all(axis=1)
@@ -1942,7 +1946,8 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
     """
     n_reads, length = sequence_arr.shape
     adapter_sequences = select_adapters_for_read(adapter_sequences, adapter_group, read_direction, adapter_per_read)
-    if mismatches == 0:
+    adapter_len_min = min(len(seq) for seq in adapter_sequences)
+    if mismatches == 0 and min(adapter_seed, adapter_len_min) >= 4:
         all_bytes = sequence_arr.tobytes()
         if not chunk_padding_bool:
             real_lengths = np.full(n_reads, length, dtype=np.int32)
@@ -1990,22 +1995,39 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
                 adapter_len = len(adapter_bytes)
                 seed_len = min(adapter_seed, adapter_len)
                 n_steps = min(adapter_len, length)
-                overlap = np.minimum(adapter_len, length - pos)
-                allowed = np.where(overlap >= seed_len,(2 * overlap * mismatches + adapter_len) // (2 * adapter_len),-1,).astype(np.int16)
+                mm_dtype = np.int8 if (n_steps <= 127 and mismatches <= 127) else np.int16
+
+                n_cols = length - seed_len + 1
+                if n_cols <= 0:
+                    continue
+                overlap = np.minimum(adapter_len, length - pos[:n_cols])
+                allowed = np.where(overlap >= seed_len, (overlap * mismatches) // adapter_len, -1).astype(mm_dtype)
                 check_step = 14 + 2 * mismatches
-                n_open = length - check_step
+                n_open = min(length - check_step, n_cols)
                 do_check = check_step < n_steps and n_open > 0
-                mismatch_matrix = np.zeros((n_reads, length), dtype=np.int16)
-                stopped = False
-                for j in range(n_steps):
-                    mismatch_matrix[:, :length - j] += sequence_arr[:, j:] != adapter_bytes[j]
-                    if (do_check and j + 1 == check_step
-                            and not (mismatch_matrix[:, :n_open] <= allowed[:n_open]).any()):
-                        stopped = True
-                        break
-                valid_mask = mismatch_matrix <= allowed
-                if stopped:
-                    valid_mask[:, :n_open] = False
+
+                mismatch_matrix = np.zeros((n_reads, n_cols), dtype=mm_dtype)
+
+                first = check_step if do_check else n_steps
+                for j in range(first):
+                    w = min(length - j, n_cols)
+                    mismatch_matrix[:, :w] += sequence_arr[:, j:j + w] != adapter_bytes[j]
+
+                if do_check:
+                    alive = (mismatch_matrix[:, :n_open] <= allowed[:n_open]).any(axis=1)
+                    valid_mask = mismatch_matrix <= allowed
+                    valid_mask[~alive, :n_open] = False
+                    idx = np.flatnonzero(alive)
+                    if idx.size:
+                        sub = mismatch_matrix[idx]
+                        seq_sub = sequence_arr[idx]
+                        for j in range(first, n_steps):
+                            w = min(length - j, n_cols)
+                            sub[:, :w] += seq_sub[:, j:j + w] != adapter_bytes[j]
+                        valid_mask[idx] = sub <= allowed
+                else:
+                    valid_mask = mismatch_matrix <= allowed
+
                 has_match = valid_mask.any(axis=1)
                 if has_match.any():
                     first_match_col = valid_mask.argmax(axis=1)
@@ -2014,19 +2036,56 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
                         first_match_col[has_match].astype(np.int32)
                     )
         else:
-            real_lengths = length - row_tilde_count
-            right_cutoffs = np.array(real_lengths, dtype=np.int32)
-            pos = np.arange(length, dtype=np.int32)
+            max_adapter_len = max(len(a) for a in adapter_sequences)
+            idx_dtype = np.int16 if max(length + max_adapter_len, max_adapter_len * mismatches) < 32000 else np.int32
+
+            real_lengths = (length - row_tilde_count).astype(idx_dtype)
+            right_cutoffs = real_lengths.astype(np.int32)
+            pos = np.arange(length, dtype=idx_dtype)
+            rl = real_lengths[:, None]
             for adapter_bytes in adapter_sequences:
                 adapter_len = len(adapter_bytes)
                 seed_len = min(adapter_seed, adapter_len)
-                mismatch_matrix = np.zeros((n_reads, length), dtype=np.int16)
-                for j in range(min(adapter_len, length)):
-                    mismatch_matrix[:, :length - j] += sequence_arr[:, j:] != adapter_bytes[j]
-                mismatch_matrix -= np.clip(np.minimum(pos + adapter_len, length) - real_lengths[:, None], 0, None)
-                overlap = np.minimum(adapter_len, real_lengths[:, None] - pos)
-                allowed = ((2 * overlap * mismatches + adapter_len) // (2 * adapter_len)).astype(np.int32)
-                valid_mask = (overlap >= seed_len) & (mismatch_matrix <= allowed)
+                n_steps = min(adapter_len, length)
+                mm_dtype = np.int8 if (n_steps <= 127 and mismatches <= 127) else np.int16
+                n_cols = length - seed_len + 1
+                if n_cols <= 0:
+                    continue
+                pos_c = pos[:n_cols]
+                overlap = np.minimum(adapter_len, rl - pos_c)
+                seed_ok = overlap >= seed_len
+                allowed = ((np.maximum(overlap, 0) * mismatches) // adapter_len).astype(mm_dtype)
+
+                check_step = 14 + 2 * mismatches
+                n_open = min(length - check_step, n_cols)
+                do_check = check_step < n_steps and n_open > 0
+
+                mismatch_matrix = np.zeros((n_reads, n_cols), dtype=mm_dtype)
+
+                first = check_step if do_check else n_steps
+                for j in range(first):
+                    w = min(length - j, n_cols)
+                    mismatch_matrix[:, :w] += sequence_arr[:, j:j + w] != adapter_bytes[j]
+
+                if do_check:
+                    pad_partial = np.clip(np.minimum(pos_c + check_step, length) - rl, 0, n_steps).astype(mm_dtype)
+                    corrected = mismatch_matrix - pad_partial
+                    valid_mask = seed_ok & (corrected <= allowed)
+                    alive = valid_mask[:, :n_open].any(axis=1)
+                    valid_mask[~alive, :n_open] = False
+                    idx = np.flatnonzero(alive)
+                    if idx.size:
+                        sub = mismatch_matrix[idx]
+                        seq_sub = sequence_arr[idx]
+                        for j in range(first, n_steps):
+                            w = min(length - j, n_cols)
+                            sub[:, :w] += seq_sub[:, j:j + w] != adapter_bytes[j]
+                        sub -= np.clip(np.minimum(pos_c + adapter_len, length) - rl[idx], 0, n_steps).astype(mm_dtype)
+                        valid_mask[idx] = seed_ok[idx] & (sub <= allowed[idx])
+                else:
+                    mismatch_matrix -= np.clip(np.minimum(pos_c + adapter_len, length) - rl, 0, n_steps).astype(mm_dtype)
+                    valid_mask = seed_ok & (mismatch_matrix <= allowed)
+
                 has_match = valid_mask.any(axis=1)
                 if has_match.any():
                     first_match_col = valid_mask.argmax(axis=1)
