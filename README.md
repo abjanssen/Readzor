@@ -473,12 +473,26 @@ To investigate how the behaviour of adapter trimming across tools holds when mim
 
 | Tool            | Configuration                                       | Recall | Precision |    F1 | Genomic bases lost | Note                                     |
 |:----------------|:----------------------------------------------------|-------:|----------:|------:|-------------------:|:-----------------------------------------|
-| **fastp**       |                                                     |  XXXXX |     XXXXX | XXXXX |                  X |                                          |
+| **fastp**       | PE, Overlap, Readzor-like                           |  0.993 |     0.791 | 0.881 |          1,141,562 | --overlap_len_require 50 --overlap_diff_limit 5 --overlap_diff_percent_limit 4  |
+|                 | PE, Overlap + Readzor adapter (overall), Readzor-like |  0.999 |     0.734 | 0.846 |          1,568,596 | 
+  |
 | **Cutadapt**    | PE, Readzor adapters (per read), Readzor-like       |  0.926 |     0.993 | 0.958 |             27,172 | --overlap 6, --errors 0                  |
+|                 | PE, Readzor adapters (per read), fastp-like       |  0.954 |     0.968 | 0.961 |            133,535 | --overlap 6, --errors 4                  |
+
 | **Trimmomatic** |                                                     |  XXXXX |     XXXXX | XXXXX |                  X |                                          | 
+
+
 | **Readzor**     | PE, Readzor adapters (per read), Cutadapt-like      |  0.989 |     0.399 | 0.568 |          6,489,760 | --adapter-seed 3, --adapter-mismatch 3   | 
-|                 | PE, Readzor adapters (per read), fastp-like         |  0.955 |     0.716 | 0.818 |          1,645,274 | --adapter-seed 6, --adapter-mismatch 4   |  
-|                 | PE, Readzor adapters (overall), fastp-like          |  0.955 |     0.717 | 0.819 |          1,637,650 | --adapter-seed 6, --adapter-mismatch 4   |  X
+
+|                 | PE, Readzor adapters (per read), fastp-like         |  XXXXX |     XXXXX | XXXXX |          1,637,184 | --adapter-seed 4, --adapter-mismatch 4   |  X
+|                 | PE, Readzor adapters (overall), fastp-like          |  XXXXX |     XXXXX | XXXXX |          1,637,650 | --adapter-seed 4, --adapter-mismatch 4   |  X
+|                 | PE, Overlap, fastp-like                             |  0.984 |     0.373 | 0.514 |          7,189,307 | --overlap-min-length 30,--overlap-mismatches 5, --overlap-portion-mismatch 20  |
+|                 | PE, Overlap + adapter (per read), fastp-like        |  0.999 |     0.330 | 0.496 |          8,819,793 | --adapter-seed 6, --adapter-mismatch 4, --overlap-min-length 30,--overlap-mismatches 5, --overlap-portion-mismatch 20  |
+|                 | PE, Overlap + adapter (overall), fastp-like         |  0.999 |     0.330 | 0.496 |          8,820,259 | --adapter-seed 6, --adapter-mismatch 4, --overlap-min-length 30,--overlap-mismatches 5, --overlap-portion-mismatch 20  |
+
+|                 | PE, Adapter (per read), Trimmomatic-like            |  0.735 |     1.000 | 0.847 |                  0 | --adapter-seed 16, --adapter-mismatch 2   |
+|                 | PE, Adapter (overall), Trimmomatic-like             |  0.735 |     1.000 | 0.847 |                  0 | --adapter-seed 16, --adapter-mismatch 2   |
+
 
 
 
