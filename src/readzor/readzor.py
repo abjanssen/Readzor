@@ -1929,7 +1929,8 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
     """
     n_reads, length = sequence_arr.shape
     adapter_sequences = select_adapters_for_read(adapter_sequences, adapter_group, read_direction, adapter_per_read)
-    if mismatches == 0:
+    adapter_len_min = min(len(seq) for seq in adapter_sequences)
+    if mismatches == 0 and min(adapter_seed, adapter_len_min) >= 4:
         all_bytes = sequence_arr.tobytes()
         if not chunk_padding_bool:
             real_lengths = np.full(n_reads, length, dtype=np.int32)
