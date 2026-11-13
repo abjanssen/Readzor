@@ -1979,7 +1979,6 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
                 n_steps = min(adapter_len, length)
                 mm_dtype = np.int8 if (n_steps <= 127 and mismatches <= 127) else np.int16
 
-                # column cut: only p <= length - seed_len can ever match
                 n_cols = length - seed_len + 1
                 if n_cols <= 0:
                     continue
@@ -2037,7 +2036,6 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
                 pos_c = pos[:n_cols]
                 overlap = np.minimum(adapter_len, rl - pos_c)
                 seed_ok = overlap >= seed_len
-                # negative overlaps are masked by seed_ok; clipping at 0 bounds the product
                 allowed = ((np.maximum(overlap, 0) * mismatches) // adapter_len).astype(mm_dtype)
 
                 check_step = 14 + 2 * mismatches
