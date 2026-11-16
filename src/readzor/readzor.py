@@ -3706,8 +3706,8 @@ def parse_args():
         help='[STR] Specify the group(s) of adapters to be used. Ignored if --adapter-excl is set. Choices: ' + ", ".join(["all"] + [name for name, _ in DEFAULT_ADAPTERS]) + '. For matched paired reads, forward reads will only be trimmed for "Read 1", and reverse reads for "Read 2" adapters (when applicable). Default: TruSeq.'
         )
     adapter_trimming.add_argument(
-        "--adapter-mismatch", "-am", type = int, default = 0, metavar="",
-        help="[INT] Number of mismatches allowed in adapter finding. Default: 0."
+        "--adapter-mismatch", "-am", type = int, default = 2, metavar="",
+        help="[INT] Number of mismatches allowed in adapter finding. Default: 2."
     )
     adapter_trimming.add_argument(
         "--adapter-add", "-ad", type = str, default = None, metavar="",
