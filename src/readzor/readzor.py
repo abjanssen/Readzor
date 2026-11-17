@@ -28,7 +28,7 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.5.6"
+VERSION = "0.5.7"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq", [
@@ -63,9 +63,9 @@ FULL_AUTO_OVERRIDES = {
     "endqual_filter_flag": True,
     "endqual_min_both": 20,
     "adapter_filter_flag": True,
-    "adapter_group": "TruSeq",
+    "adapter_group": ["TruSeq"],
     "adapter_seed": 6,
-    "adapter_mismatch": 0,
+    "adapter_mismatch": 2,
     "n_filter": True,
     "min_length_output_perc": 33,
     "gzip": True,
