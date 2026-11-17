@@ -28,12 +28,12 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.5.2"
+VERSION = "0.5.8"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq", [
-        ["Read_1", "AGATCGGAAGAGCACACGTCTGAACTCCAGTCA"],  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/UDIndexes.htm
-        ["Read_2", "AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"]  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/UDIndexes.htm
+        ["Read 1", "AGATCGGAAGAGCACACGTCTGAACTCCAGTCA"],  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/UDIndexes.htm
+        ["Read 2", "AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"]  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/UDIndexes.htm
     ]],
     ["TruSeq_small_RNA", [
         ["TruSeq_small_RNA", "TGGAATTCTCGGGTGCCAAGG"]    #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/TruSeq-SmallRNA.htm
@@ -48,8 +48,8 @@ DEFAULT_ADAPTERS = [
         ["AmpliSeq", "CTGTCTCTTATACACATCT"]  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/AmpliSeq-Sequences.htm
     ]],
     ["TruSeq_DNA_methylation", [
-        ["Read_1", "AGATCGGAAGAGCACACGTCTGAAC"],  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/TruSeq-DNAMethyl.htm
-        ["Read_2", "AGATCGGAAGAGCGTCGTGTAGGGA"],  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/TruSeq-DNAMethyl.htm
+        ["Read 1", "AGATCGGAAGAGCACACGTCTGAAC"],  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/TruSeq-DNAMethyl.htm
+        ["Read 2", "AGATCGGAAGAGCGTCGTGTAGGGA"],  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/TruSeq-DNAMethyl.htm
     ]],
     ["TruSeq_Ribo_profile", [
         ["TruSeq_Ribo_profile", "AGATCGGAAGAGCACACGTCT"]  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/TruSeq-RiboProfile.htm
@@ -61,7 +61,11 @@ DEFAULT_ADAPTERS = [
 FULL_AUTO_PRESERVED_DESTS = {"input_files", "input_paired", "input_unpaired", "input_interleaved", "full_auto"}
 FULL_AUTO_OVERRIDES = {
     "endqual_filter_flag": True,
+    "endqual_min_both": 20,
     "adapter_filter_flag": True,
+    "adapter_group": ["TruSeq"],
+    "adapter_seed": 6,
+    "adapter_mismatch": 2,
     "n_filter": True,
     "min_length_output_perc": 33,
     "gzip": True,
@@ -244,52 +248,55 @@ class ProgressTracker:
         total_reads (int): Estimated total number of reads (clamped to >= 1).
         bar_width (int): Maximum width of the bar in characters. Defaults to 50.
         min_interval (float): Minimum number of seconds between redraws.
-            Defaults to 0.2.
+            Defaults to 0.1.
     """
-    def __init__(self, total_reads, bar_width=50, min_interval=0.2):
+    def __init__(self, total_reads, bar_width=50, min_interval=0.1):
         self.total = max(total_reads, 1)
         self.done = 0
         self.bar_width = bar_width
         self.min_interval = min_interval
-        self._last_render = 0.0
-        self._start_time = time.time()
+        self.last_render = time.time()
+        self.start_time = time.time()
 
-    @staticmethod
-    def _format_duration(seconds_val, concise=False):
+    def format_duration(self, seconds_val, concise=False):
         """
-        Format a duration for display.
+        Format time duration for display.
 
         Args:
-            seconds_val (float): Duration in seconds. Infinite or negative
-                values are shown as "?".
-            concise (bool): If True, use a compact form ("1h 02m 03s",
-                "2m 05s", "7s"); otherwise a spelled-out form
-                ("1 hour, 2 minutes, 3 seconds").
+            seconds_val (float): Duration in seconds. Infinite or negative values are shown as "?".
+            concise (bool): If True, return a compact form ("1h 02m 03s"); 
+            otherwise a spelled-out form ("1 hour, 2 minutes, 3 seconds").
 
         Returns:
             str: The formatted duration.
         """
         if seconds_val is None or seconds_val == float('inf') or seconds_val < 0:
-            return "?"
+            return "Calculating..."
         total_seconds = int(round(seconds_val))
         hours, remainder = divmod(total_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
+        def plural(value, unit):
+            if value != 1:
+                return f"{value} {unit}{'s'}"
+            else:
+                return f"{value} {unit}"
+        
         if concise:
             if hours > 0:
-                return f"{hours}h {minutes:02d}m {seconds:02d}s"
+                return f"{hours}h {minutes:02d}m {seconds:02d}s."
             if minutes > 0:
-                return f"{minutes}m {seconds:02d}s"
-            return f"{seconds}s"
-        def plural(value, unit):
-            return f"{value} {unit}{'s' if value != 1 else ''}"
-        parts = []
-        if hours > 0:
-            parts.append(plural(hours, 'hour'))
-        if minutes > 0:
-            parts.append(plural(minutes, 'minute'))
-        if seconds > 0 or total_seconds < 60:
-            parts.append(plural(seconds, 'second'))
-        return ", ".join(parts)
+                return f"{minutes}m {seconds:02d}s."
+            return f"{seconds}s."
+        
+        else:
+            parts = []
+            if hours > 0:
+                parts.append(plural(hours, 'hour'))
+            if minutes > 0:
+                parts.append(plural(minutes, 'minute'))
+            if seconds > 0 or total_seconds < 60:
+                parts.append(plural(seconds, 'second'))
+            return ", ".join(parts) + "."
 
     def update(self, n):
         """
@@ -301,11 +308,11 @@ class ProgressTracker:
         """
         self.done += n
         now = time.time()
-        if now - self._last_render >= self.min_interval:
-            self._render()
-            self._last_render = now
+        if now - self.last_render >= self.min_interval:
+            self.render()
+            self.last_render = now
 
-    def _render(self):
+    def render(self):
         """
         Draw the current progress line on stderr, overwriting the previous
         one. Does nothing if stderr is not a terminal.
@@ -314,12 +321,28 @@ class ProgressTracker:
             return
         term_width = shutil.get_terminal_size(fallback=(80, 24)).columns
         frac = min(self.done / self.total, 0.999)
-        elapsed = time.time() - self._start_time
-        rate = self.done / elapsed if elapsed > 0 else 0
-        eta = (self.total - self.done) / rate if rate > 0 else float('inf')
-        eta_str = self._format_duration(eta, concise=True)
+        elapsed = time.time() - self.start_time
+        rate = self.done / elapsed
+        
+        if self.done >= self.total:
+            eta_messages = [
+            "Finishing up...",
+            "Almost done...",
+            "Nearly there...",
+            "Wrappping up..."
+            ]
+            eta_str = random.choice(eta_messages)
+        else:
+            if rate > 0:
+                eta = (self.total - self.done) / rate
+                if eta < 1.0:
+                    eta = 1.0
+            else:
+                eta = float('inf')
+            eta_str = self.format_duration(eta, concise=False)
+            
         stats = (
-            f" {frac*100:5.1f}% "
+            f" {frac*100:4.1f}% "
             f"({self.done:,}/{self.total:,} reads). "
             f"Rate: {rate:,.0f} reads/s. Estimated time remaining: {eta_str}"
         )
@@ -364,18 +387,18 @@ class ProgressTracker:
                 of claiming 100%. As the total is an estimate, the
                 percentage is capped at 99.9%. Defaults to False.
         """
-        elapsed = time.time() - self._start_time
-        rate = self.done / elapsed if elapsed > 0 else 0
-        time_str = self._format_duration(elapsed, concise=False)
+        elapsed = time.time() - self.start_time
+        rate = self.done / elapsed
+        time_str = self.format_duration(elapsed, concise=False)
         if interrupted:
             frac = min(self.done / self.total, 0.999)
-            progress = f"Stopped at {frac*100:.1f}%"
+            progress = f"Interrupted at {frac*100:.1f}%"
         else:
             frac = 1.0
             progress = "100%"
         stats = (
             f" {progress} ({self.done:,} reads analyzed). "
-            f"Average rate: {rate:,.0f} reads/s. Total time: {time_str}."
+            f"Average rate: {rate:,.0f} reads/s. Total time: {time_str}"
         )
         if not sys.stderr.isatty():
             sys.stderr.write(stats.strip() + "\n")
@@ -471,7 +494,7 @@ def group_paired_input_into_pairs(files, parser):
     if not files:
         return None
     if len(files) % 2 != 0:
-        parser.error(f"argument --paired: expected an even number of files (R1 R2 pairs), got {len(files)}.")
+        parser.error(f"argument --input-paired: expected an even number of files (R1 R2 pairs), got {len(files)}.")
     pairs = []
     for i in range(0, len(files), 2):
         pairs.append(tuple(files[i:i+2]))
@@ -816,7 +839,7 @@ def find_paired_files(filepaths):
                 dropped.add(file_1)
                 dropped.add(file_2)
             elif read_1 == 2 and read_2 == 1:
-                logger.info("Paired '%s' (R1) with '%s' (R2).", os.path.basename(file_1), os.path.basename(file_2))
+                logger.info("Paired '%s' (R1) with '%s' (R2).", os.path.basename(file_2), os.path.basename(file_1))
                 pairs.append((file_2, file_1))
                 dropped.add(file_1)
                 dropped.add(file_2)
@@ -886,7 +909,7 @@ def read_info_from_header(header):
     if b' ' in header:
         parts = header.split(b' ')
         base_id = parts[0]
-        m = re.match(rb'([12]):?', parts[1])
+        m = re.match(rb'([12]):.:', parts[1])
         if m:
             read_num = int(m.group(1))
     else:
@@ -996,6 +1019,21 @@ def validate_fastq(header, sequence, plus, quality, n_filter, min_length_input, 
     if quality.translate(None, PHRED_ALLOWED):
         return False
     return True
+
+def load_adapters_from_arg(value):
+    """FASTA file path or comma-separated sequences -> list[tuple[str, str]]."""
+    if os.path.isfile(value):
+        adapters = load_adapters_from_fasta(value)
+        if not adapters:
+            raise ValueError(f"No sequences in file '{value}' detected.")
+        return adapters
+    seqs = [s.strip().upper() for s in value.split(",") if s.strip()]
+    if not seqs:
+        raise ValueError("No adapter sequences detected.")
+    for s in seqs:
+        if not re.fullmatch(r"[ACGTN]+", s):
+            raise ValueError(f"'{s}' is neither an existing FASTA file nor a valid sequence.")
+    return [(f"custom_{i}", s) for i, s in enumerate(seqs, 1)]
 
 def load_adapters_from_fasta(fasta_file):
     """
@@ -1211,7 +1249,7 @@ def build_pipeline(parameters, read_direction=None):
     if parameters.get("poly_filter_flag"):
         pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: homopolymer_nucleotide_trimming(seq, padding_mask_bool, row_tilde_count, chunk_padding_bool, poly_length_start=parameters["poly_length_start"], poly_length_end=parameters["poly_length_end"], poly_bases_start=parameters["poly_bases_start"], poly_bases_end=parameters["poly_bases_end"]))
     if parameters.get("adapter_filter_flag"): 
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: adapter_trimming(seq, chunk_padding_bool, row_tilde_count, adapter_sequences=parameters["adapter_sequences"], mismatches=parameters["adapter_mismatch"], adapter_seed=parameters["adapter_seed"], read_direction=read_direction, adapter_group=None if parameters.get("adapter_fasta_excl") else parameters.get("adapter_group")))
+        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: adapter_trimming(seq, chunk_padding_bool, row_tilde_count, adapter_sequences=parameters["adapter_sequences"], mismatches=parameters["adapter_mismatch"], adapter_seed=parameters["adapter_seed"], adapter_per_read = parameters["adapter_per_read"], read_direction=read_direction, adapter_group=None if parameters.get("adapter_excl") else parameters.get("adapter_group")))
         
     #quality_based
     if parameters.get("endqual_filter_flag"):
@@ -1434,6 +1472,11 @@ def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, row_tilde_c
     
     start_bases = parse_bases(poly_bases_start)
     end_bases = parse_bases(poly_bases_end)
+    if poly_length_start is None:
+        poly_length_start = 0
+    if poly_length_end is None:
+        poly_length_end = 0
+        
     if poly_length_start <= 0:
         start_bases = []
     if poly_length_end <= 0:
@@ -1474,32 +1517,6 @@ def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, row_tilde_c
                 right_cutoffs = np.minimum(right_cutoffs, base_right_cutoffs)
 
     return left_cutoffs, right_cutoffs
-
-def n_end_trimming(sequence_arr, padding_mask_bool, chunk_padding_bool, row_tilde_count):
-    """
-    N end trimming: remove runs of N bases (any length >= 1) from both ends
-    of each read, leaving internal N's untouched.
-
-    Implemented as homopolymer_nucleotide_trimming() with base "N" at both
-    ends and a minimum run length of 1.
-
-    Args:
-        sequence_arr (numpy.ndarray): (n_reads, read_length) array of
-            per-base ASCII sequence codes.
-        padding_mask_bool (numpy.ndarray | None): (n_reads, read_length)
-            boolean mask marking right-padding positions, or None if the
-            chunk isn't padded.
-        chunk_padding_bool (bool): Whether sequence_arr contains padded
-            (unequal-length) reads.
-        row_tilde_count (numpy.ndarray | int): (n_reads,) count of padding
-            bytes per read, used when chunk_padding_bool is True.
-
-    Returns:
-        tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
-            each of shape (n_reads,), giving the trim boundaries per read.
-    """
-    lefts, rights = homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool = padding_mask_bool, row_tilde_count = row_tilde_count, chunk_padding_bool = chunk_padding_bool, poly_length_start = 1, poly_length_end = 1, poly_bases_start = "N", poly_bases_end = "N")
-    return lefts, rights
 
 def cut_set_ends(sequence_arr, chunk_padding_bool, row_tilde_count, cut_start, cut_end):
     """
@@ -1589,6 +1606,9 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
     """
     n_reads, length = quality_arr.shape
 
+    cs_dtype = np.int16 if (length * 93 < 32000 and slider_quality * slider_window < 32000) else np.int32
+    pad_dtype = np.int16 if length < 32000 else np.int32
+
     if not chunk_padding_bool:
         if length < slider_window:
             return np.zeros(n_reads, dtype=np.int8), np.full(n_reads, length, dtype=np.int32)
@@ -1598,8 +1618,8 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
         if window_starts[-1] != last_possible_start:
             window_starts = np.append(window_starts, last_possible_start)
 
-        cumsum = np.cumsum(quality_arr, axis=1, dtype=np.int32)
-        cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int32), cumsum], axis=1)
+        cumsum = np.cumsum(quality_arr, axis=1, dtype=cs_dtype)
+        cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=cs_dtype), cumsum], axis=1)
         window_sums = cumsum[:, window_starts + slider_window] - cumsum[:, window_starts]
         failed_mask = window_sums < (slider_quality * slider_window)
 
@@ -1622,10 +1642,10 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
             right_cutoffs = real_lengths.astype(np.int32)
             return left_cutoffs, right_cutoffs
 
-        cumsum = np.cumsum(quality_arr, axis=1, dtype=np.int32)
-        cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int32), cumsum], axis=1)
-        pad_cumsum = np.cumsum(padding_mask_bool.astype(np.int32), axis=1)
-        pad_cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=np.int32), pad_cumsum], axis=1)
+        cumsum = np.cumsum(quality_arr, axis=1, dtype=cs_dtype)
+        cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=cs_dtype), cumsum], axis=1)
+        pad_cumsum = np.cumsum(padding_mask_bool, axis=1, dtype=pad_dtype)
+        pad_cumsum = np.concatenate([np.zeros((n_reads, 1), dtype=pad_dtype), pad_cumsum], axis=1)
 
         last_possible_start = length - slider_window
         window_starts = np.arange(0, last_possible_start + 1, slider_step)
@@ -1636,7 +1656,7 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
         window_pad_counts = pad_cumsum[:, window_starts + slider_window] - pad_cumsum[:, window_starts]
         window_has_pad = window_pad_counts > 0
 
-        failed_mask = (window_sums < (slider_quality * slider_window)) | window_has_pad
+        failed_mask = (window_sums < (slider_quality * slider_window)) & ~window_has_pad
 
         bad_positions = np.zeros((n_reads, length), dtype=bool)
         n_windows = len(window_starts)
@@ -1647,8 +1667,20 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
             for j, start in enumerate(window_starts):
                 bad_positions[:, start:start + slider_window] |= failed_mask[:, j:j + 1]
 
+        if slider_step > 1:
+            rows = np.arange(n_reads)
+            has_window = real_lengths >= slider_window
+            last_start = np.clip(real_lengths - slider_window, 0, None)
+            last_sums = cumsum[rows, last_start + slider_window] - cumsum[rows, last_start]
+            last_failed = has_window & (last_sums < slider_quality * slider_window)
+            cols = np.arange(length)
+            bad_positions |= (last_failed[:, None]
+                              & (cols >= last_start[:, None])
+                              & (cols < real_lengths[:, None]))
+
         bad_positions |= padding_mask_bool
 
+    # ... everything from `good_positions = ~bad_positions` onward is unchanged
     good_positions = ~bad_positions
     no_bad = ~bad_positions.any(axis=1)
     all_bad = bad_positions.all(axis=1)
@@ -1734,7 +1766,7 @@ def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_til
         ValueError: If seq_arr_1 and seq_arr_2 have different numbers of rows.
     """
     prefix_length = 2 * max_mismatch + 6
-    max_mismatch_frac = max_mismatch_frac / 100
+    max_mismatch_frac = max_mismatch_frac
 
     n_base = np.int8(ord("N"))
 
@@ -1792,8 +1824,7 @@ def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_til
             rest_arr_2 = rc_seq_arr_2[rows_survived, offset + prefix:]
             mismatches = mismatches + (rest_arr_1 != rest_arr_2).sum(axis=1)
 
-        fraction_mismatch = mismatches / insert_size
-        pass_bool = (mismatches <= max_mismatch) & (fraction_mismatch <= max_mismatch_frac)
+        pass_bool = (mismatches <= max_mismatch) & (mismatches * 100 <= insert_size * max_mismatch_frac)
         rows_passed = rows_survived[pass_bool]
         best_insert[rows_passed] = insert_size
 
@@ -1802,7 +1833,7 @@ def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_til
     right_cutoffs_2 = np.where(found, best_insert, real_lengths_2).astype(np.int32)
     return ((np.zeros(n_reads_1, dtype=np.int8), right_cutoffs_1), (np.zeros(n_reads_2, dtype=np.int8), right_cutoffs_2))
 
-def select_adapters_for_read(adapter_sequences, adapter_group, read_direction):
+def select_adapters_for_read(adapter_sequences, adapter_group, read_direction,adapter_per_read=None):
     """
     Select the adapter sequences to search for in one mate of a read pair.
 
@@ -1826,9 +1857,14 @@ def select_adapters_for_read(adapter_sequences, adapter_group, read_direction):
             if read_direction is not "read_1"/"read_2" or adapter_group is
             empty or None.
     """
+    if adapter_per_read:
+        if read_direction in adapter_per_read:
+            return adapter_per_read[read_direction]
+        return adapter_sequences
+    
     if read_direction not in ("read_1", "read_2") or not adapter_group:
         return adapter_sequences
-    other_name = "Read_2" if read_direction == "read_1" else "Read_1"
+    other_name = "Read 2" if read_direction == "read_1" else "Read 1"
     drop, keep = set(), set()
     for group, entries in DEFAULT_ADAPTERS:
         if group not in adapter_group:
@@ -1841,7 +1877,7 @@ def select_adapters_for_read(adapter_sequences, adapter_group, read_direction):
                 keep.add(data)
     return [a for a in adapter_sequences if a not in drop or a in keep]
 
-def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_sequences, mismatches, adapter_seed, read_direction=None, adapter_group=None):
+def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_sequences, mismatches, adapter_seed, adapter_per_read, read_direction=None, adapter_group=None):
     """
     Adapter trimming: cut each read at the earliest occurrence of any
     adapter sequence.
@@ -1885,7 +1921,6 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
             used together with read_direction to select the adapters per
             mate, or None to search for all of adapter_sequences.
             Defaults to None.
-
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
             each of shape (n_reads,). Left cutoffs are always 0 (int8);
@@ -1893,8 +1928,9 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
             read's real length if no adapter was found.
     """
     n_reads, length = sequence_arr.shape
-    adapter_sequences = select_adapters_for_read(adapter_sequences, adapter_group, read_direction)
-    if mismatches == 0:
+    adapter_sequences = select_adapters_for_read(adapter_sequences, adapter_group, read_direction, adapter_per_read)
+    adapter_len_min = min(len(seq) for seq in adapter_sequences)
+    if mismatches == 0 and min(adapter_seed, adapter_len_min) >= 4:
         all_bytes = sequence_arr.tobytes()
         if not chunk_padding_bool:
             real_lengths = np.full(n_reads, length, dtype=np.int32)
@@ -1942,22 +1978,39 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
                 adapter_len = len(adapter_bytes)
                 seed_len = min(adapter_seed, adapter_len)
                 n_steps = min(adapter_len, length)
-                overlap = np.minimum(adapter_len, length - pos)
-                allowed = np.where(overlap >= seed_len,(2 * overlap * mismatches + adapter_len) // (2 * adapter_len),-1,).astype(np.int16)
+                mm_dtype = np.int8 if (n_steps <= 127 and mismatches <= 127) else np.int16
+
+                n_cols = length - seed_len + 1
+                if n_cols <= 0:
+                    continue
+                overlap = np.minimum(adapter_len, length - pos[:n_cols])
+                allowed = np.where(overlap >= seed_len, (overlap * mismatches) // adapter_len, -1).astype(mm_dtype)
                 check_step = 14 + 2 * mismatches
-                n_open = length - check_step
+                n_open = min(length - check_step, n_cols)
                 do_check = check_step < n_steps and n_open > 0
-                mismatch_matrix = np.zeros((n_reads, length), dtype=np.uint8)
-                stopped = False
-                for j in range(n_steps):
-                    mismatch_matrix[:, :length - j] += sequence_arr[:, j:] != adapter_bytes[j]
-                    if (do_check and j + 1 == check_step
-                            and not (mismatch_matrix[:, :n_open] <= allowed[:n_open]).any()):
-                        stopped = True
-                        break
-                valid_mask = mismatch_matrix <= allowed
-                if stopped:
-                    valid_mask[:, :n_open] = False
+
+                mismatch_matrix = np.zeros((n_reads, n_cols), dtype=mm_dtype)
+
+                first = check_step if do_check else n_steps
+                for j in range(first):
+                    w = min(length - j, n_cols)
+                    mismatch_matrix[:, :w] += sequence_arr[:, j:j + w] != adapter_bytes[j]
+
+                if do_check:
+                    alive = (mismatch_matrix[:, :n_open] <= allowed[:n_open]).any(axis=1)
+                    valid_mask = mismatch_matrix <= allowed
+                    valid_mask[~alive, :n_open] = False
+                    idx = np.flatnonzero(alive)
+                    if idx.size:
+                        sub = mismatch_matrix[idx]
+                        seq_sub = sequence_arr[idx]
+                        for j in range(first, n_steps):
+                            w = min(length - j, n_cols)
+                            sub[:, :w] += seq_sub[:, j:j + w] != adapter_bytes[j]
+                        valid_mask[idx] = sub <= allowed
+                else:
+                    valid_mask = mismatch_matrix <= allowed
+
                 has_match = valid_mask.any(axis=1)
                 if has_match.any():
                     first_match_col = valid_mask.argmax(axis=1)
@@ -1966,19 +2019,56 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
                         first_match_col[has_match].astype(np.int32)
                     )
         else:
-            real_lengths = length - row_tilde_count
-            right_cutoffs = np.array(real_lengths, dtype=np.int32)
-            pos = np.arange(length, dtype=np.int32)
+            max_adapter_len = max(len(a) for a in adapter_sequences)
+            idx_dtype = np.int16 if max(length + max_adapter_len, max_adapter_len * mismatches) < 32000 else np.int32
+
+            real_lengths = (length - row_tilde_count).astype(idx_dtype)
+            right_cutoffs = real_lengths.astype(np.int32)
+            pos = np.arange(length, dtype=idx_dtype)
+            rl = real_lengths[:, None]
             for adapter_bytes in adapter_sequences:
                 adapter_len = len(adapter_bytes)
                 seed_len = min(adapter_seed, adapter_len)
-                mismatch_matrix = np.zeros((n_reads, length), dtype=np.int16)
-                for j in range(min(adapter_len, length)):
-                    mismatch_matrix[:, :length - j] += sequence_arr[:, j:] != adapter_bytes[j]
-                mismatch_matrix -= np.clip(np.minimum(pos + adapter_len, length) - real_lengths[:, None], 0, None)
-                overlap = np.minimum(adapter_len, real_lengths[:, None] - pos)
-                allowed = ((2 * overlap * mismatches + adapter_len) // (2 * adapter_len)).astype(np.int32)
-                valid_mask = (overlap >= seed_len) & (mismatch_matrix <= allowed)
+                n_steps = min(adapter_len, length)
+                mm_dtype = np.int8 if (n_steps <= 127 and mismatches <= 127) else np.int16
+                n_cols = length - seed_len + 1
+                if n_cols <= 0:
+                    continue
+                pos_c = pos[:n_cols]
+                overlap = np.minimum(adapter_len, rl - pos_c)
+                seed_ok = overlap >= seed_len
+                allowed = ((np.maximum(overlap, 0) * mismatches) // adapter_len).astype(mm_dtype)
+
+                check_step = 14 + 2 * mismatches
+                n_open = min(length - check_step, n_cols)
+                do_check = check_step < n_steps and n_open > 0
+
+                mismatch_matrix = np.zeros((n_reads, n_cols), dtype=mm_dtype)
+
+                first = check_step if do_check else n_steps
+                for j in range(first):
+                    w = min(length - j, n_cols)
+                    mismatch_matrix[:, :w] += sequence_arr[:, j:j + w] != adapter_bytes[j]
+
+                if do_check:
+                    pad_partial = np.clip(np.minimum(pos_c + check_step, length) - rl, 0, n_steps).astype(mm_dtype)
+                    corrected = mismatch_matrix - pad_partial
+                    valid_mask = seed_ok & (corrected <= allowed)
+                    alive = valid_mask[:, :n_open].any(axis=1)
+                    valid_mask[~alive, :n_open] = False
+                    idx = np.flatnonzero(alive)
+                    if idx.size:
+                        sub = mismatch_matrix[idx]
+                        seq_sub = sequence_arr[idx]
+                        for j in range(first, n_steps):
+                            w = min(length - j, n_cols)
+                            sub[:, :w] += seq_sub[:, j:j + w] != adapter_bytes[j]
+                        sub -= np.clip(np.minimum(pos_c + adapter_len, length) - rl[idx], 0, n_steps).astype(mm_dtype)
+                        valid_mask[idx] = seed_ok[idx] & (sub <= allowed[idx])
+                else:
+                    mismatch_matrix -= np.clip(np.minimum(pos_c + adapter_len, length) - rl, 0, n_steps).astype(mm_dtype)
+                    valid_mask = seed_ok & (mismatch_matrix <= allowed)
+
                 has_match = valid_mask.any(axis=1)
                 if has_match.any():
                     first_match_col = valid_mask.argmax(axis=1)
@@ -2359,7 +2449,7 @@ def generate_unpaired_tasks(filepaths, chunk_size, parameters, filetype = None):
             elapsed = time.monotonic() - start_time
             if total_reads > 0 and elapsed > 0:
                 logger.info(
-                    "%s: finished processing %d reads in %.2fs (%.0f reads/sec).",
+                    "%s: finished processing %d reads in %.2fs (%.0f pairs/sec).",
                     os.path.basename(filepath), total_reads, elapsed, total_reads / elapsed
                 )
             else:
@@ -2652,7 +2742,7 @@ def paired_overlap_cutoffs(batch_1, batch_2, parameters):
     left_2[rows_2], right_2[rows_2] = l2, r2
     return (left_1, right_1), (left_2, right_2)    
 
-def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, overlap_cutoffs, parameters, read_direction=None):
+def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, overlap_cutoffs, parameters, read_direction=None, chunk_length = 0):
     """
     Trim and length/quality-filter one prepared batch (one mate of a paired
     chunk) and format the survivors, keyed by their base (mate-independent)
@@ -2693,8 +2783,10 @@ def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_outp
     """
     rejected_reads = []
     rejected = 0
+    survivors = [None] * chunk_length
     if batch is None:
-        return {}, rejected, rejected_reads
+        return survivors, rejected, rejected_reads
+    original_index = batch["valid_reads"].tolist()
     valid_headers, valid_sequences = batch["headers"], batch["sequences"]
     valid_pluses, valid_qualities = batch["pluses"], batch["qualities"]
     sequence_arr, quality_arr = batch["sequence_arr"], batch["quality_arr"]
@@ -2746,7 +2838,6 @@ def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_outp
         qual_table = PHRED33_TO_64
     else:
         qual_table = None
-    survivors = {}
     for i, keep in enumerate(keep_mask):
         if not keep:
             rejected += 1
@@ -2758,8 +2849,7 @@ def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_outp
         qual_out = valid_qualities[i][left:right]
         if qual_table is not None:
             qual_out = qual_out.translate(qual_table)
-        base_id, _ = read_info_from_header(valid_headers[i])
-        survivors[base_id] = b"\n".join((valid_headers[i], seq_out, valid_pluses[i], qual_out)) + b"\n"
+        survivors[original_index[i]] = b"\n".join((valid_headers[i], seq_out, valid_pluses[i], qual_out)) + b"\n"
     return survivors, rejected, rejected_reads
         
 def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gzip_level, discard_singles, parameters):
@@ -2818,13 +2908,17 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
         RuntimeError: If gzip compression fails.
     """
     chunk1, chunk2 = chunks
+    chunk1, chunk2 = list(chunk1), list(chunk2)
+    n_chunk = len(chunk1)
+    if n_chunk != len(chunk2):
+        raise ValueError("R1/R2 chunks have different numbers of reads.")
     batch_1, invalid_1, rejected_R1 = prepare_reads(chunk1, phred_offset_1, write_rejected = parameters["write_rejected"], parameters = parameters)
     batch_2, invalid_2, rejected_R2 = prepare_reads(chunk2, phred_offset_2, write_rejected = parameters["write_rejected"], parameters = parameters)
     overlap_1 = overlap_2 = None
     if parameters["overlap_filter_flag"] and batch_1 is not None and batch_2 is not None:
         overlap_1, overlap_2 = paired_overlap_cutoffs(batch_1, batch_2, parameters)
-    survivors_1, filtered_1, filtered_R1 = finish_reads(batch_1, phred_offset_1, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_1, read_direction="read_1", parameters = parameters)
-    survivors_2, filtered_2, filtered_R2 = finish_reads(batch_2, phred_offset_2, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_2, read_direction="read_2", parameters = parameters)
+    survivors_1, filtered_1, filtered_R1 = finish_reads(batch_1, phred_offset_1, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_1, read_direction="read_1", parameters = parameters, chunk_length = n_chunk)
+    survivors_2, filtered_2, filtered_R2 = finish_reads(batch_2, phred_offset_2, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_2, read_direction="read_2", parameters = parameters, chunk_length = n_chunk)
     rejected_1 = invalid_1 + filtered_1
     rejected_2 = invalid_2 + filtered_2
     rejected_R1 = rejected_R1 + filtered_R1
@@ -2834,14 +2928,15 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
     paired_out_2 = []
     singles_out_1 = []
     singles_out_2 = []
-    for bid, record in survivors_1.items():
-        mate = survivors_2.pop(bid, None)
-        if mate is not None:
-            paired_out_1.append(record)
-            paired_out_2.append(mate)
-        else:
-            singles_out_1.append(record)
-    singles_out_2 = list(survivors_2.values())
+    for r1, r2 in zip(survivors_1, survivors_2):
+        if r1 is not None:
+            if r2 is not None:
+                paired_out_1.append(r1)
+                paired_out_2.append(r2)
+            else:
+                singles_out_1.append(r1)
+        elif r2 is not None:
+            singles_out_2.append(r2)
     num_R1_singles = len(singles_out_1)
     num_R2_singles = len(singles_out_2)
     num_paired = len(paired_out_1)
@@ -3007,13 +3102,13 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
             ESTIMATED_READ_COUNTS[f1] = count_reads_estimated(f1)
             ESTIMATED_READ_COUNTS[f2] = count_reads_estimated(f2)
         total_reads = sum(ESTIMATED_READ_COUNTS.values())
-        tracker = ProgressTracker(total_reads)
+        tracker = ProgressTracker(total_reads = total_reads)
     else:
-        class _NullTracker:
+        class NullTracker:
             def update(self, n): pass
             def close(self, interrupted=False): pass
             def clear_line(self): pass
-        tracker = _NullTracker()
+        tracker = NullTracker()
     global ACTIVE_PROGRESS_TRACKER
     ACTIVE_PROGRESS_TRACKER = tracker
     file_stats = {}
@@ -3259,7 +3354,8 @@ def print_adapters():
     Prints all built-in adapter groups and their sequences to stdout,
     formatted and aligned by group. Called for --list-adapters.
     """
-    print("\nBuilt-in adapter groups and sequences:\n")
+    print("\nBuilt-in adapter groups and sequences.")
+    print("For matched paired reads, forward reads will only be trimmed for 'Read 1', and reverse reads for 'Read 2' adapters (when applicable).\n")
     all_entries = [entry for _, entries in DEFAULT_ADAPTERS for entry in entries]
     name_width = max(len(name) for name, _ in all_entries) + 2
     for group_name, entries in DEFAULT_ADAPTERS:
@@ -3358,7 +3454,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         prog="readzor",
         description="Readzor: a modular FASTQ quality trimming pipeline.\n\n"
-                     "All modules are off by default. To use a module, specify a module flag."
+                     "All modules are off by default. To use a module, specify a module flag. "
                      "Further specifications with module settings possible.",
         formatter_class=CleanHelpFormatter,
         add_help=False
@@ -3386,35 +3482,35 @@ def parse_args():
     )
     general_group.add_argument(
     "--progress", action="store_true", default=False,
-    help="[FLAG] Show a live progress bar and estimated time remaining during processing, based on estimated read counts. Default: off."
+        help="[FLAG] Show a live progress bar and estimated time remaining during processing, based on estimated read counts. Default: off."
     )
     general_group.add_argument(
     "--verbose", action="store_true", default=False,
-    help="[FLAG] Write verbose output to terminal, in addition to the log file. Default: off."
+        help="[FLAG] Write verbose output to terminal, in addition to the log file. Default: off."
     )
 
     input_group = parser.add_argument_group(
         "Input options",
-        "Specify input FASTQ files using any combination of --input-files, --input-paired, and --input-unpaired. "
-        "Any combination of regular (fastq/fq), and gzipped (fastq.gz/fq.gz) files is accepted."
-        "If no input flags are provided, data will be read directly from standard input (stdin)."
+        "Specify input FASTQ files using any combination of --input-files, --input-paired, --input-unpaired, and --input-interleaved. "
+        "Any combination of regular (fastq/fq), and gzipped (fastq.gz/fq.gz) files is accepted. "
+        "If no input flags are provided, data will be read directly from standard input (stdin). "
         "If --full-auto/-GO is specified, suitable files will be detected in the current working directory."
     )
     input_group.add_argument(
         "--input-files", "-i", nargs='+', default = None, metavar = "",
-        help="FASTQ files of unspecified pairing (or data from stdin). Paired and unpaired files will be auto-detected."
+        help="[STR] FASTQ files of unspecified pairing (or data from stdin). Paired and unpaired files will be auto-detected."
     )
     input_group.add_argument(
         "--input-paired", "-ip", nargs='+', default=None, metavar = "",
-        help="Paired-end FASTQ files, given as one or more R1/R2 pairs, e.g. --input-paired sample1_R1 sample1_R2 sample2_R1 sample2_R2"
+        help="[STR] Paired-end FASTQ files, given as one or more R1/R2 pairs, e.g. --input-paired sample1_R1 sample1_R2 sample2_R1 sample2_R2"
     )
     input_group.add_argument(
         "--input-interleaved", "-ii", nargs='+', default = None, metavar = "",
-        help="Interleaved FASTQ files. Note: these files will be split in forward and reverse reads."
+        help="[STR] Interleaved FASTQ files. Note: these files will be split in forward and reverse reads."
     )
     input_group.add_argument(
         "--input-unpaired", "-iu", nargs='+', default = None, metavar = "",
-        help="Unpaired FASTQ files."
+        help="[STR] Unpaired FASTQ files."
     )
 
     output_group = parser.add_argument_group(
@@ -3427,64 +3523,64 @@ def parse_args():
     )
     output_group.add_argument(
         "--gzip-level", type=int, default = 1, metavar = "", choices=range(0, 4),
-        help="Set gzip compression level. Higher compression decreases processing speed. Possible values: 0-3. Default: 1."
+        help="[INT] Set gzip compression level. Higher compression decreases processing speed. Possible values: 0-3. Default: 1."
     )
     output_group.add_argument(
         "--output", "-o", type=str, default = None, metavar = "",
-        help="Path to directory in which the timestamped results folder will be created. Default: current working directory."
+        help="[STR] Path to directory in which the timestamped results folder will be created. Default: current working directory."
     )
     output_group.add_argument(
         "--stdout", action="store_true", default=False,
-        help="Stream resulting FASTQ reads to stdout. Forces --interleaved-out and --discard-singles for paired and interleaved files. Overrides --verbose and --progress. Overridden to 'off' by --gzip. Note: all files will be streamed on end, without any seperators. Default: off."
+        help="[FLAG] Stream resulting FASTQ reads to stdout. Forces --interleaved-out and --discard-singles for paired and interleaved files. Overrides --verbose and --progress. Overridden to 'off' by --gzip. Note: all files will be streamed on end, without any seperators. Default: off."
     )
     output_group.add_argument(
         "--interleaved-out", action="store_true", default=False,
-        help="Interleave surviving paired FASTQ reads of paired and interleaved input files. Single reads are written to seperate files. Default: off."
+        help="[FLAG] Interleave surviving paired FASTQ reads of paired and interleaved input files. Single reads are written to seperate files. Default: off."
     )    
     output_group.add_argument(
         "--write-rejected", action="store_true", default=False,
-        help="Write rejected reads to file. Either one (for unpaired and when --interleaved-out is set), or two (for forward and reverse reads) are produced. Overridden to 'off' when --stdout is set. Default: off."
+        help="[FLAG] Write rejected reads to file. Either one (for unpaired and when --interleaved-out is set), or two (for forward and reverse reads) are produced. Overridden to 'off' when --stdout is set. Default: off."
     )  
     output_group.add_argument(
         "--discard-singles", action="store_true", default=False,
-        help="For paired and interleaved reads, single surviving reads will be discarded instead of written to a seperate file. No effect on unpaired read filtering. Default: off."
+        help="[FLAG] For paired and interleaved reads, single surviving reads will be discarded instead of written to a seperate file. No effect on unpaired read filtering. Default: off."
     )  
 
     general_quality_group = parser.add_argument_group(
-        "General output filter options"
+        "General output filter options",
         "Filters raw input, or trimmed output sequences for overall parameters. When a read does not pass these filters, they are discarded entirely."
         )
     general_quality_group.add_argument(
         "--min-length-input", type=int, default = None, metavar = "",
-        help="Minimum length for input read. Default: off."
+        help="[INT] Minimum length for input read. Default: off."
     )
     general_quality_group.add_argument(
         "--max-length-input", type=int, default = None, metavar = "",
-        help="Maximum length for input read. Default: off."
+        help="[INT] Maximum length for input read. Default: off."
     )
     general_quality_group.add_argument(
         "--min-length-output", type=int, default = None, metavar = "", 
-        help="Minimum length of output read. Default: off."
+        help="[INT] Minimum length of output read. Default: off."
     )
     general_quality_group.add_argument(
         "--max-length-output", type = int, default = None, metavar = "", 
-        help="Maximum length of output read. Default: off."
+        help="[INT] Maximum length of output read. Default: off."
     )
     general_quality_group.add_argument(
         "--min-length-output-perc", type=int, default = None, metavar = "", 
-        help="Minimum length of output read as percentage of its input read. Overridden by --min-length-output. Default: off."
+        help="[INT] Minimum length of output read as percentage of its input read. Overridden by --min-length-output. Default: off."
     )
     general_quality_group.add_argument(
         "--max-length-output-perc", type = int, default = None, metavar = "", 
-        help="Maximum length of output read as percentage of its input read. Overridden by --max-length-output. Default: off."
+        help="[INT] Maximum length of output read as percentage of its input read. Overridden by --max-length-output. Default: off."
     )
     general_quality_group.add_argument(
         "--min-average-qual-pre", type=int, default = 0, metavar = "", choices=range(0, 128),
-        help="Minimum average quality of input read. Default: off."
+        help="[INT] Minimum average quality of input read. Default: off."
     )
     general_quality_group.add_argument(
         "--min-average-qual-post", type=int, default = 0, metavar = "", choices=range(0, 128),
-        help="Minimum average quality of output read. Default: off."
+        help="[INT] Minimum average quality of output read. Default: off."
     )
     general_quality_group.add_argument(
         "--n-filter", action="store_true", default=False,
@@ -3501,15 +3597,15 @@ def parse_args():
     )
     trim_ends_group.add_argument(
         "--cut-start", "-cs", type=int, default = None, metavar="", 
-        help="Number of bases to trim from the start of the read. Default: 0."
+        help="[INT] Number of bases to trim from the start of the read. Default: 0."
     )
     trim_ends_group.add_argument(
         "--cut-end", "-ce", type=int, default = None, metavar="", 
-        help="Number of bases to trim from the end of the read. Default: 0."
+        help="[INT] Number of bases to trim from the end of the read. Default: 0."
     )
     trim_ends_group.add_argument(
         "--cut-both", "-cb", type=int, default = 0, metavar="", 
-        help="Number of bases to trim from both ends of the read. Overwritten by --cut-start and --cut-end. Default: 0."
+        help="[INT] Number of bases to trim from both ends of the read. Overwritten by --cut-start and --cut-end. Default: 0."
     )
 
     quality_ends_group = parser.add_argument_group(
@@ -3522,21 +3618,21 @@ def parse_args():
     )
     quality_ends_group.add_argument(
         "--endqual-min-start", "-ems", type = int, default = None, metavar="", choices=range(0, 94),
-        help="Phred score threshold for the start of the read. Default: 20."
+        help="[INT] Phred score threshold for the start of the read. Default: 20."
     )
     quality_ends_group.add_argument(
         "--endqual-min-end", "-eme", type=int, default = None, metavar="",choices=range(0, 94),
-        help="Phred score threshold for the end of the read.  Default: 20."
+        help="[INT] Phred score threshold for the end of the read. Default: 20."
     )
     quality_ends_group.add_argument(
         "--endqual-min-both", "-emb", type=int, default = 20, metavar="", choices=range(0, 94),
-        help="Phred score threshold for the quality trimming of read ends. Overwritten by --endqual-min-start and --endqual-min-end. Default: 20."
+        help="[INT] Phred score threshold for the quality trimming of read ends. Overwritten by --endqual-min-start and --endqual-min-end. Default: 20."
     )
 
     sliding_window_group = parser.add_argument_group(
         "Sliding window quality trimming",
-        "Trim the reads for quality based on a sliding window."
-        "In case of mid-read quality dropoff, longest portion survives. In case of tie: portion with highest average quality survives"
+        "Trim the reads for quality based on a sliding window. "
+        "In case of mid-read quality dropoff, longest portion survives. In case of tie: portion with highest average quality survives."
         )
     sliding_window_group.add_argument(
         "--slider-filter-flag", "-sf", action="store_true", default = False,
@@ -3544,22 +3640,22 @@ def parse_args():
     )
     sliding_window_group.add_argument(
         "--slider-window", "-sw", type = int, default = 5, metavar="",
-        help="Window size over which average quality is calculated. Default: 5."
+        help="[INT] Window size over which average quality is calculated. Default: 5."
     )
     sliding_window_group.add_argument(
         "--slider-quality", "-sq", type = int, default = 20, metavar="",
-        help="Minimum average quality in sliding window. Default: 20."
+        help="[INT] Minimum average quality in sliding window. Default: 20."
     )
     sliding_window_group.add_argument(
         "--slider-step", "-ss", type = int, default = 1, metavar="",
-        help="Sliding window step size. Default: 1."
+        help="[INT] Sliding window step size. Default: 1."
     )
 
     homopolymer_nucleotide_trimming = parser.add_argument_group(
         "Homopolymer nucleotide trimming",
-        "Illumina NovaSeq, NextSeq, and MiniSeq use a two-color chemistry, in which guanine bases are unlabeled."
-        "In event of short fragments, this can result in homolopolymer G calls at the end of reads."
-        "This filter allows for G, and/or other bases, to be cut."
+        "Illumina NovaSeq, NextSeq, and MiniSeq use a two-color chemistry, in which guanine bases are unlabeled. "
+        "In event of short fragments, this can result in homolopolymer G calls at the end of reads. "
+        "This filter allows these bases to be cut."
         )
     homopolymer_nucleotide_trimming.add_argument(
         "--poly-filter-flag", "-pf", action="store_true", default = False,
@@ -3567,35 +3663,35 @@ def parse_args():
     )
     homopolymer_nucleotide_trimming.add_argument(
         "--poly-bases-start", "-pbs", type = str, default = None, metavar = "",
-        help='Base(s) to check for a homopolymer run at start of read. Comma-separated bases are checked independently. Default: none.'
+        help='[STR] Base(s) to check for a homopolymer run at start of read. Comma-separated bases are checked independently. Default: none.'
     )
     homopolymer_nucleotide_trimming.add_argument(
         "--poly-bases-end", "-pbe", type = str, default = "G", metavar = "",
-        help='Base(s) to check for a homopolymer run at end of read. Comma-separated bases are checked independently. Default: "G".'
+        help='[STR] Base(s) to check for a homopolymer run at end of read. Comma-separated bases are checked independently. Default: "G".'
     )
     homopolymer_nucleotide_trimming.add_argument(
         "--poly-bases-both", "-pbb", type = str, default = None, metavar = "",
-        help='Base(s) to check for a homopolymer run at both read ends. Comma-separated bases are checked independently. Overwritten by poly_bases_start and poly_bases_end. Default: none.'
+        help='[STR] Base(s) to check for a homopolymer run at both read ends. Comma-separated bases are checked independently. Overwritten by poly_bases_start and poly_bases_end. Default: none.'
     )
     homopolymer_nucleotide_trimming.add_argument(
-        "--poly-length-start", "-pls", type = int, default = 0, metavar = "",
-        help="Minimum length of homopolymer run at start of read required to trigger trimming. Default: 0."
+        "--poly-length-start", "-pls", type = int, default = None, metavar = "",
+        help="[INT] Minimum length of homopolymer run at start of read required to trigger trimming. Default: 0."
     )
     homopolymer_nucleotide_trimming.add_argument(
         "--poly-length-end", "-ple", type = int, default = 10, metavar = "",
-        help="Minimum length of homopolymer run at end of read required to trigger trimming. Default: 10"
+        help="[INT] Minimum length of homopolymer run at end of read required to trigger trimming. Default: 10."
     )
     homopolymer_nucleotide_trimming.add_argument(
         "--poly-length-both", "-plb", type = int, default = None, metavar = "",
-        help="Minimum length of homopolymer run at start and end of read required to trigger trimming. Default: off."
+        help="[INT] Minimum length of homopolymer run at start and end of read required to trigger trimming. Overwritten by --poly-length-start and --poly-length-end. Default: 0."
     )
 
     adapter_trimming = parser.add_argument_group(
         "Adapter trimming",
-        "Trim reads for adapter sequences."
-        "Standard sequences included are TruSeq3, Nextera, and Illumina adapters."
-        "Adapter trimming is performed independent of quality."
-        "Can be combined with overlap trimming (--overlap-filter-flag)"
+        "Trim reads for adapter sequences. "
+        "Standard sequences included are TruSeq3, Nextera, and Illumina adapters. "
+        "Adapter trimming is performed independent of quality. "
+        "Can be combined with overlap trimming (--overlap-filter-flag)."
         )
     adapter_trimming.add_argument(
         "--adapter-filter-flag", "-af", action="store_true", default = False,
@@ -3603,29 +3699,37 @@ def parse_args():
     )
     adapter_trimming.add_argument(
         "--adapter-seed", "-as", type = int, default = 6, metavar="", choices=range(1,100),
-        help="Minimal 5'-end match length. Shorter seeds can result in more partial hits found at end of reads. Default: 6."
+        help="[INT] Minimal 5'-end match length. Shorter seeds can result in more partial hits found at end of reads. Default: 6."
     )
     adapter_trimming.add_argument(
         "--adapter-group", "-ag", nargs = "+", default = ["TruSeq"], choices = ["all"] + [name for name, _ in DEFAULT_ADAPTERS], metavar="",
-        help='Specify the group(s) of adapters to be used. Ignored if --adapter-fasta-excl is set. Choices: ' + ", ".join(["all"] + [name for name, _ in DEFAULT_ADAPTERS]) + '. Default: TruSeq.'
+        help='[STR] Specify the group(s) of adapters to be used. Ignored if --adapter-excl is set. Choices: ' + ", ".join(["all"] + [name for name, _ in DEFAULT_ADAPTERS]) + '. For matched paired reads, forward reads will only be trimmed for "Read 1", and reverse reads for "Read 2" adapters (when applicable). Default: TruSeq.'
         )
     adapter_trimming.add_argument(
-        "--adapter-mismatch", "-am", type = int, default = 0, metavar="",
-        help="Number of mismatches allowed in adapter finding. Default: 0."
+        "--adapter-mismatch", "-am", type = int, default = 2, metavar="",
+        help="[INT] Number of mismatches allowed in adapter finding. Default: 2."
     )
     adapter_trimming.add_argument(
-        "--adapter-fasta-add", "-ad", type = str, default = None, metavar="",
-        help="Fasta file with adapter sequences to trim for, in addition to predefined sequences."
+        "--adapter-add", "-ad", type = str, default = None, metavar="",
+        help="[STR] FASTA file or comma-separated sequences to add to selected built-in sequences."
     )
     adapter_trimming.add_argument(
-        "--adapter-fasta-excl", "-ax", type = str, default = None, metavar="",
-        help="Fasta file with adapter sequences to trim for, excluding predefined and additional sequences specified."
+        "--adapter-excl", "-ax", type = str, default = None, metavar="",
+        help="[STR] FASTA file or comma-separated sequences to trim instead of the built-in sequences."
+    )
+    adapter_trimming.add_argument(
+        "--adapter-read-1", "-a1", type = str, default = None, metavar="",
+        help="[STR] FASTA file or comma-separated sequences of read 1 specific adapter. Specifying this, will override other adapter specifications. Leaving this empty when --adapter-read-2 is set, will disable read 1 adapter trimming. Default: none"
+    )
+    adapter_trimming.add_argument(
+        "--adapter-read-2", "-a2", type = str, default = None, metavar="",
+        help="[STR] FASTA file or comma-separated sequences of read 2 specific adapter. Specifying this, will override other adapter specifications. Leaving this empty when --adapter-read-1 is set,  will disable read 2 adapter trimming. Default: none"
     )
     
     overlap_trimming = parser.add_argument_group(
         "Overlap trimming",
-        "Perform overlap analysis to trim adapter sequences."
-        "Works independently of adapter sequence."
+        "Perform overlap analysis to trim adapter sequences. "
+        "Works independently of adapter sequence. "
         "Only available for paired and interleaved reads. Can be combined with adapter trimming (--adapter-filter-flag)."
         )
     overlap_trimming.add_argument(
@@ -3634,20 +3738,20 @@ def parse_args():
     )
     overlap_trimming.add_argument(
         "--overlap-mismatches", "-om", type = int, default = 5, metavar="",
-        help='Maximum mismatches allowed in the overlapping region. Default: 5.'
+        help='[INT] Maximum mismatches allowed in the overlapping region. Default: 5.'
     )
     overlap_trimming.add_argument(
-        "--overlap-min-length", "-ol", type = int, default = 30, metavar="",
-        help="Minimum overlap length between the paired reads. Default: 30."
+        "--overlap-min-length", "-ol", type = int, default = 50, metavar="",
+        help="[INT] Minimum overlap length between the paired reads. Default: 50."
     )
     overlap_trimming.add_argument(
-        "--overlap-portion-mismatch", "-op", type = int, default = 10, metavar="",
-        help="Maximum percentage of mismatched bases allowed in the overlapping region. Default: 10"
+        "--overlap-portion-mismatch", "-op", type = int, default = 4, metavar="",
+        help="[INT] Maximum percentage of mismatched bases allowed in the overlapping region. Default: 4"
     )
 
     low_complexity_group = parser.add_argument_group(
         "Low complexity filtering",
-        "Detect complexity of reads using kmer-based nucleotide frequencies."
+        "Detect complexity of reads using kmer-based nucleotide frequencies. "
         "Low complex reads are discarded entirely."
         )
     low_complexity_group.add_argument(
@@ -3656,15 +3760,16 @@ def parse_args():
     )
     low_complexity_group.add_argument(
         "--kmer-size", "-ks", default = 4, metavar="",
-        help="Kmer length for kmer-based complexity filtering. Comma-separated values are checked independently. Maximum value: 21. Default: 4."
+        help="[INT] Kmer length for kmer-based complexity filtering. Comma-separated values are checked independently. Maximum value: 21. Default: 4."
     )
     low_complexity_group.add_argument(
         "--kmer-cutoff", "-kc", type = int, default = 50, metavar="",
-        help="Minimum percentage of unique k-mers (relative to the maximum possible) required to pass the complexity filter. Higher values are stricter. Default: 50."
+        help="[INT] Minimum percentage of unique k-mers (relative to the maximum possible) required to pass the complexity filter. Higher values are stricter. Default: 50."
     )
+    
     mgi_convert_group = parser.add_argument_group(
         "MGI header conversion",
-        "Convert read header from MGI (BGI) format to Illumina format."
+        "Convert read header from MGI (BGI) format to Illumina format. "
         "Original header will be discarded."
         )
     mgi_convert_group.add_argument(
@@ -3673,19 +3778,19 @@ def parse_args():
     )
     mgi_convert_group.add_argument(
         "--mgi-bc5", "-m5", type = str, default = "PLACEHOLDERi5", metavar="",
-        help="Input a i5 barcode for Illumina header conversion. Default: 'PLACEHOLDERi5'."
+        help="[STR] Input a i5 barcode for Illumina header conversion. Default: 'PLACEHOLDERi5'."
     )
     mgi_convert_group.add_argument(
         "--mgi-bc7", "-m7", type = str, default = "PLACEHOLDERi7", metavar="",
-        help="Input a i7 barcode for Illumina header conversion. Default: 'PLACEHOLDERi7'."
+        help="[STR] Input a i7 barcode for Illumina header conversion. Default: 'PLACEHOLDERi7'."
     )
     mgi_convert_group.add_argument(
         "--mgi-instrument", "-mi", type = str, default = "PLACEHOLDERinstrument", metavar="",
-        help="Instrument name for Illumina header conversion. Default: 'PLACEHOLDERinstrument'."
+        help="[STR] Instrument name for Illumina header conversion. Default: 'PLACEHOLDERinstrument'."
     )
     mgi_convert_group.add_argument(
         "--mgi-run", "-mr", type = str, default = "PLACEHOLDERrun", metavar="",
-        help="Run ID for Illumina header conversion. Default: 'PLACEHOLDERrun'."
+        help="[STR] Run ID for Illumina header conversion. Default: 'PLACEHOLDERrun'."
     )
 
     advanced_group = parser.add_argument_group(
@@ -3693,19 +3798,19 @@ def parse_args():
         "Further options that can be specified to alter the behaviour of Readzor.")
     advanced_group.add_argument(
         "--threads", "-t", type = int, default = None, metavar="",
-        help="Number of threads to use. Default: platform-dependent through auto-detection: detection of assigned CPUs on HPC clusters, all-1 otherwise. Fallback: 1."
+        help="[INT] Number of threads to use. Default: platform-dependent through auto-detection: detection of assigned CPUs on HPC clusters, all-1 otherwise. Fallback: 1."
     )
     advanced_group.add_argument(
         "--reads-for-phred-offset", type = int, default = 500, metavar="",
-        help="Number of reads to sample per file for detection of Phred quality encoding offset. Default: 500."
+        help="[INT] Number of reads to sample per file for detection of Phred quality encoding offset. Default: 500."
     )
     advanced_group.add_argument(
         "--chunk-size", type=int, default = 1500, metavar="",
-        help="Number of reads per chunk sent to each worker. Changing can alter processing speed. Default: 1500. "
+        help="[INT] Number of reads per chunk sent to each worker. Changing can alter processing speed. Default: 1500. "
     )
     advanced_group.add_argument(
         "--phred-offset", type = int, choices=[33, 64], default = None, metavar="",
-        help="Define phred offset for all FASTQ files. When set, per-file auto-detection will not be performed. Possible values: 33, 64. Default: off (auto-detection per file)."
+        help="[INT] Define phred offset for all FASTQ files. When set, per-file auto-detection will not be performed. Possible values: 33, 64. Default: off (auto-detection per file)."
     )
     advanced_group.add_argument(
         "--testrun", action="store_true", default=False,
@@ -3717,7 +3822,7 @@ def parse_args():
     )
     advanced_group.add_argument(
         "--phred-out", type=int, choices=[33, 64], default=None, metavar="",
-        help="Convert Phred encoding from 33 to 64, and vice versa. Possible values: 33, 64. Default: off."
+        help="[INT] Convert Phred encoding from 33 to 64, and vice versa. Possible values: 33, 64. Default: off."
     )
     
     if len(sys.argv) == 1:
@@ -3803,8 +3908,8 @@ def parse_args():
     parameters["gzip_level"] = args.gzip_level
     parameters["reads_for_phred_offset"] = args.reads_for_phred_offset
     parameters["adapter_filter_flag"] = args.adapter_filter_flag
-    parameters["adapter_fasta_add"] = args.adapter_fasta_add
-    parameters["adapter_fasta_excl"] = args.adapter_fasta_excl
+    parameters["adapter_add"] = args.adapter_add
+    parameters["adapter_excl"] = args.adapter_excl
     parameters["adapter_seed"] = args.adapter_seed
     parameters["n_filter"] = args.n_filter
     parameters["phred_offset"] = args.phred_offset
@@ -3842,6 +3947,8 @@ def parse_args():
         [name for name, _ in DEFAULT_ADAPTERS] if "all" in args.adapter_group
         else list(dict.fromkeys(args.adapter_group))
     )
+    parameters["adapter_read_1"] = args.adapter_read_1
+    parameters["adapter_read_2"] = args.adapter_read_2
     parameters["discard_singles"] = args.discard_singles
     parameters["overlap_filter_flag"] = args.overlap_filter_flag
     parameters["overlap_mismatches"] = args.overlap_mismatches
@@ -3855,7 +3962,8 @@ def parse_args():
     parameters["poly_length_end"] = priority_arguments(args.poly_length_end, args.poly_length_both)
     parameters["poly_bases_start"] = priority_arguments(args.poly_bases_start, args.poly_bases_both)
     parameters["poly_bases_end"] = priority_arguments(args.poly_bases_end, args.poly_bases_both)
-
+    parameters["adapter_per_read"] = None
+    
     if parameters["gzip_output"]:
         parameters["stdout"] = False
         
@@ -3867,18 +3975,26 @@ def parse_args():
         parameters["interleaved_out"] = True
 
     if parameters.get("adapter_filter_flag"):
-        if parameters.get("adapter_fasta_excl"):
-            raw_adapters = load_adapters_from_fasta(parameters["adapter_fasta_excl"])
-            if raw_adapters == []:
-                raise ValueError(f"No sequences in file '{parameters['adapter_fasta_excl']}' detected.")
+        read1 = parameters.get("adapter_read_1")
+        read2 = parameters.get("adapter_read_2")
+        if read1 or read2:
+            r1 = [seq.encode("utf-8") for _, seq in load_adapters_from_arg(read1)] if read1 else []
+            r2 = [seq.encode("utf-8") for _, seq in load_adapters_from_arg(read2)] if read2 else []
+            parameters["adapter_sequences"] = r1 + r2
+            parameters["adapter_per_read"] = {"read_1": r1, "read_2": r2}
         else:
-            selected_groups = set(parameters["adapter_group"])
-            flat_default_adapters = [entry for name, entries in DEFAULT_ADAPTERS if name in selected_groups for entry in entries]
-            if parameters.get("adapter_fasta_add"):
-                raw_adapters = flat_default_adapters + load_adapters_from_fasta(parameters["adapter_fasta_add"])
+            if parameters.get("adapter_excl"):
+                raw_adapters = load_adapters_from_arg(parameters["adapter_excl"])
+                if raw_adapters == []:
+                    raise ValueError(f"No sequences in file '{parameters['adapter_excl']}' detected.")
             else:
-                raw_adapters = flat_default_adapters
-        parameters["adapter_sequences"] = list({seq.encode('utf-8') for _, seq in raw_adapters})
+                selected_groups = set(parameters["adapter_group"])
+                flat_default_adapters = [entry for name, entries in DEFAULT_ADAPTERS if name in selected_groups for entry in entries]
+                if parameters.get("adapter_add"):
+                    raw_adapters = flat_default_adapters + load_adapters_from_arg(parameters["adapter_add"])
+                else:
+                    raw_adapters = flat_default_adapters
+            parameters["adapter_sequences"] = list({seq.encode('utf-8') for _, seq in raw_adapters})
     else:
         parameters["adapter_sequences"] = []
 
@@ -4039,9 +4155,9 @@ def main():
         logger.info("Analysis successfully completed!")
         print_final_message(stdout = parameters["stdout"])
     except KeyboardInterrupt:
-        logger.info("Readzor interrupted — shutting down.")
+        logger.info("Readzor interrupted by user — shutting down.")
         if not parameters["verbose"]:
-            print("Interrupted by user — shutting down.", file=sys.stderr)
+            print("Readzor interrupted by user — shutting down.", file=sys.stderr)
         sys.exit(130)
     finally:
         cleanup_stdin_temp_files()
@@ -4067,10 +4183,10 @@ def test_run(parameters):
             log_parameters(parameters)
             summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"],discard_singles = parameters["discard_singles"], write_rejected = parameters["write_rejected"], parameters = parameters)
             write_summary_and_statistics(summary_results, parameters, output_dir = created_output_dir)
-            logger.info("All files deleted.")
-            logger.info("Testrun completed!")
     finally:
         cleanup_stdin_temp_files()
+        logger.info("All files deleted.")
+        logger.info("Testrun completed!")
     
 if __name__ == "__main__":
     main()
