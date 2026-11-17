@@ -28,7 +28,7 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.5.7"
+VERSION = "0.5.8"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq", [
@@ -3666,8 +3666,8 @@ def parse_args():
         help='[STR] Base(s) to check for a homopolymer run at start of read. Comma-separated bases are checked independently. Default: none.'
     )
     homopolymer_nucleotide_trimming.add_argument(
-        "--poly-bases-end", "-pbe", type = str, default = None, metavar = "",
-        help='[STR] Base(s) to check for a homopolymer run at end of read. Comma-separated bases are checked independently. Default: none.'
+        "--poly-bases-end", "-pbe", type = str, default = "G", metavar = "",
+        help='[STR] Base(s) to check for a homopolymer run at end of read. Comma-separated bases are checked independently. Default: "G".'
     )
     homopolymer_nucleotide_trimming.add_argument(
         "--poly-bases-both", "-pbb", type = str, default = None, metavar = "",
@@ -3678,8 +3678,8 @@ def parse_args():
         help="[INT] Minimum length of homopolymer run at start of read required to trigger trimming. Default: 0."
     )
     homopolymer_nucleotide_trimming.add_argument(
-        "--poly-length-end", "-ple", type = int, default = None, metavar = "",
-        help="[INT] Minimum length of homopolymer run at end of read required to trigger trimming. Default: 0."
+        "--poly-length-end", "-ple", type = int, default = 10, metavar = "",
+        help="[INT] Minimum length of homopolymer run at end of read required to trigger trimming. Default: 10."
     )
     homopolymer_nucleotide_trimming.add_argument(
         "--poly-length-both", "-plb", type = int, default = None, metavar = "",
