@@ -437,11 +437,13 @@ We provided each tool with the same adapter sequences, to further standardize ad
 |                 | PE, overlap + adapter detection                     |  0.994 |     0.654 | 0.789 |          2,285,459 |                                          |
 |                 | PE, overlap + Readzor adapters (per read)           |  0.998 |     0.622 | 0.766 |          2,645,431 |                                          |
 |                 | PE, overlap + Readzor adapters (overall)            |  0.998 |     0.616 | 0.761 |          2,712,500 |                                          |
-|                 | SE, adapter detection                               |  0.000 |         — | 0.000 |                  0 | No adapters detected                     |
-|                 | SE, adapter detection + Readzor adapters (per read) |  0.968 |     0.921 | 0.944 |            360,242 |                                          |
-|                 | SE, adapter detection + Readzor adapters (overall)  |  0.968 |     0.908 | 0.937 |            426,429 |                                          |
-| **Cutadapt**    | PE, Readzor adapters (per read)                     |  0.989 |     0.467 | 0.634 |          4,914,110 |                                          |
-|                 | SE, Readzor adapters (per read)                     |  0.989 |     0.467 | 0.634 |          4,914,110 |                                          |
+|                 | PE, adapter detection                               |  0.000 |         — | 0.000 |                  0 | No adapters detected, --overlap_len_require 999                     |
+|                 | PE, adapter detection + Readzor adapters (per read) |  0.968 |     0.921 | 0.944 |            360,242 | --overlap_len_require 999                |
+|                 | PE, adapter detection + Readzor adapters (overall)  |  0.968 |     0.908 | 0.937 |            426,429 | --overlap_len_require 999                |
+| **Cutadapt**    | PE, Readzor adapters (per read)                     |  0.988 |     0.467 | 0.634 |          4,914,110 |                                          |
+|                 | PE, Readzor adapters (overall)                      |  0.988 |     0.466 | 0.634 |          4,914,305 |                                          |
+|                 | SE, Readzor adapters (per read)                     |  0.988 |     0.467 | 0.634 |          4,914,110 |                                          |
+|                 | SE, Readzor adapters (overall)                      |  0.988 |     0.466 | 0.634 |          4,914,305 |                                          |
 | **Trimmomatic** | PE, Readzor adapters (none-prefix paired)           |  0.710 |     1.000 | 0.830 |                  0 |                                          | 
 |                 | PE, Readzor adapters (prefix paired)                |  0.124 |     0.964 | 0.219 |             20,310 |                                          | 
 |                 | PE, Readzor adapters (none-prefix + prefix paired)  |  0.831 |     0.994 | 0.905 |             20,310 |                                          |
@@ -454,17 +456,30 @@ We provided each tool with the same adapter sequences, to further standardize ad
 |                 | SE, TruSeq3-SE adapters                             |  0.710 |     0.999 | 0.830 |                387 |                                          |
 |                 | SE, TruSeq3-PE adapters                             |  0.000 |         - | 0.000 |                  0 |                                          |
 |                 | SE, TruSeq3-PE-2 adapters                           |  0.710 |     0.999 | 0.830 |                599 |                                          |
-| **Readzor**     | PE, per read adapter specified                      |  0.926 |     0.993 | 0.958 |             27,172 |                                          | 
-|                 | PE, overall adapters specified                      |  0.926 |     0.993 | 0.958 |             27,172 |                                          | 
-|                 | SE, per read adapter specified                      |  0.926 |     0.993 | 0.958 |             27,172 |                                          | 
-|                 | SE, overall adapters specified                      |  0.926 |     0.993 | 0.958 |             27,172 |                                          | 
-|                 | PE, per read adapter specified + overlap            |  0.998 |     0.779 | 0.875 |          1,230,072 |                                          | 
-|                 | PE, overall adapters specified + overlap            |  0.998 |     0.779 | 0.875 |          1,230,072 |                                          | 
+| **Readzor**     | PE, per read adapter specified                      |  0.951 |     0.993 | 0.958 |             27,172 |                                          | 
+|                 | PE, overall adapters specified                      |  0.951 |     0.993 | 0.958 |             27,172 |                                          | 
+|                 | SE, per read adapter specified                      |  0.951 |     0.993 | 0.958 |             27,172 |                                          | 
+|                 | SE, overall adapters specified                      |  0.951 |     0.993 | 0.958 |             27,172 |                                          | 
+|                 | PE, per read adapter specified + overlap            |  0.999 |     0.779 | 0.875 |          1,230,072 |                                          | 
+|                 | PE, overall adapters specified + overlap            |  0.999 |     0.779 | 0.875 |          1,230,072 |                                          | 
+|                 | PE, overlap                                         |  0.982 |     0.780 | 0.869 |          1,202,900 |                                          | 
 
 
-From these tests, fastp and Cutadapt perform high on adapter recall, but with trade-offs in precision. 
-Trimmomatic on the other hand, is highly precise, but trades this for a lower adapter recall.
-Readzor on the other hand, finds a balance between precision and recall, allowing for highly accurate trimming of reads, whilst minimizing loss of genomic bases.
+Adapter-only trimming
+Cutadapt finds nearly all adapters but trims many genuine bases along with them. 
+Fastp cannot find adapters on its own in this setup, but once given a known adapter list it combines high recall with good precision. 
+Trimmomatic is very precise and rarely removes real sequence, but it misses a noticeable share of adapters. 
+Readzor strikes the best balance: it finds most adapters and trims accurately, keeping the loss of genomic bases low.
+
+Overlap search
+Fastp and Readzor both find nearly all adapters when using overlap alone, but overtrim. 
+Readzor has better precision and loses fewer genomic bases. 
+Trimmomatic (prefix paired) almost never removes real sequence, but misses a large portion of the adapters.
+
+Adapter trimming with overlap search
+Fastp finds nearly all adapters, but it over-trims, so precision suffers. 
+Trimmomatic stays highly precise but leaves some adapters behind. 
+Readzor removes almost all adapters with better precision than fastp, though it still trims more genuine sequence than Trimmomatic does.
 
 ##### Mimicking parameters
 To investigate how the behaviour of adapter trimming across tools holds when mimicking other tools' settings, we adapted the settings of Readzor and other tools to mimick the parameters of other methods.
@@ -549,7 +564,7 @@ Across comparable output file size (isal compression level `1` versus gzip compr
 </table>
 
 ## Benchmarking software and facilities
-Readzor has been benchmarked using the [Curnagl](https://wiki.unil.ch/ci/books/high-performance-computing-hpc/page/curnagl) high-performance computering cluster of the University of Lausanne.
+Readzor has been benchmarked using the zen3 nodes of the [Curnagl](https://wiki.unil.ch/ci/books/high-performance-computing-hpc/page/curnagl) high-performance computering cluster of the University of Lausanne.
 During the benchmarking, the following software packages and versions were used:
 * [Trimmomatic](https://github.com/usadellab/trimmomatic) (version X.X.X)
 * [fastp](https://github.com/opengene/fastp) (version X.X.X)
