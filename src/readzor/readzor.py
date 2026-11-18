@@ -2,6 +2,7 @@
 
 import argparse
 from collections import defaultdict
+import csv
 import datetime
 import itertools
 import logging
@@ -26,7 +27,7 @@ ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq", [
@@ -3145,8 +3146,18 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
     ACTIVE_PROGRESS_TRACKER = tracker
     file_stats = {}
     file_writing_handles = {}
+    
+    out_ext = ".fastq.gz" if parameters["gzip_output"] else ".fastq"
+    
     for file in unpaired:
-        file_stats[file] = {"kept": 0, "rejected": 0}
+        input_filename = os.path.basename(file)
+        output_filename = basename_file(file) + ("_filtered.fastq.gz" if parameters["gzip_output"] else "_filtered.fastq")
+        file_stats[file] = {
+            "input": input_filename,
+            "output": output_filename,
+            "kept": 0, 
+            "rejected": 0
+        }
         if not stdout:
             file_writing_handles[file] = open_fastq_writer(file, output_dir, gzip_output=parameters["gzip_output"])
         if write_rejected:
@@ -3193,6 +3204,25 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
                 keys["rejected_2"] = f"{prefix}_R2_rejected"
         return keys
     
+    def get_output_files_list(prefix):
+        """Build a comma-separated string of all generated output filenames for paired/interleaved inputs."""
+        outputs = []
+        if interleaved_out:
+            outputs.append(f"{prefix}_interleaved_filtered{out_ext}")
+        else:
+            outputs.append(f"{prefix}_R1_paired_filtered{out_ext}")
+            outputs.append(f"{prefix}_R2_paired_filtered{out_ext}")
+        if not discard_singles:
+            outputs.append(f"{prefix}_R1_unpaired_filtered{out_ext}")
+            outputs.append(f"{prefix}_R2_unpaired_filtered{out_ext}")
+        if write_rejected:
+            if interleaved_out:
+                outputs.append(f"{prefix}_rejected{out_ext}")
+            else:
+                outputs.append(f"{prefix}_R1_rejected{out_ext}")
+                outputs.append(f"{prefix}_R2_rejected{out_ext}")
+        return ", ".join(outputs)
+
     def open_pair_outputs(prefix):
         """Open every output file one paired/interleaved input needs (see pair_output_keys)."""
         for key in pair_output_keys(prefix).values():
@@ -3201,12 +3231,28 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
     for file in interleaved:
         prefix = unique_prefix(basename_file(file))
         pair_keys[(file, file)] = prefix
-        file_stats[prefix] = {"kept_pairs": 0, "kept_R1_singletons": 0, "kept_R2_singletons": 0, "rejected_R1": 0, "rejected_R2": 0}
+        file_stats[prefix] = {
+            "input": os.path.basename(file),
+            "output": get_output_files_list(prefix),
+            "kept_pairs": 0, 
+            "kept_R1_singletons": 0, 
+            "kept_R2_singletons": 0, 
+            "rejected_R1": 0, 
+            "rejected_R2": 0
+        }
         open_pair_outputs(prefix)
     for file1, file2 in paired:
         prefix = unique_prefix(common_name_parts([os.path.basename(file1), os.path.basename(file2)]))
         pair_keys[(file1, file2)] = prefix
-        file_stats[prefix] = {"kept_pairs": 0, "kept_R1_singletons": 0, "kept_R2_singletons": 0, "rejected_R1": 0, "rejected_R2": 0}
+        file_stats[prefix] = {
+            "input": f"{os.path.basename(file1)}, {os.path.basename(file2)}",
+            "output": get_output_files_list(prefix),
+            "kept_pairs": 0, 
+            "kept_R1_singletons": 0, 
+            "kept_R2_singletons": 0, 
+            "rejected_R1": 0, 
+            "rejected_R2": 0
+        }
         open_pair_outputs(prefix)
 
     def unified_chunk_streamer():
@@ -4045,21 +4091,16 @@ def parse_args():
 
 def write_summary_and_statistics(summary_results, parameters, output_dir):
     """
-    Write per-input read counts to results_summary.txt in output_dir.
+    Write per-input read counts, input files, and output files to 
+    results_summary.txt in output_dir.
 
-    The tab-separated file contains a "[Paired Reads]" table (one row per
-    paired or interleaved input: name prefix, kept pairs, kept R1
-    singletons, kept R2 singletons, rejected R1, rejected R2) and an
-    "[Unpaired Reads]" table (filename, kept, rejected). Each table is only
-    written if there are inputs of that kind. Run parameters are not
-    written here; they are recorded in the log file (see log_parameters()).
+    The tab-separated file contains a "[Paired Reads]" table and an
+    "[Unpaired Reads]" table, each detailing input files, output files,
+    and read counts.
 
     Args:
-        summary_results (dict): Output of input_handler(): input name ->
-            counts. Entries contain either ``kept`` and ``rejected``, or
-            ``kept_pairs``, ``kept_R1_singletons``, ``kept_R2_singletons``,
-            ``rejected_R1`` and ``rejected_R2`` for paired entries.
-        parameters (dict): Run parameters (currently unused).
+        summary_results (dict): Output of input_handler().
+        parameters (dict): Run parameters.
         output_dir (str): Directory in which to create the file.
 
     Returns:
@@ -4067,32 +4108,40 @@ def write_summary_and_statistics(summary_results, parameters, output_dir):
     """
     paired_data = []
     unpaired_data = []
-    for file_path, counts in summary_results.items():
-        filename = os.path.basename(file_path)
-        if "kept" in counts:
-            unpaired_data.append((filename, counts["kept"], counts["rejected"]))
-        else:
+    
+    for key, stats in summary_results.items():
+        if "kept" in stats:  # Unpaired entry
+            input_str = stats.get("input", os.path.basename(key))
+            output_str = stats.get("output", basename_file(key) + ("_filtered.fastq.gz" if parameters.get("gzip_output") else "_filtered.fastq"))
+            unpaired_data.append((input_str, output_str, stats["kept"], stats["rejected"]))
+        else:  # Paired or interleaved entry
+            input_str = stats.get("input", key)
+            output_str = stats.get("output", key)
             paired_data.append((
-                filename,
-                counts["kept_pairs"],
-                counts["kept_R1_singletons"],
-                counts["kept_R2_singletons"],
-                counts["rejected_R1"],
-                counts["rejected_R2"],
+                input_str,
+                output_str,
+                stats["kept_pairs"],
+                stats["kept_R1_singletons"],
+                stats["kept_R2_singletons"],
+                stats["rejected_R1"],
+                stats["rejected_R2"],
             ))
+            
     summary_path = os.path.join(output_dir, "results_summary.txt")
-    with open(summary_path, "w", encoding="utf-8") as f:
+    
+    with open(summary_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f, delimiter="\t")
+        
         if paired_data:
             f.write("[Paired Reads]\n")
-            f.write("Pair with common prefix\tKept_Pairs\tKept_R1_Singletons\tKept_R2_Singletons\tRejected_R1\tRejected_R2\n")
-            for item in paired_data:
-                f.write(f"{item[0]}\t{item[1]}\t{item[2]}\t{item[3]}\t{item[4]}\t{item[5]}\n")
+            writer.writerow(["Input File(s)", "Output File(s)", "Kept_Pairs", "Kept_R1_Singletons", "Kept_R2_Singletons", "Rejected_R1", "Rejected_R2"])
+            writer.writerows(paired_data)
             f.write("\n")
+            
         if unpaired_data:
             f.write("[Unpaired Reads]\n")
-            f.write("Filename\tKept\tRejected\n")
-            for item in unpaired_data:
-                f.write(f"{item[0]}\t{item[1]}\t{item[2]}\n")
+            writer.writerow(["Input File", "Output File", "Kept", "Rejected"])
+            writer.writerows(unpaired_data)
   
 def log_parameters(parameters):
     """
