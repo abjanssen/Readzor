@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-##### Import packages #####
 import argparse
 from collections import defaultdict
 import datetime
@@ -21,14 +20,13 @@ import threading
 from isal import igzip, igzip_threaded
 import numpy as np
 
-##### Definition of constant values #####
 WORKER_PARAMETERS = None
 ESTIMATED_ZIP_RATIO = {}
 ESTIMATED_READ_COUNTS = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_BYTE_PER_READ = {}
 GZIP_DETECTION = {}
-VERSION = "0.5.9"
+VERSION = "0.6.0"
 PHRED_ALLOWED = bytes(range(33, 127))
 DEFAULT_ADAPTERS = [
     ["TruSeq", [
@@ -39,7 +37,7 @@ DEFAULT_ADAPTERS = [
         ["TruSeq_small_RNA", "TGGAATTCTCGGGTGCCAAGG"]    #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/TruSeq-SmallRNA.htm
     ]],
     ["Illumina_miRNA", [
-        ["TruSeq_small_RNA", "AGATCGGAAGAGCACACGTCTGAACTCCAGTCA"]     #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/Illumina-miRNA-Indexes.htm
+        ["Illumina_miRNA", "AGATCGGAAGAGCACACGTCTGAACTCCAGTCA"]     #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/Illumina-miRNA-Indexes.htm
     ]],
     ["Nextera", [
         ["Nextera", "CTGTCTCTTATACACATCT"]  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/Nextera_Illumina-Sequences.htm
@@ -263,12 +261,13 @@ class ProgressTracker:
         Format time duration for display.
 
         Args:
-            seconds_val (float): Duration in seconds. Infinite or negative values are shown as "?".
-            concise (bool): If True, return a compact form ("1h 02m 03s"); 
-            otherwise a spelled-out form ("1 hour, 2 minutes, 3 seconds").
+            seconds_val (float | None): Duration in seconds. None, infinite
+                or negative values are shown as "Calculating...".
+            concise (bool): If True, return a compact form ("1h 02m 03s.");
+                otherwise a spelled-out form ("1 hour, 2 minutes, 3 seconds.").
 
         Returns:
-            str: The formatted duration.
+            str: The formatted duration, ending with a period.
         """
         if seconds_val is None or seconds_val == float('inf') or seconds_val < 0:
             return "Calculating..."
@@ -315,7 +314,9 @@ class ProgressTracker:
     def render(self):
         """
         Draw the current progress line on stderr, overwriting the previous
-        one. Does nothing if stderr is not a terminal.
+        one. Once the processed count reaches the estimated total, the time
+        remaining is replaced by a "finishing up" message. Does nothing if
+        stderr is not a terminal.
         """
         if not sys.stderr.isatty():
             return
@@ -329,7 +330,7 @@ class ProgressTracker:
             "Finishing up...",
             "Almost done...",
             "Nearly there...",
-            "Wrappping up..."
+            "Wrapping up..."
             ]
             eta_str = random.choice(eta_messages)
         else:
@@ -362,7 +363,8 @@ class ProgressTracker:
         """
         Blank out the current progress-bar line so other output (e.g. log
         messages) can be written to stderr without visually clashing with
-        the bar. The bar redraws itself on the next call to `update()`.
+        the bar. The bar is redrawn by the next `update()` call that falls
+        after ``min_interval``.
         Does nothing if stderr is not a terminal.
         """
         if not sys.stderr.isatty():
@@ -382,8 +384,8 @@ class ProgressTracker:
 
         Args:
             interrupted (bool): If True, the run did not finish (Ctrl+C or
-                an error). The line then says where it stopped ("Stopped at
-                6.1%") and the bar is only filled up to that point, instead
+                an error). The line then says where it stopped ("Interrupted
+                at 6.1%") and the bar is only filled up to that point, instead
                 of claiming 100%. As the total is an estimate, the
                 percentage is capped at 99.9%. Defaults to False.
         """
@@ -1021,7 +1023,26 @@ def validate_fastq(header, sequence, plus, quality, n_filter, min_length_input, 
     return True
 
 def load_adapters_from_arg(value):
-    """FASTA file path or comma-separated sequences -> list[tuple[str, str]]."""
+    """
+    Load adapter sequences given on the command line, either as a FASTA
+    file path or as comma-separated sequences.
+
+    If ``value`` is an existing file, it is parsed with
+    load_adapters_from_fasta(). Otherwise it is split on commas; each
+    sequence is stripped, uppercased and must consist of A, C, G, T and N
+    only. Such sequences are named "custom_1", "custom_2", ...
+
+    Args:
+        value (str): FASTA file path or comma-separated sequences.
+
+    Returns:
+        list[tuple[str, str]]: (name, sequence) tuples.
+
+    Raises:
+        ValueError: If the FASTA file holds no sequences, no sequences are
+            given, or an entry is neither an existing file nor a valid
+            sequence.
+    """
     if os.path.isfile(value):
         adapters = load_adapters_from_fasta(value)
         if not adapters:
@@ -1356,13 +1377,11 @@ def trim_ends_quality(quality_arr, chunk_padding_bool, row_tilde_count, padding_
         padding_mask_bool (numpy.ndarray | None): (n_reads, read_length)
             boolean mask marking right-padding positions, or None if the
             chunk isn't padded. Padded positions are excluded from the scan.
-        min_quality_both (int | None): Threshold used for any end whose
-            specific threshold is None. If this is also None, 0 is used
-            (no trimming at that end).
-        endqual_min_start (int | None): Minimum quality to keep bases from
-            the start of the read, or None to use min_quality_both.
-        endqual_min_end (int | None): Minimum quality to keep bases from
-            the end of the read, or None to use min_quality_both.
+        endqual_min_start (int): Minimum quality to keep bases from the
+            start of the read. (The --endqual-min-both fallback is already
+            resolved in parse_args().)
+        endqual_min_end (int): Minimum quality to keep bases from the end
+            of the read.
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (start_cutoffs, end_cutoffs),
@@ -1419,15 +1438,12 @@ def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, row_tilde_c
     run is trimmed. Each listed base is checked on its own (a mixed run such
     as "GGAGG" is not treated as one run), and the largest trim per end wins.
 
-    Base selection: poly_bases_both applies to both ends, but
-    poly_bases_start and poly_bases_end each replace it for their own end
-    when they are not None. Length selection: poly_length_start and
-    poly_length_end are used for their own end, and fall back to
-    poly_length_both when 0.
-
-    If no bases are given at all, or all three lengths are 0, no trimming is
-    done. A read consisting entirely of a checked base ends up with an empty
-    window.
+    Each end is configured separately (the --poly-bases-both and
+    --poly-length-both fallbacks are already resolved in parse_args()). An
+    end is only checked if it has at least one base and a minimum length
+    greater than 0; a length of None counts as 0. If neither end is
+    checked, no trimming is done. A read consisting entirely of a checked
+    base ends up with an empty window.
 
     Args:
         sequence_arr (numpy.ndarray): (n_reads, read_length) array of
@@ -1439,18 +1455,14 @@ def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, row_tilde_c
             bytes per read, used when chunk_padding_bool is True.
         chunk_padding_bool (bool): Whether sequence_arr contains padded
             (unequal-length) reads.
-        poly_length_both (int): Minimum run length used for an end whose
-            specific length is 0.
-        poly_length_start (int): Minimum run length to trigger trimming at
-            the start of the read (0 = use poly_length_both).
-        poly_length_end (int): Minimum run length to trigger trimming at
-            the end of the read (0 = use poly_length_both).
-        poly_bases_both (str | None): Comma-separated bases to check at
-            both ends.
+        poly_length_start (int | None): Minimum run length to trigger
+            trimming at the start of the read (0 or None = start not checked).
+        poly_length_end (int | None): Minimum run length to trigger
+            trimming at the end of the read (0 or None = end not checked).
         poly_bases_start (str | None): Comma-separated bases to check at
-            the start; replaces poly_bases_both for the start if not None.
+            the start (case-insensitive), or None for none.
         poly_bases_end (str | None): Comma-separated bases to check at
-            the end; replaces poly_bases_both for the end if not None.
+            the end (case-insensitive), or None for none.
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
@@ -1524,10 +1536,10 @@ def cut_set_ends(sequence_arr, chunk_padding_bool, row_tilde_count, cut_start, c
     every read, regardless of sequence or quality (e.g. to hard-trim a known
     primer or a biased first/last few bases).
 
-    `cut_start` and `cut_end` set the trim for their own end. A value of 0
-    means "not given" and falls back to `cut_both`, so an explicit 0 cannot
-    override a nonzero `cut_both`. If the two cuts meet or cross, the read's
-    window becomes empty and the read is discarded downstream.
+    `cut_start` and `cut_end` set the trim for their own end (the
+    --cut-both fallback is already resolved in parse_args(), where an
+    explicit 0 does override --cut-both). If the two cuts meet or cross,
+    the read's window becomes empty and the read is discarded downstream.
 
     For equal-length chunks, the boundaries are clamped to
     [0, read_length]. For padded chunks, the boundaries are computed from
@@ -1542,12 +1554,8 @@ def cut_set_ends(sequence_arr, chunk_padding_bool, row_tilde_count, cut_start, c
         row_tilde_count (numpy.ndarray | int): (n_reads,) count of padding
             bytes per read, used to recover each read's real length when
             chunk_padding_bool is True.
-        cut_both (int): Number of bases to trim off both ends. Used for any
-            end whose specific value is 0.
-        cut_start (int): Number of bases to trim from the 5' end. Takes
-            priority over cut_both if nonzero.
-        cut_end (int): Number of bases to trim from the 3' end. Takes
-            priority over cut_both if nonzero.
+        cut_start (int): Number of bases to trim from the 5' end.
+        cut_end (int): Number of bases to trim from the 3' end.
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: (left_cutoffs, right_cutoffs),
@@ -1581,7 +1589,9 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
     once, and after a mid-read quality drop the longer side survives.
 
     Reads shorter than one window are not trimmed. In padded chunks,
-    windows overlapping padding count as failing.
+    windows overlapping padding are not evaluated; instead the padding
+    positions themselves are marked bad, and with slider_step > 1 the last
+    full window of each read (ending at its real length) is also checked.
 
     Args:
         quality_arr (numpy.ndarray): (n_reads, read_length) array of
@@ -1837,25 +1847,31 @@ def select_adapters_for_read(adapter_sequences, adapter_group, read_direction,ad
     """
     Select the adapter sequences to search for in one mate of a read pair.
 
-    For paired reads (read_direction "read_1" or "read_2"), the other mate's
-    directional adapter (a DEFAULT_ADAPTERS entry named "Read_1" or
-    "Read_2") of each selected adapter group is dropped, e.g. the TruSeq
-    Read_2 adapter is not searched for in R1. A dropped sequence is kept
-    anyway if another entry of a selected group uses the same sequence.
-    Other sequences (e.g. from --adapter-fasta-add) are kept unless they are
-    identical to a dropped one.
+    If mate-specific adapters were given (--adapter-read-1/--adapter-read-2,
+    passed as ``adapter_per_read``), the list for ``read_direction`` is
+    returned as is; unpaired reads get all of ``adapter_sequences``.
+
+    Otherwise, for paired reads (read_direction "read_1" or "read_2"), the
+    other mate's directional adapter (a DEFAULT_ADAPTERS entry named
+    "Read 1" or "Read 2") of each selected adapter group is dropped, e.g.
+    the TruSeq "Read 2" adapter is not searched for in R1. A dropped
+    sequence is kept anyway if another entry of a selected group uses the
+    same sequence. Other sequences (e.g. from --adapter-add) are kept
+    unless they are identical to a dropped one.
 
     Args:
         adapter_sequences (list[bytes]): All adapter sequences of the run.
         adapter_group (list[str] | None): Selected built-in adapter groups,
-            or None (as with --adapter-fasta-excl) to skip the selection.
+            or None (as with --adapter-excl) to skip the selection.
         read_direction (str | None): "read_1", "read_2", or None for
             unpaired reads.
+        adapter_per_read (dict[str, list[bytes]] | None): Mate-specific
+            adapters keyed "read_1"/"read_2", or None. Defaults to None.
 
     Returns:
-        list[bytes]: The adapter sequences to search for. Returned unchanged
-            if read_direction is not "read_1"/"read_2" or adapter_group is
-            empty or None.
+        list[bytes]: The adapter sequences to search for. Without
+            ``adapter_per_read``, returned unchanged if read_direction is
+            not "read_1"/"read_2" or adapter_group is empty or None.
     """
     if adapter_per_read:
         if read_direction in adapter_per_read:
@@ -1889,14 +1905,15 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
     adapter, if it is shorter) lie within the read. For paired reads,
     overlap trimming can catch shorter adapter remnants.
 
-    With mismatches == 0, matching is exact: the adapter's first
-    `adapter_seed` bases are located with a substring search, and each hit
-    is then checked against the rest of the adapter, or against the part of
-    it that fits in the read. With mismatches > 0, a vectorized
-    Hamming-distance search allows substitutions (no insertions or
-    deletions). The allowed number scales with the overlap: L adapter bases
-    within the read may contain round(L * mismatches / adapter_length)
-    mismatches.
+    With mismatches == 0 and an effective seed length (the smaller of
+    `adapter_seed` and the shortest adapter) of at least 4, matching is
+    exact: the adapter's first `adapter_seed` bases are located with a
+    substring search, and each hit is then checked against the rest of the
+    adapter, or against the part of it that fits in the read. Otherwise, a
+    vectorized Hamming-distance search is used, which allows substitutions
+    (no insertions or deletions). The allowed number scales with the
+    overlap: L adapter bases within the read may contain
+    floor(L * mismatches / adapter_length) mismatches.
 
     For paired reads, the adapters searched for can be narrowed down per
     mate first (see select_adapters_for_read()).
@@ -1915,6 +1932,9 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
         adapter_seed (int): Minimum number of adapter bases that must lie
             within the read. With exact matching, also the length of the
             adapter prefix used for the substring search.
+        adapter_per_read (dict[str, list[bytes]] | None): Mate-specific
+            adapters keyed "read_1"/"read_2" (from --adapter-read-1/
+            --adapter-read-2), or None.
         read_direction (str | None): "read_1" or "read_2" for one mate of a
             read pair, or None for unpaired reads. Defaults to None.
         adapter_group (list[str] | None): Selected built-in adapter groups,
@@ -1929,6 +1949,12 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
     """
     n_reads, length = sequence_arr.shape
     adapter_sequences = select_adapters_for_read(adapter_sequences, adapter_group, read_direction, adapter_per_read)
+    if not adapter_sequences:
+        if chunk_padding_bool:
+            right_cutoffs = (length - row_tilde_count).astype(np.int32)
+        else:
+            right_cutoffs = np.full(n_reads, length, dtype=np.int32)
+        return np.zeros(n_reads, dtype=np.int8), right_cutoffs
     adapter_len_min = min(len(seq) for seq in adapter_sequences)
     if mismatches == 0 and min(adapter_seed, adapter_len_min) >= 4:
         all_bytes = sequence_arr.tobytes()
@@ -2449,7 +2475,7 @@ def generate_unpaired_tasks(filepaths, chunk_size, parameters, filetype = None):
             elapsed = time.monotonic() - start_time
             if total_reads > 0 and elapsed > 0:
                 logger.info(
-                    "%s: finished processing %d reads in %.2fs (%.0f pairs/sec).",
+                    "%s: finished processing %d reads in %.2fs (%.0f reads/sec).",
                     os.path.basename(filepath), total_reads, elapsed, total_reads / elapsed
                 )
             else:
@@ -2474,7 +2500,7 @@ def generate_unpaired_tasks(filepaths, chunk_size, parameters, filetype = None):
             elapsed = time.monotonic() - start_time
             if total_reads > 0 and elapsed > 0:
                 logger.info(
-                    "%s: finished processing %d reads in %.2fs (%.0f pairs/sec).",
+                    "%s: finished processing %d read pairs in %.2fs (%.0f pairs/sec).",
                     os.path.basename(filepath), total_reads, elapsed, total_reads / elapsed
                 )
             else:
@@ -2561,8 +2587,9 @@ def generate_paired_tasks(files, chunk_size, parameters):
     offset of each file once, and then yields one task per chunk of
     ``chunk_size`` read pairs, as one raw FASTQ blob per file
     (lazy_fastq_blobs()), so that a single global pool can process chunks
-    from many files. Mates are matched by position here; within a
-    chunk they are reconciled by base read ID in process_paired_chunk().
+    from many files. Mates are matched by position: record k of the R1
+    blob is the mate of record k of the R2 blob, also in
+    process_paired_chunk(). Read IDs are not compared.
     Logs the processing time and rate once both files are exhausted.
 
     Args:
@@ -2745,8 +2772,8 @@ def paired_overlap_cutoffs(batch_1, batch_2, parameters):
 def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, overlap_cutoffs, parameters, read_direction=None, chunk_length = 0):
     """
     Trim and length/quality-filter one prepared batch (one mate of a paired
-    chunk) and format the survivors, keyed by their base (mate-independent)
-    read ID.
+    chunk) and format the survivors, placed at their record position in the
+    chunk so they can be matched with the other mate's survivors.
 
     Runs all enabled modules from build_pipeline(), plus the overlap
     cutoffs if given, merges their windows (largest left, smallest right
@@ -2773,11 +2800,14 @@ def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_outp
         read_direction (str | None): "read_1" or "read_2", passed on to
             build_pipeline() for mate-specific adapter selection.
             Defaults to None.
+        chunk_length (int): Number of records in the original chunk
+            (valid and invalid). Defaults to 0.
 
     Returns:
-        tuple[dict[bytes, bytes], int, list[bytes]]:
-            - Survivors as {base read ID: formatted FASTQ record}, in batch
-              order. If two survivors share a base ID, only the last is kept.
+        tuple[list[bytes | None], int, list[bytes]]:
+            - Survivors as a list of length ``chunk_length``: entry k is the
+              formatted FASTQ record of chunk record k, or None if that
+              record was invalid or filtered out.
             - Count of records filtered out here.
             - Rejected records (populated only if write_rejected is True).
     """
@@ -2860,8 +2890,9 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
     Both mates are validated (prepare_reads()), optionally overlap-trimmed
     as a pair (paired_overlap_cutoffs(), when "overlap_filter_flag" is set),
     and then trimmed and filtered independently (finish_reads()). Survivors
-    are matched by base read ID: records whose mate also survived are output
-    as pairs (in R1 order), the others as singletons.
+    are matched by position in the chunk (record k of R1 with record k of
+    R2): records whose mate also survived are output as pairs (in chunk
+    order), the others as singletons.
 
     If parameters["interleaved_out"] is True (always the case with
     --stdout), pairs are written as alternating R1/R2 records into the first
@@ -2905,6 +2936,7 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
         Non-empty byte outputs are gzip-compressed when gzip_output is True.
 
     Raises:
+        ValueError: If the R1 and R2 chunks have different numbers of records.
         RuntimeError: If gzip compression fails.
     """
     chunk1, chunk2 = chunks
@@ -2977,7 +3009,7 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
             raise RuntimeError(f"Compression failed inside worker: {str(e)}") from None
     return paired_out_1, paired_out_2, singles_out_1, singles_out_2, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2, rejected_R1, rejected_R2
 
-def worker_initilizer(parameters):
+def worker_initializer(parameters):
     """
     Pool initializer: runs once in each worker process at startup.
 
@@ -2995,7 +3027,7 @@ def worker_initilizer(parameters):
 def unified_worker(task):
     """
     Pool entry point: route a task to the paired or unpaired handler, using
-    the run parameters stored by worker_initilizer().
+    the run parameters stored by worker_initializer().
 
     Args:
         task (dict): A task from generate_unpaired_tasks() or
@@ -3234,7 +3266,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
     finished = False
     sys.setswitchinterval(0.0005)
     try:
-        with mp.Pool(threads, initializer=worker_initilizer, initargs=(parameters,)) as pool:
+        with mp.Pool(threads, initializer=worker_initializer, initargs=(parameters,)) as pool:
             submit = pool.imap if parameters["ordered_output"] else pool.imap_unordered
             for result in submit(unified_worker, bounded_chunk_stream(), chunksize=1):
                 backpressure.release()
@@ -3420,12 +3452,19 @@ def parse_args():
       - --stdout turns off verbose output, the progress bar and
         --write-rejected, and turns on --discard-singles and
         --interleaved-out.
-      - --n-filter turns off N end trimming (there would be nothing left
-        to trim), and N is no longer counted as a separate letter in k-mer
-        complexity filtering ("allow_n_kmer").
-      - With adapter trimming on, the adapter list is taken from
-        --adapter-fasta-excl alone, or else from the selected
-        --adapter-group(s) plus --adapter-fasta-add, and de-duplicated.
+      - The start/end settings of set-length, quality-dependent and
+        homopolymer end trimming take their specific value if given, and
+        otherwise the matching "both" value (--cut-both,
+        --endqual-min-both, --poly-length-both, --poly-bases-both).
+      - --n-filter means N is no longer counted as a separate letter in
+        k-mer complexity filtering ("allow_n_kmer").
+      - --adapter-group "all" selects every built-in group.
+      - With adapter trimming on: if --adapter-read-1 and/or
+        --adapter-read-2 is given, those sequences are used per mate
+        ("adapter_per_read") and all other adapter options are ignored.
+        Otherwise the adapter list is taken from --adapter-excl alone, or
+        else from the selected --adapter-group(s) plus --adapter-add, and
+        de-duplicated.
       - The thread count is resolved (worker_determination()).
 
     Returns:
@@ -3439,15 +3478,17 @@ def parse_args():
         Sets up console logging. When run without any arguments, prints the
         help to stderr and exits with status 1. With --help (optionally
         combined with --full-auto), --version or --list-adapters, prints
-        the corresponding output and exits. With --full-auto (and without
-        --verbose), prints a warning that other options are ignored. Calls
+        the corresponding output and exits. With --full-auto, prints a
+        warning to stdout that other options are ignored (--verbose is
+        reset by full-auto too, so this is always printed). Calls
         parser.error() (which exits with status 2) if no input can be
         found, if --input-paired has an odd number of files, or if piped
         stdin is empty. May create a temporary file holding stdin data.
 
     Raises:
-        ValueError: If an adapter FASTA file is malformed, or
-            --adapter-fasta-excl contains no sequences.
+        ValueError: If an adapter FASTA file is malformed or empty, or an
+            adapter option holds neither an existing file nor valid
+            sequences (see load_adapters_from_arg()).
     """
     setup_logging()
 
@@ -3506,7 +3547,7 @@ def parse_args():
     )
     input_group.add_argument(
         "--input-interleaved", "-ii", nargs='+', default = None, metavar = "",
-        help="[STR] Interleaved FASTQ files. Note: these files will be split in forward and reverse reads."
+        help="[STR] Interleaved FASTQ files. Note: these files will be split into forward and reverse reads."
     )
     input_group.add_argument(
         "--input-unpaired", "-iu", nargs='+', default = None, metavar = "",
@@ -3515,7 +3556,7 @@ def parse_args():
 
     output_group = parser.add_argument_group(
         "Output options",
-        "Filtered sequences can be either written to file, or output to stdout. setting --stdout overrides other settings."
+        "Filtered sequences can be either written to file, or output to stdout. Setting --stdout overrides other settings."
         )
     output_group.add_argument(
         "--gzip", action="store_true", default = False,
@@ -3531,11 +3572,11 @@ def parse_args():
     )
     output_group.add_argument(
         "--stdout", action="store_true", default=False,
-        help="[FLAG] Stream resulting FASTQ reads to stdout. Forces --interleaved-out and --discard-singles for paired and interleaved files. Overrides --verbose and --progress. Overridden to 'off' by --gzip. Note: all files will be streamed on end, without any seperators. Default: off."
+        help="[FLAG] Stream resulting FASTQ reads to stdout. Forces --interleaved-out and --discard-singles for paired and interleaved files. Overrides --verbose and --progress. Overridden to 'off' by --gzip. Note: all files will be streamed end to end, without any separators. Default: off."
     )
     output_group.add_argument(
         "--interleaved-out", action="store_true", default=False,
-        help="[FLAG] Interleave surviving paired FASTQ reads of paired and interleaved input files. Single reads are written to seperate files. Default: off."
+        help="[FLAG] Interleave surviving paired FASTQ reads of paired and interleaved input files. Single reads are written to separate files. Default: off."
     )    
     output_group.add_argument(
         "--write-rejected", action="store_true", default=False,
@@ -3543,12 +3584,12 @@ def parse_args():
     )  
     output_group.add_argument(
         "--discard-singles", action="store_true", default=False,
-        help="[FLAG] For paired and interleaved reads, single surviving reads will be discarded instead of written to a seperate file. No effect on unpaired read filtering. Default: off."
+        help="[FLAG] For paired and interleaved reads, single surviving reads will be discarded instead of written to a separate file. No effect on unpaired read filtering. Default: off."
     )  
 
     general_quality_group = parser.add_argument_group(
         "General output filter options",
-        "Filters raw input, or trimmed output sequences for overall parameters. When a read does not pass these filters, they are discarded entirely."
+        "Filters raw input or trimmed output sequences for overall parameters. When a read does not pass these filters, it is discarded entirely."
         )
     general_quality_group.add_argument(
         "--min-length-input", type=int, default = None, metavar = "",
@@ -3589,7 +3630,7 @@ def parse_args():
 
     trim_ends_group = parser.add_argument_group(
         "Set-length end trimming",
-        "Trim a defined number of bases of the ends of each read, independent of sequence or quality."
+        "Trim a defined number of bases from the ends of each read, independent of sequence or quality."
         )
     trim_ends_group.add_argument(
         "--cut-flag", "-cf",action="store_true", default = False,
@@ -3605,7 +3646,7 @@ def parse_args():
     )
     trim_ends_group.add_argument(
         "--cut-both", "-cb", type=int, default = 0, metavar="", 
-        help="[INT] Number of bases to trim from both ends of the read. Overwritten by --cut-start and --cut-end. Default: 0."
+        help="[INT] Number of bases to trim from both ends of the read. Overridden by --cut-start and --cut-end. Default: 0."
     )
 
     quality_ends_group = parser.add_argument_group(
@@ -3626,7 +3667,7 @@ def parse_args():
     )
     quality_ends_group.add_argument(
         "--endqual-min-both", "-emb", type=int, default = 20, metavar="", choices=range(0, 94),
-        help="[INT] Phred score threshold for the quality trimming of read ends. Overwritten by --endqual-min-start and --endqual-min-end. Default: 20."
+        help="[INT] Phred score threshold for the quality trimming of read ends. Overridden by --endqual-min-start and --endqual-min-end. Default: 20."
     )
 
     sliding_window_group = parser.add_argument_group(
@@ -3654,7 +3695,7 @@ def parse_args():
     homopolymer_nucleotide_trimming = parser.add_argument_group(
         "Homopolymer nucleotide trimming",
         "Illumina NovaSeq, NextSeq, and MiniSeq use a two-color chemistry, in which guanine bases are unlabeled. "
-        "In event of short fragments, this can result in homolopolymer G calls at the end of reads. "
+        "In event of short fragments, this can result in homopolymer G calls at the end of reads. "
         "This filter allows these bases to be cut."
         )
     homopolymer_nucleotide_trimming.add_argument(
@@ -3671,7 +3712,7 @@ def parse_args():
     )
     homopolymer_nucleotide_trimming.add_argument(
         "--poly-bases-both", "-pbb", type = str, default = None, metavar = "",
-        help='[STR] Base(s) to check for a homopolymer run at both read ends. Comma-separated bases are checked independently. Overwritten by poly_bases_start and poly_bases_end. Default: none.'
+        help='[STR] Base(s) to check for a homopolymer run at both read ends. Comma-separated bases are checked independently. Overridden by --poly-bases-start and --poly-bases-end. Default: none.'
     )
     homopolymer_nucleotide_trimming.add_argument(
         "--poly-length-start", "-pls", type = int, default = None, metavar = "",
@@ -3683,7 +3724,7 @@ def parse_args():
     )
     homopolymer_nucleotide_trimming.add_argument(
         "--poly-length-both", "-plb", type = int, default = None, metavar = "",
-        help="[INT] Minimum length of homopolymer run at start and end of read required to trigger trimming. Overwritten by --poly-length-start and --poly-length-end. Default: 0."
+        help="[INT] Minimum length of homopolymer run at start and end of read required to trigger trimming. Overridden by --poly-length-start and --poly-length-end. Default: 0."
     )
 
     adapter_trimming = parser.add_argument_group(
@@ -3719,11 +3760,11 @@ def parse_args():
     )
     adapter_trimming.add_argument(
         "--adapter-read-1", "-a1", type = str, default = None, metavar="",
-        help="[STR] FASTA file or comma-separated sequences of read 1 specific adapter. Specifying this, will override other adapter specifications. Leaving this empty when --adapter-read-2 is set, will disable read 1 adapter trimming. Default: none"
+        help="[STR] FASTA file or comma-separated sequences of read 1 specific adapter. Specifying this will override other adapter specifications. Leaving this empty when --adapter-read-2 is set will disable read 1 adapter trimming. Default: none."
     )
     adapter_trimming.add_argument(
         "--adapter-read-2", "-a2", type = str, default = None, metavar="",
-        help="[STR] FASTA file or comma-separated sequences of read 2 specific adapter. Specifying this, will override other adapter specifications. Leaving this empty when --adapter-read-1 is set,  will disable read 2 adapter trimming. Default: none"
+        help="[STR] FASTA file or comma-separated sequences of read 2 specific adapter. Specifying this will override other adapter specifications. Leaving this empty when --adapter-read-1 is set will disable read 2 adapter trimming. Default: none."
     )
     
     overlap_trimming = parser.add_argument_group(
@@ -3746,21 +3787,21 @@ def parse_args():
     )
     overlap_trimming.add_argument(
         "--overlap-portion-mismatch", "-op", type = int, default = 4, metavar="",
-        help="[INT] Maximum percentage of mismatched bases allowed in the overlapping region. Default: 4"
+        help="[INT] Maximum percentage of mismatched bases allowed in the overlapping region. Default: 4."
     )
 
     low_complexity_group = parser.add_argument_group(
-        "Low complexity filtering",
-        "Detect complexity of reads using kmer-based nucleotide frequencies. "
-        "Low complex reads are discarded entirely."
+        "Low-complexity filtering",
+        "Detect complexity of reads using k-mer-based nucleotide frequencies. "
+        "Low-complexity reads are discarded entirely."
         )
     low_complexity_group.add_argument(
         "--kmer-filter-flag", "-kf", action="store_true", default=False,
-        help="[FLAG] Turn on the kmer-based complexity filtering module. Default: off."
+        help="[FLAG] Turn on the k-mer-based complexity filtering module. Default: off."
     )
     low_complexity_group.add_argument(
         "--kmer-size", "-ks", default = 4, metavar="",
-        help="[INT] Kmer length for kmer-based complexity filtering. Comma-separated values are checked independently. Maximum value: 21. Default: 4."
+        help="[INT] K-mer length for k-mer-based complexity filtering. Comma-separated values are checked independently. Maximum value: 21. Default: 4."
     )
     low_complexity_group.add_argument(
         "--kmer-cutoff", "-kc", type = int, default = 50, metavar="",
@@ -3778,11 +3819,11 @@ def parse_args():
     )
     mgi_convert_group.add_argument(
         "--mgi-bc5", "-m5", type = str, default = "PLACEHOLDERi5", metavar="",
-        help="[STR] Input a i5 barcode for Illumina header conversion. Default: 'PLACEHOLDERi5'."
+        help="[STR] Input an i5 barcode for Illumina header conversion. Default: 'PLACEHOLDERi5'."
     )
     mgi_convert_group.add_argument(
         "--mgi-bc7", "-m7", type = str, default = "PLACEHOLDERi7", metavar="",
-        help="[STR] Input a i7 barcode for Illumina header conversion. Default: 'PLACEHOLDERi7'."
+        help="[STR] Input an i7 barcode for Illumina header conversion. Default: 'PLACEHOLDERi7'."
     )
     mgi_convert_group.add_argument(
         "--mgi-instrument", "-mi", type = str, default = "PLACEHOLDERinstrument", metavar="",
@@ -3806,7 +3847,7 @@ def parse_args():
     )
     advanced_group.add_argument(
         "--chunk-size", type=int, default = 1500, metavar="",
-        help="[INT] Number of reads per chunk sent to each worker. Changing can alter processing speed. Default: 1500. "
+        help="[INT] Number of reads per chunk sent to each worker. Changing can alter processing speed. Default: 1500."
     )
     advanced_group.add_argument(
         "--phred-offset", type = int, choices=[33, 64], default = None, metavar="",
