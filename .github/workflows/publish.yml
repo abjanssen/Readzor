@@ -32,9 +32,9 @@ jobs:
       - name: Extract VERSION from package
         id: get_version
         run: |
-          RAW_VERSION=$(python -c "from readzor.readzor import VERSION; print(VERSION)")
+          RAW_VERSION=$(python -c "from readzor.constants import VERSION; print(VERSION)")
           if [ -z "$RAW_VERSION" ]; then
-            echo "Failed to extract version from readzor.readzor.VERSION" >&2
+            echo "Failed to extract version from readzor.constants.VERSION" >&2
             exit 1
           fi
           VERSION="v${RAW_VERSION}"
