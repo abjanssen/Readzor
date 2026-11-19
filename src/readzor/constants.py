@@ -7,7 +7,7 @@ and a by-name import would keep the old value.
 """
 
 # ---- Constants (never modified) ----
-VERSION = "0.7.0"
+VERSION = "0.7.1"
 DEFAULT_ADAPTERS = [
     ["AmpliSeq", [
         ["AmpliSeq", "CTGTCTCTTATACACATCT"]  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/AmpliSeq-Sequences.htm

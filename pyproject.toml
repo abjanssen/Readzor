@@ -27,11 +27,11 @@ dependencies = [
 ]
 
 [tool.setuptools.dynamic]
-version = {attr = "readzor.readzor.VERSION"}
+version = {attr = "readzor.constants.VERSION"}
 
 [project.urls]
 "GitHub" = "https://github.com/abjanssen/readzor"
 
 [project.scripts]
-readzor = "readzor.readzor:main"
-Readzor = "readzor.readzor:main"
+readzor = "readzor.cli:main"
+Readzor = "readzor.cli:main"
