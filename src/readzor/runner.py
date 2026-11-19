@@ -12,6 +12,7 @@ import time
 from isal import igzip
 
 from readzor import constants
+from readzor import stats as S
 from readzor.fastq_io import basename_file, common_name_parts, detect_phred_offset, find_paired_files, is_gz_file, lazy_fastq_blobs, open_fastq_writer
 from readzor.progress import ProgressTracker, count_reads_estimated
 from readzor.worker import unified_worker, worker_initializer
@@ -45,6 +46,10 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
       6. Close all outputs; gzip outputs that received no data get a
          valid, empty gzip member.
 
+    With parameters["stats"] (--stats), the read statistics every worker
+    returns with its chunk are merged per input into a StatsCollector,
+    keyed like the returned file statistics.
+
     In stdout mode, only kept reads are written to stdout (for paired and
     interleaved inputs, the interleaved pairs); no FASTQ files are opened.
 
@@ -73,12 +78,17 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
         parameters (dict): Run parameters.
 
     Returns:
-        dict: Summary statistics per input. Unpaired files are keyed by
-            their filepath, with "kept" and "rejected" counts. Paired and
-            interleaved inputs are keyed by their name prefix, with
-            "kept_pairs", "kept_R1_singletons", "kept_R2_singletons",
-            "rejected_R1" and "rejected_R2" counts, since each mate is
-            trimmed and filtered independently before reconciliation.
+        tuple[dict, stats.StatsCollector | None]:
+            - Summary statistics per input. Unpaired files are keyed by
+              their filepath, with "kept" and "rejected" counts. Paired and
+              interleaved inputs are keyed by their name prefix, with
+              "kept_pairs", "kept_R1_singletons", "kept_R2_singletons",
+              "rejected_R1" and "rejected_R2" counts, since each mate is
+              trimmed and filtered independently before reconciliation.
+              Every entry also has "type": "unpaired", "interleaved" or
+              "paired", and "input"/"output" file name strings.
+            - The merged read statistics (--stats), keyed the same way, or
+              None without --stats.
     """
     for file in (unspecified_files or []):
         constants.GZIP_DETECTION[file] = is_gz_file(file)
@@ -119,6 +129,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
         input_filename = os.path.basename(file)
         output_filename = basename_file(file) + ("_filtered.fastq.gz" if parameters["gzip_output"] else "_filtered.fastq")
         file_stats[file] = {
+            "type": "unpaired",
             "input": input_filename,
             "output": output_filename,
             "kept": 0, 
@@ -198,6 +209,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
         prefix = unique_prefix(basename_file(file))
         pair_keys[(file, file)] = prefix
         file_stats[prefix] = {
+            "type": "interleaved",
             "input": os.path.basename(file),
             "output": get_output_files_list(prefix),
             "kept_pairs": 0, 
@@ -211,6 +223,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
         prefix = unique_prefix(common_name_parts([os.path.basename(file1), os.path.basename(file2)]))
         pair_keys[(file1, file2)] = prefix
         file_stats[prefix] = {
+            "type": "paired",
             "input": f"{os.path.basename(file1)}, {os.path.basename(file2)}",
             "output": get_output_files_list(prefix),
             "kept_pairs": 0, 
@@ -275,6 +288,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
             backpressure.acquire()
             yield item
             
+    collector = S.StatsCollector() if parameters["stats"] else None
     finished = False
     sys.setswitchinterval(0.0005)
     try:
@@ -282,6 +296,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
             submit = pool.imap if parameters["ordered_output"] else pool.imap_unordered
             for result in submit(unified_worker, bounded_chunk_stream(), chunksize=1):
                 backpressure.release()
+                report, result = result[-1], result[:-1]
                 if result[0] == "unpaired":
                     _, filepath, chunk_results, kept, rejected, rejected_reads = result
                     if parameters["stdout"]:
@@ -295,6 +310,8 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
                 
                     file_stats[filepath]["kept"] += kept
                     file_stats[filepath]["rejected"] += rejected
+                    if collector is not None:
+                        collector.add(filepath, report)
                     tracker.update(kept + rejected)
                 elif result[0] == "paired":
                     _, file1, file2, paired_out_1, paired_out_2, R1_singles_out, R2_singles_out, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2, rejected_R1, rejected_R2 = result
@@ -322,6 +339,8 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
                     file_stats[common_prefix]["kept_R2_singletons"] += num_R2_singles
                     file_stats[common_prefix]["rejected_R1"] += rejected_1
                     file_stats[common_prefix]["rejected_R2"] += rejected_2
+                    if collector is not None:
+                        collector.add(common_prefix, report)
                     tracker.update(num_paired * 2 + num_R1_singles + num_R2_singles + rejected_1 + rejected_2)
             finished = True
     finally:
@@ -332,7 +351,7 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
                 if parameters["gzip_output"] and handle.tell() == 0:
                     handle.write(igzip.compress(b""))
                 handle.close()
-    return file_stats
+    return file_stats, collector
 
 
 def generate_unpaired_tasks(filepaths, chunk_size, parameters, filetype = None):
@@ -517,23 +536,36 @@ def generate_paired_tasks(files, chunk_size, parameters):
             )
 
 
-def write_summary_and_statistics(summary_results, parameters, output_dir):
+def write_summary_and_statistics(summary_results, parameters, output_dir, collector=None):
     """
-    Write per-input read counts, input files, and output files to 
-    results_summary.txt in output_dir.
+    Write results_summary.txt to output_dir.
 
-    The tab-separated file contains a "[Paired Reads]" table and an
-    "[Unpaired Reads]" table, each detailing input files, output files,
-    and read counts.
+    Without --stats (collector is None), the tab-separated file contains a
+    "[Paired Reads]" and an "[Unpaired Reads]" table, each detailing input
+    files, output files, and read counts.
+
+    With --stats, it is one tab-separated table with one row per input and
+    mate (unpaired inputs: mate "all"; paired and interleaved inputs: "R1"
+    and "R2"): input/output files, kept and rejected counts, length and
+    quality before and after trimming, one group of columns per trimming
+    module and one column per adapter sequence. Cells that do not apply
+    are "NA". See readzor.stats.build_summary_grid().
 
     Args:
-        summary_results (dict): Output of input_handler().
+        summary_results (dict): File statistics from input_handler().
         parameters (dict): Run parameters.
         output_dir (str): Directory in which to create the file.
+        collector (stats.StatsCollector | None): Read statistics from
+            input_handler() (--stats), or None.
 
     Returns:
         None
     """
+    summary_path = os.path.join(output_dir, "results_summary.txt")
+    if collector is not None:
+        S.write_summary(summary_path, summary_results, collector, display_name=basename_file)
+        return
+
     paired_data = []
     unpaired_data = []
     
@@ -555,8 +587,6 @@ def write_summary_and_statistics(summary_results, parameters, output_dir):
                 stats["rejected_R2"],
             ))
             
-    summary_path = os.path.join(output_dir, "results_summary.txt")
-    
     with open(summary_path, "w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f, delimiter="\t")
         

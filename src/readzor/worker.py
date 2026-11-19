@@ -6,6 +6,7 @@ from isal import igzip
 import numpy as np
 
 from readzor import constants
+from readzor import stats as S
 from readzor.constants import PHRED33_TO_64, PHRED64_TO_33
 from readzor.arrays import average_quality_batch, qual_to_array, seq_to_array
 from readzor.fastq_io import parse_blob, validate_fastq
@@ -16,21 +17,23 @@ def build_pipeline(parameters, read_direction=None):
     """
     Build the list of enabled trimming and filtering modules.
 
-    Each returned callable takes (sequence_arr, quality_arr,
+    Each entry is a (name, callable) pair. The name labels the module in the
+    --stats output. The callable takes (sequence_arr, quality_arr,
     chunk_padding_bool, row_tilde_count, padding_mask_bool) for one chunk
     and returns a (left, right) pair of per-read boundary arrays, describing
-    the [left, right) window of bases that module would keep. Callers merge
+    the [left, right) window of bases that module would keep (adapter
+    trimming returns a third element with adapter hits for --stats). Callers merge
     all windows by taking the largest left and smallest right boundary per
     read, so the order of the modules does not affect the result.
 
-    Modules included, when enabled in ``parameters``:
-      - k-mer complexity filter ("kmer_filter_flag")
-      - homopolymer end trimming ("poly_filter_flag")
-      - adapter trimming ("adapter_filter_flag")
-      - quality-dependent end trimming ("endqual_filter_flag")
-      - input average-quality filter ("minimum_average_qual_pre" > 0)
-      - sliding-window quality trimming ("slider_filter_flag")
-      - set-length end trimming ("cut_flag")
+    Modules included, when enabled in ``parameters`` (name in brackets):
+      - k-mer complexity filter ("kmer_filter_flag") [kmer]
+      - homopolymer end trimming ("poly_filter_flag") [poly]
+      - adapter trimming ("adapter_filter_flag") [adapter]
+      - quality-dependent end trimming ("endqual_filter_flag") [endqual]
+      - input average-quality filter ("minimum_average_qual_pre" > 0) [avgqual_pre]
+      - sliding-window quality trimming ("slider_filter_flag") [slider]
+      - set-length end trimming ("cut_flag") [cut]
     Overlap trimming for paired reads is not part of this list; it is
     computed per pair and added separately in finish_reads().
 
@@ -43,33 +46,34 @@ def build_pipeline(parameters, read_direction=None):
             Defaults to None.
 
     Returns:
-        list[callable]: The enabled modules; empty if none are enabled.
+        list[tuple[str, callable]]: The enabled modules; empty if none are
+            enabled.
     """
     pipeline = []
     #sequence_based
     if parameters.get("kmer_filter_flag"):
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: kmer_complexity_scan(seq, chunk_padding_bool, padding_mask_bool, kmer=parameters["kmer_size"], low_complex_cutoff=parameters["kmer_cutoff"], allow_n=parameters["allow_n_kmer"]))
+        pipeline.append(("kmer", lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: kmer_complexity_scan(seq, chunk_padding_bool, padding_mask_bool, kmer=parameters["kmer_size"], low_complex_cutoff=parameters["kmer_cutoff"], allow_n=parameters["allow_n_kmer"])))
     if parameters.get("poly_filter_flag"):
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: homopolymer_nucleotide_trimming(seq, padding_mask_bool, row_tilde_count, chunk_padding_bool, poly_length_start=parameters["poly_length_start"], poly_length_end=parameters["poly_length_end"], poly_bases_start=parameters["poly_bases_start"], poly_bases_end=parameters["poly_bases_end"]))
+        pipeline.append(("poly", lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: homopolymer_nucleotide_trimming(seq, padding_mask_bool, row_tilde_count, chunk_padding_bool, poly_length_start=parameters["poly_length_start"], poly_length_end=parameters["poly_length_end"], poly_bases_start=parameters["poly_bases_start"], poly_bases_end=parameters["poly_bases_end"])))
     if parameters.get("adapter_filter_flag"): 
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: adapter_trimming(seq, chunk_padding_bool, row_tilde_count, adapter_sequences=parameters["adapter_sequences"], mismatches=parameters["adapter_mismatch"], adapter_seed=parameters["adapter_seed"], adapter_per_read = parameters["adapter_per_read"], read_direction=read_direction, adapter_group=None if parameters.get("adapter_excl") else parameters.get("adapter_group")))
+        pipeline.append(("adapter", lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: adapter_trimming(seq, chunk_padding_bool, row_tilde_count, adapter_sequences=parameters["adapter_sequences"], mismatches=parameters["adapter_mismatch"], adapter_seed=parameters["adapter_seed"], adapter_per_read = parameters["adapter_per_read"], read_direction=read_direction, adapter_group=None if parameters.get("adapter_excl") else parameters.get("adapter_group"))))
         
     #quality_based
     if parameters.get("endqual_filter_flag"):
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: trim_ends_quality(qual, chunk_padding_bool, row_tilde_count, padding_mask_bool, endqual_min_start=parameters["endqual_min_start"], endqual_min_end=parameters["endqual_min_end"]))
+        pipeline.append(("endqual", lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: trim_ends_quality(qual, chunk_padding_bool, row_tilde_count, padding_mask_bool, endqual_min_start=parameters["endqual_min_start"], endqual_min_end=parameters["endqual_min_end"])))
     if parameters.get("minimum_average_qual_pre") > 0:
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: average_quality_filter_wrapper(qual, chunk_padding_bool, row_tilde_count, min_avg_qual=parameters["minimum_average_qual_pre"]))
+        pipeline.append(("avgqual_pre", lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: average_quality_filter_wrapper(qual, chunk_padding_bool, row_tilde_count, min_avg_qual=parameters["minimum_average_qual_pre"])))
     if parameters.get("slider_filter_flag"):
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: sliding_window_quality(qual, chunk_padding_bool, padding_mask_bool, row_tilde_count, slider_quality=parameters["slider_quality"], slider_window=parameters["slider_window"], slider_step=parameters["slider_step"]))
+        pipeline.append(("slider", lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: sliding_window_quality(qual, chunk_padding_bool, padding_mask_bool, row_tilde_count, slider_quality=parameters["slider_quality"], slider_window=parameters["slider_window"], slider_step=parameters["slider_step"])))
 
     #length_based
     if parameters.get("cut_flag"):
-        pipeline.append(lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: cut_set_ends(seq, chunk_padding_bool, row_tilde_count, cut_start=parameters["cut_start"], cut_end=parameters["cut_end"]))
+        pipeline.append(("cut", lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: cut_set_ends(seq, chunk_padding_bool, row_tilde_count, cut_start=parameters["cut_start"], cut_end=parameters["cut_end"])))
 
     return pipeline
 
 
-def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_output, gzip_level, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, parameters):
+def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_output, gzip_level, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, parameters, stats=None):
     """
     Validate, trim, filter and format one chunk of unpaired FASTQ reads.
 
@@ -115,6 +119,8 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
         parameters (dict): Run parameters, used to build the trimming
             pipeline and for N-filtering, input length limits,
             MGI-to-Illumina header conversion and Phred re-encoding.
+        stats (dict | None): Read statistics for this chunk (--stats, see
+            readzor.stats), filled in place. None to skip collection.
 
     Returns:
         tuple[bytes, int, int, bytes | list]: A tuple containing:
@@ -144,6 +150,8 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
             rejected += 1
             if write_rejected:
                 rejected_reads.append(b"\n".join((header, sequence, plus, quality)) + b"\n")
+    if stats is not None:
+        S.add_invalid(stats, rejected)
     if not valid_headers:
         rejected_data = b"".join(rejected_reads) if write_rejected else []
         if gzip_output and rejected_data:
@@ -157,10 +165,14 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
     n_reads, length = sequence_arr.shape
     left_list = [np.zeros(n_reads, dtype=np.int8)]
     right_list = [np.full(n_reads, length, dtype=np.int32) - row_tilde_count]
-    for step in build_pipeline(parameters):
-        left, right = step(sequence_arr, quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool)
-        left_list.append(left)
-        right_list.append(right)
+    module_names = []
+    for name, step in build_pipeline(parameters):
+        out = step(sequence_arr, quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool)
+        left_list.append(out[0])
+        right_list.append(out[1])
+        module_names.append(name)
+        if stats is not None and len(out) > 2:
+            S.collect_adapter_hits(stats, out[2]["adapters"], out[2]["hit_index"])
     lefts = np.maximum.reduce(left_list)
     rights = np.minimum.reduce(right_list)
     if (min_length_output is not None or max_length_output is not None
@@ -188,6 +200,10 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
     else:
         qual_mask = np.ones(n_reads, dtype=bool)
     keep_mask = length_mask & qual_mask
+    if stats is not None:
+        S.collect_input(stats, quality_arr, raw_lengths)
+        S.collect_modules(stats, module_names, left_list[1:], right_list[1:], raw_lengths, lefts, rights)
+        S.collect_output(stats, quality_arr, lefts, rights, keep_mask)
     if parameters["phred_out"] == 33 and phred_offset == 64:
         qual_table = PHRED64_TO_33
     elif parameters["phred_out"] == 64 and phred_offset == 33:
@@ -220,7 +236,7 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
     return results, len_results, rejected, rejected_reads
 
 
-def prepare_reads(records, phred_offset, write_rejected, parameters):
+def prepare_reads(records, phred_offset, write_rejected, parameters, stats=None):
     """
     Validate one mate's batch of FASTQ records and build the arrays every
     later step needs. Runs once per mate per chunk.
@@ -236,6 +252,8 @@ def prepare_reads(records, phred_offset, write_rejected, parameters):
         write_rejected (bool): If True, also collect invalid records.
         parameters (dict): Run parameters (N-filtering, input length
             limits, MGI-to-Illumina header conversion).
+        stats (dict | None): Read statistics of this mate (--stats); the
+            invalid-record count is added to it. None to skip.
 
     Returns:
         tuple[dict | None, int, list[bytes]]:
@@ -269,6 +287,8 @@ def prepare_reads(records, phred_offset, write_rejected, parameters):
             rejected += 1
             if write_rejected:
                 rejected_reads.append(b"\n".join((header, sequence, plus, quality)) + b"\n")
+    if stats is not None:
+        S.add_invalid(stats, rejected)
     if not valid_headers:
         return None, rejected, rejected_reads
     if parameters["mgi_convert_flag"]:
@@ -330,7 +350,7 @@ def paired_overlap_cutoffs(batch_1, batch_2, parameters):
     return (left_1, right_1), (left_2, right_2)
 
 
-def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, overlap_cutoffs, parameters, read_direction=None, chunk_length = 0):
+def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, overlap_cutoffs, parameters, read_direction=None, chunk_length = 0, stats=None):
     """
     Trim and length/quality-filter one prepared batch (one mate of a paired
     chunk) and format the survivors, placed at their record position in the
@@ -363,6 +383,8 @@ def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_outp
             Defaults to None.
         chunk_length (int): Number of records in the original chunk
             (valid and invalid). Defaults to 0.
+        stats (dict | None): Read statistics of this mate (--stats), filled
+            in place. None to skip collection. Defaults to None.
 
     Returns:
         tuple[list[bytes | None], int, list[bytes]]:
@@ -386,14 +408,19 @@ def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_outp
     n_reads, length = sequence_arr.shape
     left_list = [np.zeros(n_reads, dtype=np.int8)]
     right_list = [np.full(n_reads, length, dtype=np.int32) - row_tilde_count]
-    for step in build_pipeline(parameters, read_direction):
-        left, right = step(sequence_arr, quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool)
-        left_list.append(left)
-        right_list.append(right)
+    module_names = []
+    for name, step in build_pipeline(parameters, read_direction):
+        out = step(sequence_arr, quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool)
+        left_list.append(out[0])
+        right_list.append(out[1])
+        module_names.append(name)
+        if stats is not None and len(out) > 2:
+            S.collect_adapter_hits(stats, out[2]["adapters"], out[2]["hit_index"])
     if overlap_cutoffs is not None:
         overlap_left, overlap_right = overlap_cutoffs
         left_list.append(overlap_left)
         right_list.append(overlap_right)
+        module_names.append("overlap")
     lefts = np.maximum.reduce(left_list)
     rights = np.minimum.reduce(right_list)
     if (min_length_output is not None or max_length_output is not None
@@ -423,6 +450,10 @@ def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_outp
     else:
         qual_mask = np.ones(n_reads, dtype=bool)
     keep_mask = length_mask & qual_mask
+    if stats is not None:
+        S.collect_input(stats, quality_arr, raw_lengths)
+        S.collect_modules(stats, module_names, left_list[1:], right_list[1:], raw_lengths, lefts, rights)
+        S.collect_output(stats, quality_arr, lefts, rights, keep_mask)
     if parameters["phred_out"] == 33 and phred_offset == 64:
         qual_table = PHRED64_TO_33
     elif parameters["phred_out"] == 64 and phred_offset == 33:
@@ -444,7 +475,7 @@ def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_outp
     return survivors, rejected, rejected_reads
 
 
-def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gzip_level, discard_singles, parameters):
+def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gzip_level, discard_singles, parameters, mate_stats=None):
     """
     Trim and filter one chunk of paired reads, then sort the survivors into
     intact pairs and orphaned singletons.
@@ -473,6 +504,8 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
             (their counts are still reported).
         parameters (dict): Run parameters, including "interleaved_out",
             "write_rejected", "overlap_filter_flag" and all module settings.
+        mate_stats (dict | None): {"R1": stats, "R2": stats} read
+            statistics (--stats), filled in place. None to skip collection.
 
     Returns:
         tuple: An 11-element tuple containing:
@@ -506,13 +539,15 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
     n_chunk = len(chunk1)
     if n_chunk != len(chunk2):
         raise ValueError("R1/R2 chunks have different numbers of reads.")
-    batch_1, invalid_1, rejected_R1 = prepare_reads(chunk1, phred_offset_1, write_rejected = parameters["write_rejected"], parameters = parameters)
-    batch_2, invalid_2, rejected_R2 = prepare_reads(chunk2, phred_offset_2, write_rejected = parameters["write_rejected"], parameters = parameters)
+    stats_1 = mate_stats["R1"] if mate_stats is not None else None
+    stats_2 = mate_stats["R2"] if mate_stats is not None else None
+    batch_1, invalid_1, rejected_R1 = prepare_reads(chunk1, phred_offset_1, write_rejected = parameters["write_rejected"], parameters = parameters, stats = stats_1)
+    batch_2, invalid_2, rejected_R2 = prepare_reads(chunk2, phred_offset_2, write_rejected = parameters["write_rejected"], parameters = parameters, stats = stats_2)
     overlap_1 = overlap_2 = None
     if parameters["overlap_filter_flag"] and batch_1 is not None and batch_2 is not None:
         overlap_1, overlap_2 = paired_overlap_cutoffs(batch_1, batch_2, parameters)
-    survivors_1, filtered_1, filtered_R1 = finish_reads(batch_1, phred_offset_1, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_1, read_direction="read_1", parameters = parameters, chunk_length = n_chunk)
-    survivors_2, filtered_2, filtered_R2 = finish_reads(batch_2, phred_offset_2, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_2, read_direction="read_2", parameters = parameters, chunk_length = n_chunk)
+    survivors_1, filtered_1, filtered_R1 = finish_reads(batch_1, phred_offset_1, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_1, read_direction="read_1", parameters = parameters, chunk_length = n_chunk, stats = stats_1)
+    survivors_2, filtered_2, filtered_R2 = finish_reads(batch_2, phred_offset_2, minimum_average_qual_post = parameters["minimum_average_qual_post"], min_length_output = parameters["min_length_output"], max_length_output = parameters["max_length_output"], min_length_output_perc = parameters["min_length_output_perc"], max_length_output_perc = parameters["max_length_output_perc"], write_rejected = parameters["write_rejected"], overlap_cutoffs = overlap_2, read_direction="read_2", parameters = parameters, chunk_length = n_chunk, stats = stats_2)
     rejected_1 = invalid_1 + filtered_1
     rejected_2 = invalid_2 + filtered_2
     rejected_R1 = rejected_R1 + filtered_R1
@@ -572,7 +607,7 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
     return paired_out_1, paired_out_2, singles_out_1, singles_out_2, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2, rejected_R1, rejected_R2
 
 
-def process_unpaired_task_flat(task, parameters):
+def process_unpaired_task_flat(task, parameters, mate_stats=None):
     """
     Worker wrapper for an unpaired task: parses the task's blob
     (parse_blob()), runs process_unpaired_chunk() on it and tags the result
@@ -581,6 +616,8 @@ def process_unpaired_task_flat(task, parameters):
     Args:
         task (dict): An "unpaired" task from generate_unpaired_tasks().
         parameters (dict): Run parameters.
+        mate_stats (dict | None): {"all": stats} read statistics (--stats),
+            or None.
 
     Returns:
         tuple: (type, filepath, chunk_results, kept, rejected, rejected_reads),
@@ -599,12 +636,13 @@ def process_unpaired_task_flat(task, parameters):
         min_length_output_perc = parameters["min_length_output_perc"],
         max_length_output_perc =parameters["max_length_output_perc"],
         write_rejected= parameters["write_rejected"],
-        parameters=parameters
+        parameters=parameters,
+        stats=mate_stats["all"] if mate_stats is not None else None
     )
     return task["type"], task["filepath"], chunk_results, kept, rejected, rejected_reads
 
 
-def process_paired_task_flat(task, parameters):
+def process_paired_task_flat(task, parameters, mate_stats=None):
     """
     Worker wrapper for a paired task (two-file or interleaved): parses the
     task's blob(s) (parse_blob()), runs process_paired_chunk() on the R1/R2
@@ -616,6 +654,8 @@ def process_paired_task_flat(task, parameters):
         task (dict): A "paired" task from generate_paired_tasks() or
             generate_unpaired_tasks(filetype="interleaved").
         parameters (dict): Run parameters.
+        mate_stats (dict | None): {"R1": stats, "R2": stats} read
+            statistics (--stats), or None.
 
     Returns:
         tuple: (type, file1, file2, paired_out_1, paired_out_2,
@@ -640,7 +680,8 @@ def process_paired_task_flat(task, parameters):
         gzip_output = task["gzip_output"],
         gzip_level = task["gzip_level"],
         discard_singles=task["discard_singles"],
-        parameters=parameters
+        parameters=parameters,
+        mate_stats=mate_stats
     )
     return task["type"], file1, file2, paired_out_1, paired_out_2, R1_singles_out, R2_singles_out, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2, rejected_R1, rejected_R2
 
@@ -672,17 +713,24 @@ def unified_worker(task):
 
     Returns:
         tuple: The result of process_paired_task_flat() or
-            process_unpaired_task_flat().
+            process_unpaired_task_flat(), with one more element appended:
+            the chunk's read statistics (see readzor.stats.new_chunk_report())
+            with --stats, otherwise None.
 
     Raises:
         ValueError: If the task type is unknown or missing.
     """
     task_type = task.get("type")
     parameters = constants.WORKER_PARAMETERS
-
+    report = None
     if task_type == "paired":
-        return process_paired_task_flat(task, parameters=parameters)
+        if parameters["stats"]:
+            report = S.new_chunk_report(("R1", "R2"))
+        result = process_paired_task_flat(task, parameters=parameters, mate_stats=report["mates"] if report else None)
     elif task_type == "unpaired":
-        return process_unpaired_task_flat(task, parameters=parameters)
+        if parameters["stats"]:
+            report = S.new_chunk_report(("all",))
+        result = process_unpaired_task_flat(task, parameters=parameters, mate_stats=report["mates"] if report else None)
     else:
         raise ValueError(f"Unknown or missing task type: {task_type}")
+    return result + (report,)
