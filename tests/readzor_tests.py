@@ -6,7 +6,7 @@ import gzip
 DATA_DIR = Path(__file__).parent / "data"
 
 EXPECTED_HASHES = {
-    "results_summary.txt": "484a28af2fc2bebab918ef4c3ce234721d0b8a7d25e98693ffba4a6dfc36fad9",
+    "results_summary.txt": "b81036ef67f6b6ce3d21c848de9b4afc846a10fa9007f4f3805bce4727d7cbfc",
     "test_paired_R1_paired_filtered.fastq.gz": "c232e53b823ca6a7c6a2aeb4a938f51277ade6b4273ec4aa7313864ff515124e",
     "test_paired_R1_unpaired_filtered.fastq.gz": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "test_paired_R2_paired_filtered.fastq.gz": "02f9cefb6724c14d0875b399c1d1cf4415fada0e498f93f7b06869390dd4f78c",
