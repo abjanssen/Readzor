@@ -1,2 +1,4 @@
-from readzor import readzor
-readzor.main()
+from readzor.cli import main
+
+if __name__ == "__main__":
+    main()
