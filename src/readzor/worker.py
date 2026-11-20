@@ -12,7 +12,6 @@ from readzor.arrays import average_quality_batch, qual_to_array, seq_to_array
 from readzor.fastq_io import parse_blob, validate_fastq
 from readzor.modules import adapter_trimming, adapter_trimming_overlap, average_quality_filter_wrapper, cut_set_ends, header_mgi_to_illumina, homopolymer_nucleotide_trimming, kmer_complexity_scan, sliding_window_quality, trim_ends_quality
 
-
 def build_pipeline(parameters, read_direction=None):
     """
     Build the list of enabled trimming and filtering modules.
@@ -71,7 +70,6 @@ def build_pipeline(parameters, read_direction=None):
         pipeline.append(("cut", lambda seq, qual, chunk_padding_bool, row_tilde_count, padding_mask_bool: cut_set_ends(seq, chunk_padding_bool, row_tilde_count, cut_start=parameters["cut_start"], cut_end=parameters["cut_end"])))
 
     return pipeline
-
 
 def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_output, gzip_level, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, parameters, stats=None):
     """
@@ -235,7 +233,6 @@ def process_unpaired_chunk(chunk, phred_offset, minimum_average_qual_post, gzip_
             raise RuntimeError(f"Compression failed inside worker: {str(e)}") from None
     return results, len_results, rejected, rejected_reads
 
-
 def prepare_reads(records, phred_offset, write_rejected, parameters, stats=None):
     """
     Validate one mate's batch of FASTQ records and build the arrays every
@@ -311,7 +308,6 @@ def prepare_reads(records, phred_offset, write_rejected, parameters, stats=None)
     }
     return batch, rejected, rejected_reads
 
-
 def paired_overlap_cutoffs(batch_1, batch_2, parameters):
     """
     Run adapter_trimming_overlap() on the reads of a chunk that are valid in
@@ -348,7 +344,6 @@ def paired_overlap_cutoffs(batch_1, batch_2, parameters):
     left_1[rows_1], right_1[rows_1] = l1, r1
     left_2[rows_2], right_2[rows_2] = l2, r2
     return (left_1, right_1), (left_2, right_2)
-
 
 def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_output, max_length_output, min_length_output_perc, max_length_output_perc, write_rejected, overlap_cutoffs, parameters, read_direction=None, chunk_length = 0, stats=None):
     """
@@ -473,7 +468,6 @@ def finish_reads(batch, phred_offset, minimum_average_qual_post, min_length_outp
             qual_out = qual_out.translate(qual_table)
         survivors[original_index[i]] = b"\n".join((valid_headers[i], seq_out, valid_pluses[i], qual_out)) + b"\n"
     return survivors, rejected, rejected_reads
-
 
 def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gzip_level, discard_singles, parameters, mate_stats=None):
     """
@@ -606,7 +600,6 @@ def process_paired_chunk(chunks, phred_offset_1, phred_offset_2, gzip_output, gz
             raise RuntimeError(f"Compression failed inside worker: {str(e)}") from None
     return paired_out_1, paired_out_2, singles_out_1, singles_out_2, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2, rejected_R1, rejected_R2
 
-
 def process_unpaired_task_flat(task, parameters, mate_stats=None):
     """
     Worker wrapper for an unpaired task: parses the task's blob
@@ -640,7 +633,6 @@ def process_unpaired_task_flat(task, parameters, mate_stats=None):
         stats=mate_stats["all"] if mate_stats is not None else None
     )
     return task["type"], task["filepath"], chunk_results, kept, rejected, rejected_reads
-
 
 def process_paired_task_flat(task, parameters, mate_stats=None):
     """
@@ -685,7 +677,6 @@ def process_paired_task_flat(task, parameters, mate_stats=None):
     )
     return task["type"], file1, file2, paired_out_1, paired_out_2, R1_singles_out, R2_singles_out, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2, rejected_R1, rejected_R2
 
-
 def worker_initializer(parameters):
     """
     Pool initializer: runs once in each worker process at startup.
@@ -699,7 +690,6 @@ def worker_initializer(parameters):
     """
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     constants.WORKER_PARAMETERS = parameters
-
 
 def unified_worker(task):
     """

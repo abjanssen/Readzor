@@ -18,7 +18,6 @@ from readzor.runner import input_handler, log_parameters, write_summary_and_stat
 
 logger = logging.getLogger(__name__)
 
-
 def group_paired_input_into_pairs(files, parser):
     """
     Group a flat list of paired-end FASTQ files into (R1, R2) tuples.
@@ -51,7 +50,6 @@ def group_paired_input_into_pairs(files, parser):
         pairs.append(tuple(files[i:i+2]))
     return pairs
 
-
 def worker_determination(threads=None):
     """
     Determine the number of worker processes for the multiprocessing pool.
@@ -83,7 +81,6 @@ def worker_determination(threads=None):
                 pass
     return max(1, (os.cpu_count() or 1) - 1)
 
-
 def create_folder_structure(output_dir):
     """
     Create a new, uniquely named results folder inside output_dir.
@@ -109,7 +106,6 @@ def create_folder_structure(output_dir):
         except FileExistsError:
             created_output_dir = f"{base}_{n}"
             n += 1
-
 
 class CleanHelpFormatter(argparse.HelpFormatter):
     """
@@ -170,7 +166,6 @@ class CleanHelpFormatter(argparse.HelpFormatter):
         help_text = re.sub(r"\n\n(?=  -)", "\n", help_text)
         return help_text
 
-
 def print_adapters():
     """
     Prints all built-in adapter groups and their sequences to stdout,
@@ -185,7 +180,6 @@ def print_adapters():
         for name, sequence in entries:
             print(f"    {name:<{name_width}} {sequence}")
         print()
-
 
 def print_full_auto_help(parser):
     """
@@ -220,7 +214,6 @@ def print_full_auto_help(parser):
         for option, value in rows:
             print(f"    {option:<28} {value}")
         print()
-
 
 def parse_args():
     """
@@ -380,7 +373,7 @@ def parse_args():
     )  
     output_group.add_argument(
         "--stats", action="store_true", default=False,
-        help="[FLAG] Write detailed statistics to results_summary.txt instead of the standard summary: one row per input file and mate, with read counts, read length and quality before and after trimming, reads and bases trimmed per module, and reads per adapter sequence. Slightly increases processing time. Default: off."
+        help="[FLAG] Write detailed summary read trimming statistics. Default: off."
     )
 
     general_quality_group = parser.add_argument_group(
@@ -840,7 +833,6 @@ def parse_args():
     
     return parameters
 
-
 def print_final_message(stdout):
     """
     Print Readzor's completion message (a citation request and a randomly
@@ -885,7 +877,6 @@ def print_final_message(stdout):
     file_only_logger.info(citation)
     file_only_logger.info(sign_off)
 
-
 def main():
     """
     Readzor entry point.
@@ -924,7 +915,6 @@ def main():
         sys.exit(130)
     finally:
         cleanup_stdin_temp_files()
-
 
 def test_run(parameters):
     """

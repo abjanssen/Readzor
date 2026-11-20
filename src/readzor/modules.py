@@ -11,7 +11,6 @@ from readzor.constants import COMP_TABLE
 from readzor.adapter_setup import select_adapters_for_read
 from readzor.arrays import average_quality_batch
 
-
 def kmer_complexity_scan(sequence_arr, chunk_padding_bool, padding_mask_bool, kmer, low_complex_cutoff, allow_n):
     """
     Low-complexity filter: flag reads with too few distinct k-mers for removal.
@@ -140,7 +139,6 @@ def kmer_complexity_scan(sequence_arr, chunk_padding_bool, padding_mask_bool, km
     second_array = np.where(global_passed, length, 0).astype(np.int32)
     return np.zeros(n_reads, dtype=np.int8), second_array
 
-
 def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, row_tilde_count, chunk_padding_bool, poly_length_start, poly_length_end, poly_bases_start, poly_bases_end):
     """
     Homopolymer trimming: per-read boundaries that remove homopolymer runs
@@ -242,7 +240,6 @@ def homopolymer_nucleotide_trimming(sequence_arr, padding_mask_bool, row_tilde_c
                 right_cutoffs = np.minimum(right_cutoffs, base_right_cutoffs)
 
     return left_cutoffs, right_cutoffs
-
 
 def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_sequences, mismatches, adapter_seed, adapter_per_read, read_direction=None, adapter_group=None):
     """
@@ -461,7 +458,6 @@ def adapter_trimming(sequence_arr, chunk_padding_bool, row_tilde_count, adapter_
                     hit_index[improved] = adapter_idx
     return np.zeros(n_reads, dtype=np.int8), right_cutoffs, {"adapters": adapter_sequences, "hit_index": hit_index}
 
-
 def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_tilde_count_1, chunk_padding_bool_2, row_tilde_count_2, min_overlap, max_mismatch, max_mismatch_frac):
     """
     Overlap-based adapter trimming for read pairs, independent of the
@@ -577,7 +573,6 @@ def adapter_trimming_overlap(seq_arr_1, seq_arr_2, chunk_padding_bool_1, row_til
     right_cutoffs_2 = np.where(found, best_insert, real_lengths_2).astype(np.int32)
     return ((np.zeros(n_reads_1, dtype=np.int8), right_cutoffs_1), (np.zeros(n_reads_2, dtype=np.int8), right_cutoffs_2))
 
-
 def trim_ends_quality(quality_arr, chunk_padding_bool, row_tilde_count, padding_mask_bool, endqual_min_start, endqual_min_end):
     """
     Quality-dependent end trimming: per-read boundaries that trim each end
@@ -652,7 +647,6 @@ def trim_ends_quality(quality_arr, chunk_padding_bool, row_tilde_count, padding_
 
     return start_cutoffs.astype(np.int32), end_cutoffs.astype(np.int32)
 
-
 def average_quality_filter_wrapper(quality_arr, chunk_padding_bool, row_tilde_count, min_avg_qual):
     """
     Whole-read average-quality filter (--min-average-qual-pre), in the
@@ -687,7 +681,6 @@ def average_quality_filter_wrapper(quality_arr, chunk_padding_bool, row_tilde_co
     passed = avg_quals >= min_avg_qual
     right_cutoffs = np.where(passed, real_lengths, 0).astype(np.int32)
     return np.zeros(n_reads, dtype=np.int8), right_cutoffs
-
 
 def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, row_tilde_count, slider_quality, slider_window, slider_step):
     """
@@ -804,7 +797,6 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
 
         bad_positions |= padding_mask_bool
 
-    # ... everything from `good_positions = ~bad_positions` onward is unchanged
     good_positions = ~bad_positions
     no_bad = ~bad_positions.any(axis=1)
     all_bad = bad_positions.all(axis=1)
@@ -841,7 +833,6 @@ def sliding_window_quality(quality_arr, chunk_padding_bool, padding_mask_bool, r
         right_cutoffs[too_short] = real_lengths[too_short].astype(np.int32)
 
     return left_cutoffs, right_cutoffs
-
 
 def cut_set_ends(sequence_arr, chunk_padding_bool, row_tilde_count, cut_start, cut_end):
     """
@@ -887,7 +878,6 @@ def cut_set_ends(sequence_arr, chunk_padding_bool, row_tilde_count, cut_start, c
         end_positions = real_length - cut_end
         cut_start_pos = np.where(cut_start > end_positions, end_positions, cut_start)
         return np.full(n_reads, cut_start_pos, dtype=np.int32), end_positions
-
 
 def header_mgi_to_illumina(mgi_header, barcode5, barcode7, instrument, run):
     """

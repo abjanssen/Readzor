@@ -5,7 +5,6 @@ import re
 
 from readzor.constants import DEFAULT_ADAPTERS
 
-
 def load_adapters_from_arg(value):
     """
     Load adapter sequences given on the command line, either as a FASTA
@@ -39,7 +38,6 @@ def load_adapters_from_arg(value):
         if not re.fullmatch(r"[ACGTN]+", s):
             raise ValueError(f"'{s}' is neither an existing FASTA file nor a valid sequence.")
     return [(f"custom_{i}", s) for i, s in enumerate(seqs, 1)]
-
 
 def load_adapters_from_fasta(fasta_file):
     """
@@ -88,7 +86,6 @@ def load_adapters_from_fasta(fasta_file):
             result.append((name, joined_sequence))
             header = sequence
         return result
-
 
 def select_adapters_for_read(adapter_sequences, adapter_group, read_direction,adapter_per_read=None):
     """

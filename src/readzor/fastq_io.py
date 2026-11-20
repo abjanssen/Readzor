@@ -16,7 +16,6 @@ from readzor.constants import NUCL_ATCG, NUCL_ATCGN, PHRED_ALLOWED
 
 logger = logging.getLogger(__name__)
 
-
 def resolve_stdin_input(parser=None):
     """
     Spool FASTQ data piped into stdin to a temporary file.
@@ -56,7 +55,6 @@ def resolve_stdin_input(parser=None):
 
     return tmp_path
 
-
 def cleanup_stdin_temp_files():
     """
     Delete all temporary files created by resolve_stdin_input() and clear
@@ -68,7 +66,6 @@ def cleanup_stdin_temp_files():
         except OSError:
             pass
     constants.STDIN_TEMP_FILES.clear()
-
 
 def common_name_parts(filenames):
     """
@@ -121,7 +118,6 @@ def common_name_parts(filenames):
         output = stems[0]    
     return output
 
-
 def basename_file(filepath):
     """
     Extract the sample name from a FASTQ filepath by removing directory and extension.
@@ -145,7 +141,6 @@ def basename_file(filepath):
     reduced_filename = re.sub(r'\.(fastq|fq)(\.gzip|\.gz)?$', '', filename, flags=re.IGNORECASE)
     return reduced_filename
 
-
 def is_gz_file(filepath):
     """
     Determine if a file is gzip-compressed by inspecting its magic bytes.
@@ -166,7 +161,6 @@ def is_gz_file(filepath):
             return file.read(2) == b'\x1f\x8b'
     except (IOError, OSError):
         return False
-
 
 def lazy_fastq_blobs(filepath, chunk_size, buffer_size = 2*1024*1024):
     """
@@ -245,7 +239,6 @@ def lazy_fastq_blobs(filepath, chunk_size, buffer_size = 2*1024*1024):
             blob = tail + b"\n" if usable == n_lines else tail[:int(tail_newlines[usable - 1]) + 1]
             yield blob, usable // 4
 
-
 def parse_blob(blob):
     """
     Split a raw FASTQ blob from lazy_fastq_blobs() into records. Runs in
@@ -267,7 +260,6 @@ def parse_blob(blob):
         blob = blob.replace(b"\r", b"")
     line = iter(blob.split(b"\n"))
     return zip(line, line, line, line)
-
 
 def find_paired_files(filepaths):
     """
@@ -397,7 +389,6 @@ def find_paired_files(filepaths):
 
     return pairs, interleaved, unpaired
 
-
 def read_info_from_header(header):
     """
     Extract the base read ID and read number from a FASTQ header.
@@ -439,7 +430,6 @@ def read_info_from_header(header):
         else:
             base_id = header
     return base_id, read_num
-
 
 def detect_phred_offset(filepath, reads_for_phred_offset, phred_offset):
     """
@@ -492,7 +482,6 @@ def detect_phred_offset(filepath, reads_for_phred_offset, phred_offset):
         f"Please specify the Phred offset (33/64) manually using the --phred-offset option."
     )
 
-
 def validate_fastq(header, sequence, plus, quality, n_filter, min_length_input, max_length_input):
     """
     Check that a single FASTQ record is well-formed.
@@ -540,7 +529,6 @@ def validate_fastq(header, sequence, plus, quality, n_filter, min_length_input, 
     if quality.translate(None, PHRED_ALLOWED):
         return False
     return True
-
 
 def open_fastq_writer(filepath, output_dir, gzip_output):
     """

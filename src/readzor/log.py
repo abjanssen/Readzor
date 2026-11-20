@@ -11,7 +11,6 @@ from readzor.constants import VERSION
 logger = logging.getLogger("readzor")
 file_only_logger = logging.getLogger("readzor.file_only")
 
-
 class ProgressAwareStreamHandler(logging.StreamHandler):
     """
     A StreamHandler that clears any in-progress progress-bar line before
@@ -26,7 +25,6 @@ class ProgressAwareStreamHandler(logging.StreamHandler):
         if constants.ACTIVE_PROGRESS_TRACKER is not None:
             constants.ACTIVE_PROGRESS_TRACKER.clear_line()
         super().emit(record)
-
 
 def setup_logging(output_dir = None, verbose = False, parameters = None):
     """

@@ -19,7 +19,6 @@ from readzor.worker import unified_worker, worker_initializer
 
 logger = logging.getLogger(__name__)
 
-
 def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_files, output_dir, threads, chunk_size, show_progress, stdout, interleaved_out, write_rejected, discard_singles, parameters):
     """
     Top-level orchestrator: sort the inputs, open the output files, and run
@@ -353,7 +352,6 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
                 handle.close()
     return file_stats, collector
 
-
 def generate_unpaired_tasks(filepaths, chunk_size, parameters, filetype = None):
     """
     Lazily split unpaired or interleaved FASTQ files into worker tasks.
@@ -453,7 +451,6 @@ def generate_unpaired_tasks(filepaths, chunk_size, parameters, filetype = None):
         else:
             raise TypeError(f"file {filepath} returned filetype {filetype}, which is not recognized.")
 
-
 def generate_paired_tasks(files, chunk_size, parameters):
     """
     Lazily split paired-end file pairs into worker tasks.
@@ -535,7 +532,6 @@ def generate_paired_tasks(files, chunk_size, parameters):
                 os.path.basename(file1), os.path.basename(file2), elapsed,
             )
 
-
 def write_summary_and_statistics(summary_results, parameters, output_dir, collector=None):
     """
     Write results_summary.txt to output_dir.
@@ -600,7 +596,6 @@ def write_summary_and_statistics(summary_results, parameters, output_dir, collec
             f.write("[Unpaired Reads]\n")
             writer.writerow(["Input File", "Output File", "Kept", "Rejected"])
             writer.writerows(unpaired_data)
-
 
 def log_parameters(parameters):
     """
