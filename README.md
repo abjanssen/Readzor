@@ -277,21 +277,21 @@ To optimize the ratio between adapter sequences cut, and genomic bases lost, the
    </tr>
    <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarkingadapter_trimming/adapter_heatmap_adapter_recall.png" alt="Recall of adapter trimming."><br>
+      <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_adapter_recall.png" alt="Recall of adapter trimming."><br>
       <sub><b>Figure 1:</b> Recall.</sub>
     </td>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarkingadapter_trimming/adapter_heatmap_precision.png" alt="Precision of adapter trimming."><br>
+      <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_precision.png" alt="Precision of adapter trimming."><br>
       <sub><b>Figure 2:</b> Precision.</sub>
     </td>
   </tr>
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarkingadapter_trimming/adapter_heatmap_f1.png" alt="F1 score of adapter trimming"><br>
+      <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_f1.png" alt="F1 score of adapter trimming"><br>
       <sub><b>Figure 3:</b> F1 score.</sub>
     </td>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarkingadapter_trimming/adapter_heatmap_genomic_bases_lost.png" alt="Genomic bases lost of adapter trimming"><br>
+      <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_genomic_bases_lost.png" alt="Genomic bases lost of adapter trimming"><br>
       <sub><b>Figure 4:</b> Genomic bases lost.</sub>
     </td>
   </tr>
@@ -316,21 +316,21 @@ Using this approach, we observe that a minimum amount of 2 mismatches is needed 
    </tr>
    <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarkingadapter_trimming/overlap_mismatches_heatmap_adapter_recall.png" alt="Recall of adapter trimming."><br>
+      <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_adapter_recall.png" alt="Recall of adapter trimming."><br>
       <sub><b>Figure 1:</b> Recall (adapters successfully found).</sub>
     </td>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarkingadapter_trimming/overlap_mismatches_heatmap_precision.png" alt="Precision of adapter trimming."><br>
+      <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_precision.png" alt="Precision of adapter trimming."><br>
       <sub><b>Figure 2:</b> Precision (portion of removed bases that were from adapters).</sub>
     </td>
   </tr>
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarkingadapter_trimming/overlap_mismatches_heatmap_f1.png" alt="F1 score of adapter trimming"><br>
+      <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_f1.png" alt="F1 score of adapter trimming"><br>
       <sub><b>Figure 3:</b> F1 score (harmonic mean combining precision and recall).</sub>
     </td>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarkingadapter_trimming/overlap_mismatches_heatmap_genomic_bases_lost.png" alt="Genomic bases lost of adapter trimming"><br>
+      <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_genomic_bases_lost.png" alt="Genomic bases lost of adapter trimming"><br>
       <sub><b>Figure 4:</b> Genomic bases lost.</sub>
     </td>
   </tr>
@@ -346,25 +346,25 @@ Similarly, when the `--overlap-portion-mismatch` is isolated, we observe that re
   </tr>
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px;">
-      <img src="docs/benchmarkingadapter_trimming/overlap_portion_heatmap_adapter_recall.png" alt="Recall of adapter trimming."><br>
+      <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_adapter_recall.png" alt="Recall of adapter trimming."><br>
       <sub><b>Figure 1:</b> Recall (adapters successfully found).</sub>
     </td>
   </tr>
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px;">
-      <img src="docs/benchmarkingadapter_trimming/overlap_portion_heatmap_precision.png" alt="Precision of adapter trimming."><br>
+      <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_precision.png" alt="Precision of adapter trimming."><br>
       <sub><b>Figure 2:</b> Precision (portion of removed bases that were from adapters).</sub>
     </td>
   </tr>
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px;">
-      <img src="docs/benchmarkingadapter_trimming/overlap_portion_heatmap_f1.png" alt="F1 score of adapter trimming"><br>
+      <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_f1.png" alt="F1 score of adapter trimming"><br>
       <sub><b>Figure 3:</b> F1 score (harmonic mean combining precision and recall).</sub>
     </td>
   </tr>
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px;">
-      <img src="docs/benchmarkingadapter_trimming/overlap_portion_heatmap_genomic_bases_lost.png" alt="Genomic bases lost of adapter trimming"><br>
+      <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_genomic_bases_lost.png" alt="Genomic bases lost of adapter trimming"><br>
       <sub><b>Figure 4:</b> Genomic bases lost.</sub>
     </td>
   </tr>
@@ -385,21 +385,21 @@ As the combination of these two methods determine the allowed number of mismatch
   </tr>
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarkingadapter_trimming/overlap_length50_heatmap_adapter_recall.png" alt="Recall"><br>
+      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_adapter_recall.png" alt="Recall"><br>
       <sub><b>Figure 1:</b> Recall.</sub>
     </td>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarkingadapter_trimming/overlap_length50_heatmap_precision.png" alt="Precision"><br>
+      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_precision.png" alt="Precision"><br>
       <sub><b>Figure 2:</b> Precision.</sub>
     </td>
   </tr>
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarkingadapter_trimming/overlap_length50_heatmap_f1.png" alt="F1 score"><br>
+      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_f1.png" alt="F1 score"><br>
       <sub><b>Figure 3:</b> F1 score.</sub>
     </td>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarkingadapter_trimming/overlap_length50_heatmap_genomic_bases_lost.png" alt="Genomic bases lost"><br>
+      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_genomic_bases_lost.png" alt="Genomic bases lost"><br>
       <sub><b>Figure 4:</b> Genomic bases lost.</sub>
     </td>
   </tr>
@@ -527,7 +527,7 @@ When all modules were combined, processing took about 2.5× the baseline, or rou
    </tr>
    <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 100%;">
-      <img src="docs/benchmarkingresource_usage_modules/resource_usage_modules.png" alt="Processing time and peak memory usage per module."><br>
+      <img src="docs/benchmarking/resource_usage_modules/resource_usage_modules.png" alt="Processing time and peak memory usage per module."><br>
       <sub><b>Figure X:</b> Processing time and peak memory usage per Readzor module.</sub>
     </td>
   </tr>
@@ -558,7 +558,7 @@ Across comparable output file size (isal compression level `1` versus gzip compr
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 100%;">
-      <img src="docs/benchmarkingcompression_methods/compression_methods.png" alt="Compression benchmarking within Readzor."><br>
+      <img src="docs/benchmarking/compression_methods/compression_methods.png" alt="Compression benchmarking within Readzor."><br>
       <sub><b>Figure 1:</b> Isal compression is faster than gzip.</sub>
   </tr>
 </table>

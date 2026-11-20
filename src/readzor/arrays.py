@@ -1,9 +1,6 @@
 """Conversion of reads into numpy arrays, and array helpers."""
 
-
-
 import numpy as np
-
 
 def seq_to_array(sequence_list):
     """
@@ -51,7 +48,6 @@ def seq_to_array(sequence_list):
         chunk_padding_bool = bool(np.any(row_tilde_count > 0))
         return array, chunk_padding_bool, row_tilde_count, padding_mask_bool, sequence_arr_lengths, max_len, n_reads
 
-
 def qual_to_array(quality_list, phred_offset, chunk_padding_bool, padding_mask_bool, max_len, n_reads):
     """
     Convert a list of Phred quality strings into a 2D numeric numpy array,
@@ -83,7 +79,6 @@ def qual_to_array(quality_list, phred_offset, chunk_padding_bool, padding_mask_b
     joined = b''.join(padded)
     array = np.frombuffer(joined, dtype=np.int8).reshape(n_reads, max_len)
     return np.where(padding_mask_bool, array, array - phred_offset)
-
 
 def average_quality_batch(quality_arr, lefts, rights):
     """

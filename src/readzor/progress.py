@@ -11,7 +11,6 @@ from isal import igzip
 from readzor import constants
 from readzor.fastq_io import lazy_fastq_blobs, parse_blob
 
-
 def count_reads_estimated(filepath, sample_size=50, default_gzip_ratio=4, gzip_sample_bytes=50 * 1024 * 1024):
     """
     Estimate the number of reads in a FASTQ file.
@@ -76,7 +75,6 @@ def count_reads_estimated(filepath, sample_size=50, default_gzip_ratio=4, gzip_s
         estimated_uncompressed_size = file_size
 
     return max(1, round(estimated_uncompressed_size / bytes_per_read))
-
 
 class ProgressTracker:
     """

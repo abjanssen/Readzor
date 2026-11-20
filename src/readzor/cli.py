@@ -18,7 +18,6 @@ from readzor.runner import input_handler, log_parameters, write_summary_and_stat
 
 logger = logging.getLogger(__name__)
 
-
 def group_paired_input_into_pairs(files, parser):
     """
     Group a flat list of paired-end FASTQ files into (R1, R2) tuples.
@@ -51,7 +50,6 @@ def group_paired_input_into_pairs(files, parser):
         pairs.append(tuple(files[i:i+2]))
     return pairs
 
-
 def worker_determination(threads=None):
     """
     Determine the number of worker processes for the multiprocessing pool.
@@ -83,7 +81,6 @@ def worker_determination(threads=None):
                 pass
     return max(1, (os.cpu_count() or 1) - 1)
 
-
 def create_folder_structure(output_dir):
     """
     Create a new, uniquely named results folder inside output_dir.
@@ -109,7 +106,6 @@ def create_folder_structure(output_dir):
         except FileExistsError:
             created_output_dir = f"{base}_{n}"
             n += 1
-
 
 class CleanHelpFormatter(argparse.HelpFormatter):
     """
@@ -170,7 +166,6 @@ class CleanHelpFormatter(argparse.HelpFormatter):
         help_text = re.sub(r"\n\n(?=  -)", "\n", help_text)
         return help_text
 
-
 def print_adapters():
     """
     Prints all built-in adapter groups and their sequences to stdout,
@@ -185,7 +180,6 @@ def print_adapters():
         for name, sequence in entries:
             print(f"    {name:<{name_width}} {sequence}")
         print()
-
 
 def print_full_auto_help(parser):
     """
@@ -220,7 +214,6 @@ def print_full_auto_help(parser):
         for option, value in rows:
             print(f"    {option:<28} {value}")
         print()
-
 
 def parse_args():
     """
@@ -378,6 +371,10 @@ def parse_args():
         "--discard-singles", action="store_true", default=False,
         help="[FLAG] For paired and interleaved reads, single surviving reads will be discarded instead of written to a separate file. No effect on unpaired read filtering. Default: off."
     )  
+    output_group.add_argument(
+        "--stats", action="store_true", default=False,
+        help="[FLAG] Write detailed summary read trimming statistics. Default: off."
+    )
 
     general_quality_group = parser.add_argument_group(
         "General output filter options",
@@ -776,6 +773,7 @@ def parse_args():
     parameters["stdout"] = args.stdout
     parameters["interleaved_out"] = args.interleaved_out
     parameters["write_rejected"] = args.write_rejected
+    parameters["stats"] = args.stats
     parameters["adapter_group"] = (
         [name for name, _ in DEFAULT_ADAPTERS] if "all" in args.adapter_group
         else list(dict.fromkeys(args.adapter_group))
@@ -835,7 +833,6 @@ def parse_args():
     
     return parameters
 
-
 def print_final_message(stdout):
     """
     Print Readzor's completion message (a citation request and a randomly
@@ -880,7 +877,6 @@ def print_final_message(stdout):
     file_only_logger.info(citation)
     file_only_logger.info(sign_off)
 
-
 def main():
     """
     Readzor entry point.
@@ -889,8 +885,8 @@ def main():
     forkserver, otherwise spawn) and parses the command line. With
     --testrun, hands over to test_run(). Otherwise creates the timestamped
     results folder, starts file logging, logs all parameters, processes
-    all inputs (input_handler()), writes results_summary.txt and prints the
-    completion message. On Ctrl+C, exits with status 130. Temporary stdin
+    all inputs (input_handler()), writes results_summary.txt (with detailed
+    statistics if --stats is set) and prints the completion message. On Ctrl+C, exits with status 130. Temporary stdin
     files are always removed.
     """
     for method in ['fork', 'forkserver', 'spawn']:
@@ -908,8 +904,8 @@ def main():
         created_output_dir = create_folder_structure(parameters["output_dir"])
         setup_logging(output_dir = created_output_dir, verbose = parameters["verbose"], parameters = parameters)
         log_parameters(parameters)
-        summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"], discard_singles = parameters["discard_singles"], write_rejected = parameters["write_rejected"], parameters = parameters)
-        write_summary_and_statistics(summary_results, parameters, output_dir = created_output_dir)
+        summary_results, collector = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"], discard_singles = parameters["discard_singles"], write_rejected = parameters["write_rejected"], parameters = parameters)
+        write_summary_and_statistics(summary_results, parameters, output_dir = created_output_dir, collector = collector)
         logger.info("Analysis successfully completed!")
         print_final_message(stdout = parameters["stdout"])
     except KeyboardInterrupt:
@@ -919,7 +915,6 @@ def main():
         sys.exit(130)
     finally:
         cleanup_stdin_temp_files()
-
 
 def test_run(parameters):
     """
@@ -940,8 +935,8 @@ def test_run(parameters):
             created_output_dir = create_folder_structure(tmp_dir)
             setup_logging(output_dir = created_output_dir, verbose = True, parameters = parameters)
             log_parameters(parameters)
-            summary_results = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"],discard_singles = parameters["discard_singles"], write_rejected = parameters["write_rejected"], parameters = parameters)
-            write_summary_and_statistics(summary_results, parameters, output_dir = created_output_dir)
+            summary_results, collector = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"],discard_singles = parameters["discard_singles"], write_rejected = parameters["write_rejected"], parameters = parameters)
+            write_summary_and_statistics(summary_results, parameters, output_dir = created_output_dir, collector = collector)
     finally:
         cleanup_stdin_temp_files()
         logger.info("All files deleted.")

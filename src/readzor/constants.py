@@ -6,8 +6,7 @@ because ACTIVE_PROGRESS_TRACKER and WORKER_PARAMETERS are reassigned during a ru
 and a by-name import would keep the old value.
 """
 
-# ---- Constants (never modified) ----
-VERSION = "0.7.2"
+VERSION = "0.7.3"
 DEFAULT_ADAPTERS = [
     ["AmpliSeq", [
         ["AmpliSeq", "CTGTCTCTTATACACATCT"]  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/AmpliSeq-Sequences.htm
@@ -62,7 +61,6 @@ PHRED33_TO_64 = bytes.maketrans(
     bytes(min(126, b + 31) for b in range(33, 127))
 )
 
-# ---- Shared run-time state (filled during a run) ----
 GZIP_DETECTION = {}
 STDIN_TEMP_FILES = []
 ESTIMATED_READ_COUNTS = {}
