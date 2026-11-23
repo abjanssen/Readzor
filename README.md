@@ -475,7 +475,7 @@ For the comparison for unpaired reads, we used the __S. pneumoniae__ D39V data a
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
    <tr>
      <th align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 24px;">
-       <b>Resource usage across threads by popular short read processing tools</b>
+       <b>Resource usage across threads by popular short read processing tools: paired read processing</b>
      </th>
    </tr>
    <tr>
@@ -490,7 +490,7 @@ For the comparison for unpaired reads, we used the __S. pneumoniae__ D39V data a
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
    <tr>
      <th align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 24px;">
-       <b>Resource usage across threads by popular short read processing tools</b>
+       <b>Resource usage across threads by popular short read processing tools: unpaired read processing</b>
      </th>
    </tr>
    <tr>
