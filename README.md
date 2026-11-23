@@ -535,15 +535,42 @@ When all modules were combined, processing took about 2.5× the baseline, or rou
 
 ### Processing time and memory usage (compared to other tools)
 
-Finally, we characterized the processing speed and maximum memory usage of Readzor and other short read trimming tools. For this characterization, two seperate approaches have been studied:
-* Finetuning of settings between different short-read trimmers to achieve a similar trimming regime.
-* Minimal user-defined settings, to simulate a more straight-forward, low-input approach.
-
+Finally, we characterized the processing speed and maximum memory usage of Readzor and other popular short read trimming tools. For this characterization, both paird and unpaired approaches have been characterized.
 For these comparisons, we benchmarked across a number of CPU threads, and compared the processing time and maximum memory usage.
+By design, Readzor allows for full control over the trimming workflow. However, Cutadapt does not perform overlap search, whilst fastp has no option to turn of this type of search.
+Trimmomatic has the ability to perform both, through the adaptation of the adapter file.
 
-XXXXX
-XXXXX
-XXXXX
+For the paired read comparison, the previously NEAT-produced dataset was used. For the comparison using unpaired reads, we used data available from the NCBI [PRJNA1347041](https://www.ncbi.nlm.nih.gov/bioproject/PRJNA1347041/).
+
+#### Paired read comparison
+<table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
+   <tr>
+     <th align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 24px;">
+       <b>Resource usage across threads by popular short read processing tools</b>
+     </th>
+   </tr>
+   <tr>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 100%;">
+      <img src="docs/benchmarking/comparison_tools/paired/paired_comparison.png" alt="Processing time and peak memory usage per tool and processing regime."><br>
+      <sub><b>Figure X:</b> Processing time and peak memory usage per tool and processing regime.</sub>
+    </td>
+  </tr>
+</table>
+
+#### Unpaired read comparison
+<table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
+   <tr>
+     <th align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 24px;">
+       <b>Resource usage across threads by popular short read processing tools</b>
+     </th>
+   </tr>
+   <tr>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 100%;">
+      <img src="docs/benchmarking/comparison_tools/paired/paired_comparison.png" alt="Processing time and peak memory usage per tool and processing regime."><br>
+      <sub><b>Figure X:</b> Processing time and peak memory usage per tool and processing regime.</sub>
+    </td>
+  </tr>
+</table>
 
 ### File compression
 Using a version of Readzor in which both gzip and isal were available, the difference between gzip and isal was benchmarked. 
