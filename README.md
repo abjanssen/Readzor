@@ -251,28 +251,24 @@ A grid search identified `--adapter-seed 6 --adapter-mismatch 2` as the best bal
 
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
    <tr>
-     <th colspan="2" align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 24px;">
+     <th colspan="2" align="center" style="border: 1px solid black; padding: 8px; font-size: 30px;">
        <b>Adapter sequence search performance</b>
      </th>
    </tr>
    <tr>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_adapter_recall.png" alt="Recall of adapter trimming."><br>
-      <sub><b>Figure 1:</b> Recall.</sub>
+    <td align="center" style="border: 1px solid black; padding: 4px; width: 50%;">
+      <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_adapter_recall.png"><br>
     </td>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_precision.png" alt="Precision of adapter trimming."><br>
-      <sub><b>Figure 2:</b> Precision.</sub>
+    <td align="center" style="border: 1px solid black; padding: 4px; width: 50%;">
+      <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_precision.png"><br>
     </td>
   </tr>
   <tr>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_f1.png" alt="F1 score of adapter trimming"><br>
-      <sub><b>Figure 3:</b> F1 score.</sub>
+    <td align="center" style="border: 1px solid black; padding: 4px; width: 50%;">
+      <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_f1.png"><br>
     </td>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_genomic_bases_lost.png" alt="Genomic bases lost of adapter trimming"><br>
-      <sub><b>Figure 4:</b> Genomic bases lost.</sub>
+    <td align="center" style="border: 1px solid black; padding: 4px; width: 50%;">
+      <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_genomic_bases_lost.png"><br>
     </td>
   </tr>
 </table>
@@ -287,52 +283,52 @@ Vice versa, by setting `--overlap-mismatches` to `999`, the behaviour of `--over
 
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
   <tr>
-    <th colspan="2" align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 24px;">
+    <th colspan="2" align="center" style="border: 1px solid black; padding: 8px; font-size: 30px;">
       <b>Overlapping sequences search performance: absolute number of mismatches.</b>
      </th>
    </tr>
    <tr>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_adapter_recall.png" alt="Recall of adapter trimming."><br>
+    <td align="center" style="border: 1px solid black; padding: 4px; width: 50%;">
+      <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_adapter_recall.png"><br>
     </td>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_precision.png" alt="Precision of adapter trimming."><br>
+    <td align="center" style="border: 1px solid black; padding: 4px; width: 50%;">
+      <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_precision.png"><br>
     </td>
   </tr>
   <tr>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_f1.png" alt="F1 score of adapter trimming"><br>
+    <td align="center" style="border: 1px solid black; padding: 4px; width: 50%;">
+      <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_f1.png"><br>
     </td>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_genomic_bases_lost.png" alt="Genomic bases lost of adapter trimming"><br>
+    <td align="center" style="border: 1px solid black; padding: 4px; width: 50%;">
+      <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_genomic_bases_lost.png"><br>
     </td>
   </tr>
 </table>
 
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
   <tr>
-    <th align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 24px;">
+    <th align="center" style="border: 1px solid black; padding: 8px; font-size: 30px;">
       <b>Overlapping sequences search performance: relative number of mismatches.</b>
     </th>
   </tr>
   <tr>
-    <td align="center" style="border: 1px solid black; padding: 8px;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_adapter_recall.png" alt="Recall of adapter trimming."><br>
+    <td align="center" style="border: 1px solid black; padding: 4px;">
+      <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_adapter_recall.png"><br>
     </td>
   </tr>
   <tr>
-    <td align="center" style="border: 1px solid black; padding: 8px;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_precision.png" alt="Precision of adapter trimming."><br>
+    <td align="center" style="border: 1px solid black; padding: 4px;">
+      <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_precision.png"><br>
     </td>
   </tr>
   <tr>
-    <td align="center" style="border: 1px solid black; padding: 8px;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_f1.png" alt="F1 score of adapter trimming"><br>
+    <td align="center" style="border: 1px solid black; padding: 4px;">
+      <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_f1.png"><br>
     </td>
   </tr>
   <tr>
-    <td align="center" style="border: 1px solid black; padding: 8px;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_genomic_bases_lost.png" alt="Genomic bases lost of adapter trimming"><br>
+    <td align="center" style="border: 1px solid black; padding: 4px;">
+      <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_genomic_bases_lost.png"><br>
     </td>
   </tr>
 </table>
@@ -346,22 +342,28 @@ As the combination of these two methods determine the allowed number of mismatch
 
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
   <tr>
-    <th colspan="4" align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 24px;">
+    <th align="center" style="border: 1px solid black; padding: 8px; font-size: 30px;">
       <b>Overlapping sequences search performance</b>
     </th>
   </tr>
   <tr>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 25%;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_adapter_recall.png" alt="Recall" width="100%">
+    <td align="center" style="border: 1px solid black; padding: 4px;">
+      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_adapter_recall.png">
     </td>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 25%;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_precision.png" alt="Precision" width="100%">
+  </tr>
+  <tr>
+    <td align="center" style="border: 1px solid black; padding: 4px;">
+      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_precision.png">
     </td>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 25%;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_f1.png" alt="F1 score" width="100%">
+  </tr>
+  <tr>
+    <td align="center" style="border: 1px solid black; padding: 4px;">
+      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_f1.png" alt="F1 score">
     </td>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 25%;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_genomic_bases_lost.png" alt="Genomic bases lost" width="100%">
+  </tr>
+  <tr>
+    <td align="center" style="border: 1px solid black; padding: 4px;">
+      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_genomic_bases_lost.png">
     </td>
   </tr>
 </table>
@@ -440,13 +442,13 @@ When all modules were combined, processing took about 2.5× the baseline, or rou
 
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
    <tr>
-     <th align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 24px;">
+     <th align="center" style="border: 1px solid black; padding: 8px; font-size: 30px;">
        <b>Resource usage across processing modules</b>
      </th>
    </tr>
    <tr>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 100%;">
-      <img src="docs/benchmarking/resource_usage_modules/resource_usage_modules.png" alt="Processing time and peak memory usage per module."><br>
+    <td align="center" style="border: 1px solid black; padding: 4px; width: 100%;">
+      <img src="docs/benchmarking/resource_usage_modules/resource_usage_modules.png"><br>
       <sub><b>Figure X:</b> Processing time and peak memory usage per Readzor module.</sub>
     </td>
   </tr>
@@ -466,13 +468,13 @@ For the comparison for unpaired reads, we used the __S. pneumoniae__ D39V data a
 #### Paired read comparison
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
    <tr>
-     <th align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 24px;">
+     <th align="center" style="border: 1px solid black; padding: 8px; font-size: 30px;">
        <b>Resource usage across threads by popular short read processing tools: paired read processing</b>
      </th>
    </tr>
    <tr>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 100%;">
-      <img src="docs/benchmarking/comparison_tools/paired/paired_comparison.png" alt="Processing time and peak memory usage per tool and processing regime."><br>
+    <td align="center" style="border: 1px solid black; padding: 4px; width: 100%;">
+      <img src="docs/benchmarking/comparison_tools/paired/paired_comparison.png"><br>
     </td>
   </tr>
 </table>
@@ -480,13 +482,13 @@ For the comparison for unpaired reads, we used the __S. pneumoniae__ D39V data a
 #### Unpaired read comparison
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
    <tr>
-     <th align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 24px;">
+     <th align="center" style="border: 1px solid black; padding: 8px; font-size: 30px;">
        <b>Resource usage across threads by popular short read processing tools: unpaired read processing</b>
      </th>
    </tr>
    <tr>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 100%;">
-      <img src="docs/benchmarking/comparison_tools/unpaired/unpaired_comparison.png" alt="Processing time and peak memory usage per tool and processing regime."><br>
+    <td align="center" style="border: 1px solid black; padding: 4px; width: 100%;">
+      <img src="docs/benchmarking/comparison_tools/unpaired/unpaired_comparison.png"><br>
       <sub><b>Figure X:</b> Processing time and peak memory usage per tool and processing regime.</sub>
     </td>
   </tr>
@@ -504,9 +506,10 @@ Across comparable output file size (isal compression level `1` versus gzip compr
 
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
   <tr>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 100%;">
+    <td align="center" style="border: 1px solid black; padding: 4px; width: 100%;">
       <img src="docs/benchmarking/compression_methods/compression_methods.png" alt="Compression benchmarking within Readzor."><br>
       <sub><b>Figure 1:</b> Isal compression is faster than gzip.</sub>
+    </td>
   </tr>
 </table>
 
