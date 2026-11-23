@@ -18,7 +18,12 @@ All processing modules are off by default, giving you full control over your wor
 - [Quick start](#quick-start)
 - [Command line options](#command-line-options)
 - [Benchmarking](#benchmarking)
-- [Citation, license and contact](#citation-license-and-contact)
+- [Dependencies](#dependencies)
+- [Issues and bug reports](#issues-and-bug-reports)
+- [License](#license)
+- [Author](#author)
+- [Reference](#reference)
+- [Oligonucleotide sequences](#oligonucleotide-sequences)
 
 ## How it works
 Each enabled module assesses every raw read independently. The results are then merged, and the most stringent trim per read end is applied. For example, if quality trimming would remove 5 bases from the 3' end and adapter trimming would remove 12, Readzor removes 12.
@@ -61,6 +66,7 @@ Equipped with a number of other features, like built-in validation and seamless 
 **Input notes**: gzipped and plain files can be mixed freely. In `--full-auto` mode without input files, Readzor picks up files in the working directory ending in `.fastq` or `.fq` (optionally followed by `.gz` or `.gzip`). Extra adapter sequences are supplied as a FASTA file.
 
 ## Installation
+Installation is made easy through several repositories. Check for correct installation by calling `--version`. 
  
 **Bioconda**
 ```bash
@@ -220,8 +226,8 @@ Further options that can be specified to alter the behavior of Readzor.\
 `--reads-for-phred-offset`: Number of reads to sample per file for detection of Phred quality encoding offset. Default: 500.\
 `--chunk-size`: Number of reads per chunk sent to each worker. Changing can alter processing speed. Default: 1500.\
 `--phred-offset`: Define phred offset for all FASTQ files. When set, per-file auto-detection will not be performed. Possible values: 33, 64. Default: off (auto-detection per file).\
-`--testrun`: Perform a limited test run according to specified settings: only the first chunks of each input are processed (one per thread), and all output, including the log and summary files, is deleted afterwards. Also sets --verbose. Default: off.\
-`--ordered-output`: Force writing output reads in the same order as the input reads, with the exception of filtered reads. Default: off.\
+`--testrun` [FLAG]: Perform a limited test run according to specified settings: only the first chunks of each input are processed (one per thread), and all output, including the log and summary files, is deleted afterwards. Also sets --verbose. Default: off.\
+`--ordered-output` [FLAG]: Force writing output reads in the same order as the input reads, with the exception of filtered reads. Default: off.\
 `--phred-out`: Convert Phred encoding from 33 to 64, and vice versa. Possible values: 33, 64. Default: off.
 
 ## Benchmarking
@@ -234,7 +240,7 @@ From the provided results (i.e. read headers and golden BAM file), the exact ada
 ### Adapter sequence trimming
 The removal of adapter sequences is an important step in the cleanup of short read sequences. Readzor can use two methods, either alone or in combination, to find and trim these sequences: adapter sequence search, and overlap search.
 To benchmark the performance of these methods, we determined the following:
-* Recall (share of adapters succesfully found);
+* Recall (portion of adapters succesfully found);
 * Precision (portion of removed bases that belonged to adapter sequences);
 * F1 (harmonic mean combining precision and recall, $`F_1 = 2 \cdot \frac{\text{precision} \cdot \text{recall}}{\text{precision} + \text{recall}}`$);
 * Genomic basese lost.
@@ -288,21 +294,17 @@ Vice versa, by setting `--overlap-mismatches` to `999`, the behaviour of `--over
    <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
       <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_adapter_recall.png" alt="Recall of adapter trimming."><br>
-      <sub><b>Figure 1:</b> Recall (adapters successfully found).</sub>
     </td>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
       <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_precision.png" alt="Precision of adapter trimming."><br>
-      <sub><b>Figure 2:</b> Precision (portion of removed bases that were from adapters).</sub>
     </td>
   </tr>
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
       <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_f1.png" alt="F1 score of adapter trimming"><br>
-      <sub><b>Figure 3:</b> F1 score (harmonic mean combining precision and recall).</sub>
     </td>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
       <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_genomic_bases_lost.png" alt="Genomic bases lost of adapter trimming"><br>
-      <sub><b>Figure 4:</b> Genomic bases lost.</sub>
     </td>
   </tr>
 </table>
@@ -316,25 +318,21 @@ Vice versa, by setting `--overlap-mismatches` to `999`, the behaviour of `--over
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px;">
       <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_adapter_recall.png" alt="Recall of adapter trimming."><br>
-      <sub><b>Figure 1:</b> Recall (adapters successfully found).</sub>
     </td>
   </tr>
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px;">
       <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_precision.png" alt="Precision of adapter trimming."><br>
-      <sub><b>Figure 2:</b> Precision (portion of removed bases that were from adapters).</sub>
     </td>
   </tr>
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px;">
       <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_f1.png" alt="F1 score of adapter trimming"><br>
-      <sub><b>Figure 3:</b> F1 score (harmonic mean combining precision and recall).</sub>
     </td>
   </tr>
   <tr>
     <td align="center" style="border: 1px solid black; padding: 8px;">
       <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_genomic_bases_lost.png" alt="Genomic bases lost of adapter trimming"><br>
-      <sub><b>Figure 4:</b> Genomic bases lost.</sub>
     </td>
   </tr>
 </table>
@@ -348,28 +346,22 @@ As the combination of these two methods determine the allowed number of mismatch
 
 <table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
   <tr>
-    <th colspan="2" align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 24px;">
+    <th colspan="4" align="center" style="border: 1px solid black; padding: 12px; background-color: #f6f8fa; font-size: 24px;">
       <b>Overlapping sequences search performance</b>
     </th>
   </tr>
   <tr>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_adapter_recall.png" alt="Recall"><br>
-      <sub><b>Figure 1:</b> Recall.</sub>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 25%;">
+      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_adapter_recall.png" alt="Recall" width="100%">
     </td>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_precision.png" alt="Precision"><br>
-      <sub><b>Figure 2:</b> Precision.</sub>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 25%;">
+      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_precision.png" alt="Precision" width="100%">
     </td>
-  </tr>
-  <tr>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_f1.png" alt="F1 score"><br>
-      <sub><b>Figure 3:</b> F1 score.</sub>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 25%;">
+      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_f1.png" alt="F1 score" width="100%">
     </td>
-    <td align="center" style="border: 1px solid black; padding: 8px; width: 50%;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_genomic_bases_lost.png" alt="Genomic bases lost"><br>
-      <sub><b>Figure 4:</b> Genomic bases lost.</sub>
+    <td align="center" style="border: 1px solid black; padding: 8px; width: 25%;">
+      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_genomic_bases_lost.png" alt="Genomic bases lost" width="100%">
     </td>
   </tr>
 </table>
@@ -428,10 +420,10 @@ We provided each tool with the same adapter sequences, to further standardize ad
 |                 | SE, TruSeq3-SE adapters                             |  0.710 |     0.999 | 0.830 |                387 |                                          |
 |                 | SE, TruSeq3-PE adapters                             |  0.000 |         - | 0.000 |                  0 |                                          |
 |                 | SE, TruSeq3-PE-2 adapters                           |  0.710 |     0.999 | 0.830 |                599 |                                          |
-| **Readzor**     | PE, per read adapter specified                      |  0.951 |     0.993 | 0.958 |             27,172 |                                          | 
-|                 | PE, overall adapters specified                      |  0.951 |     0.993 | 0.958 |             27,172 |                                          | 
-|                 | SE, per read adapter specified                      |  0.951 |     0.993 | 0.958 |             27,172 |                                          | 
-|                 | SE, overall adapters specified                      |  0.951 |     0.993 | 0.958 |             27,172 |                                          | 
+| **Readzor**     | PE, per read adapter specified                      |  0.951 |     0.993 | 0.971 |             27,172 |                                          | 
+|                 | PE, overall adapters specified                      |  0.951 |     0.993 | 0.971 |             27,172 |                                          | 
+|                 | SE, per read adapter specified                      |  0.951 |     0.993 | 0.971 |             27,172 |                                          | 
+|                 | SE, overall adapters specified                      |  0.951 |     0.993 | 0.971 |             27,172 |                                          | 
 |                 | PE, per read adapter specified + overlap            |  0.999 |     0.779 | 0.875 |          1,230,072 |                                          | 
 |                 | PE, overall adapters specified + overlap            |  0.999 |     0.779 | 0.875 |          1,230,072 |                                          | 
 |                 | PE, overlap                                         |  0.982 |     0.780 | 0.869 |          1,202,900 |                                          | 
@@ -481,7 +473,6 @@ For the comparison for unpaired reads, we used the __S. pneumoniae__ D39V data a
    <tr>
     <td align="center" style="border: 1px solid black; padding: 8px; width: 100%;">
       <img src="docs/benchmarking/comparison_tools/paired/paired_comparison.png" alt="Processing time and peak memory usage per tool and processing regime."><br>
-      <sub><b>Figure X:</b> Processing time and peak memory usage per tool and processing regime.</sub>
     </td>
   </tr>
 </table>
@@ -519,7 +510,7 @@ Across comparable output file size (isal compression level `1` versus gzip compr
   </tr>
 </table>
 
-## Benchmarking software and facilities
+### Software and facilities
 Readzor has been benchmarked using the zen3 nodes of the [Curnagl](https://wiki.unil.ch/ci/books/high-performance-computing-hpc/page/curnagl) high-performance computering cluster of the University of Lausanne.
 For benchmarking, the following software packages and versions were used:
 * [Trimmomatic](https://github.com/usadellab/trimmomatic) (version 0.41)
@@ -530,7 +521,7 @@ For benchmarking, the following software packages and versions were used:
 
 All commands used for benchmarking, and subsequent results, are available from the [benchmarking folder](docs/benchmarking) in this repository. 
 
-## Software version
+## Dependencies
 Readzor depends on the following software packages:
 * NumPy (version required: 2.5.2)
 * Python (no version requirement)
