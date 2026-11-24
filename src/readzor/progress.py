@@ -101,6 +101,7 @@ class ProgressTracker:
         self.min_interval = min_interval
         self.last_render = time.time()
         self.start_time = time.time()
+        self.finish_message = None
 
     def format_duration(self, seconds_val, concise=False):
         """
@@ -172,13 +173,14 @@ class ProgressTracker:
         rate = self.done / elapsed
         
         if self.done >= self.total:
-            eta_messages = [
-            "Finishing up...",
-            "Almost done...",
-            "Nearly there...",
-            "Wrapping up..."
-            ]
-            eta_str = random.choice(eta_messages)
+            if self.finish_message is None:
+                self.finish_message = random.choice([
+                    "Finishing up...",
+                    "Almost done...",
+                    "Nearly there...",
+                    "Wrapping up...",
+                ])
+            eta_str = self.finish_message
         else:
             if rate > 0:
                 eta = (self.total - self.done) / rate
