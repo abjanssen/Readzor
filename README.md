@@ -6,10 +6,18 @@
 [![Bioconda Downloads](https://img.shields.io/conda/dn/bioconda/Readzor?label=Bioconda%20downloads&color=%2352b924)](https://anaconda.org/channels/bioconda/packages/readzor/overview)
 [![Docker Downloads](https://img.shields.io/badge/dynamic/json?url=https://ghcr-badge.elias.eu.org/api/abjanssen/Readzor/readzor&query=downloadCount&label=Docker%20downloads&color=%2352b924)](https://github.com/abjanssen/Readzor/pkgs/container/readzor)
 
-# Welcome to Readzor 
-
-**Readzor** is a fast, modular, fully-featured FASTQ quality trimming and filtering pipeline. \
-All processing modules are off by default, giving you full control over your workflow.
+<table>
+  <tr>
+    <td width="256" valign="middle">
+      <img src="docs/other/R.png" alt="Readzor logo" width="256" height="256">
+    </td>
+    <td valign="middle">
+      <h1>Welcome to Readzor</h1>
+      <p><b>Readzor</b> is a fast, modular, fully-featured FASTQ quality trimming and filtering pipeline, written in Python.</p>
+      <p>All processing modules are <b>off</b> by default, giving you full control over your workflow.</p>
+    </td>
+  </tr>
+</table>
 
 ## Contents
 - [How it works](#how-it-works)
@@ -372,6 +380,20 @@ When all modules were combined, processing took about 2.5× the baseline, or rou
   <img src="docs/benchmarking/resource_usage_modules/resource_usage_modules.png" width="100%">
 </p>
 
+### File compression
+Using a version of Readzor in which both gzip and isal were available, the difference between gzip and isal was benchmarked. 
+For isal, a compression level beyond `1` had no appreciable impact on final output size, yet increases processing time (when set to `3`). The peak memory usage does not increase with compression level. 
+When gzip was used, processing time increases substantially, increasing with higher compression levels.
+The use of isal drastically reduces processing time, both when compressed data needs to be read, and when output needs to be compressed, for a slightly higher peak memory usage.
+
+From these results, Readzor uses [`isal`](https://github.com/pycompression/python-isal) for its high-performance implementation of the DEFLATE algorithm.
+The default compression level for when `--gzip` is set, has been set to `--gzip-level 1`.
+Across comparable output file size (isal compression level `1` versus gzip compression level `5`), the processing time reduces about X.Xx when gzipped input files are used, and output is compressed, with comparable memory usage.
+
+<p align="center">
+  <img src="docs/benchmarking/compression_methods/compression_methods.png" width="100%">
+</p>
+
 ### Processing time and memory usage (compared to other tools)
 
 Finally, we characterized the processing speed and maximum memory usage of Readzor and other popular short read trimming tools. 
@@ -393,20 +415,6 @@ For the comparison for unpaired reads, we used the __S. pneumoniae__ D39V data a
   <img src="docs/benchmarking/comparison_tools/unpaired/unpaired_comparison.png" width="100%">
 </p>
 
-### File compression
-Using a version of Readzor in which both gzip and isal were available, the difference between gzip and isal was benchmarked. 
-For isal, a compression level beyond `1` had no appreciable impact on final output size, yet increases processing time (when set to `3`). The peak memory usage does not increase with compression level. 
-When gzip was used, processing time increases substantially, increasing with higher compression levels.
-The use of isal drastically reduces processing time, both when compressed data needs to be read, and when output needs to be compressed, for a slightly higher peak memory usage.
-
-From these results, Readzor uses [`isal`](https://github.com/pycompression/python-isal) for its high-performance implementation of the DEFLATE algorithm.
-The default compression level for when `--gzip` is set, has been set to `--gzip-level 1`.
-Across comparable output file size (isal compression level `1` versus gzip compression level `5`), the processing time reduces about X.Xx when gzipped input files are used, and output is compressed, with comparable memory usage.
-
-<p align="center">
-  <img src="docs/benchmarking/compression_methods/compression_methods.png" width="100%">
-</p>
-
 ### Software and facilities
 Readzor has been benchmarked using the zen3 nodes of the [Curnagl](https://wiki.unil.ch/ci/books/high-performance-computing-hpc/page/curnagl) high-performance computering cluster of the University of Lausanne.
 For benchmarking, the following software packages and versions were used:
@@ -415,6 +423,8 @@ For benchmarking, the following software packages and versions were used:
 * [Cutadapt](https://github.com/marcelm/cutadapt/) (version 5.2)
 * [NEAT](https://github.com/ncsa/NEAT) (version 4.7.1)
 * [psutil](https://github.com/giampaolo/psutil) (version 7.2.2)
+* [python-isal](https://github.com/pycompression/python-isal) (version 1.8.0)
+* [NumPy](https://github.com/numpy/numpy) (version 2.5.2)
 
 All commands used for benchmarking, and subsequent results, are available from the [benchmarking folder](docs/benchmarking) in this repository. 
 
