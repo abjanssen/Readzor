@@ -428,9 +428,9 @@ All commands used for benchmarking, and subsequent results, are available from t
 
 ## Dependencies
 Readzor depends on the following software packages:
-* NumPy (version required: 2.5.2)
+* NumPy (version >= 2.5.2)
 * Python (no version requirement)
-* Python-isal (version required: 1.8.0)
+* Python-isal (version >= 1.8.0)
 
 Although Readzor works on older versions of Python, it has been developed and tested for performance using version 3.14.7.
 

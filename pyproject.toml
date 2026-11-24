@@ -22,8 +22,8 @@ classifiers = [
 ]
 
 dependencies = [
-  "numpy==2.5.2",
-  "isal==1.8.0"
+  "numpy>=2.5.2",
+  "isal>=1.8.0"
 ]
 
 [tool.setuptools.dynamic]
