@@ -6,18 +6,16 @@
 [![Bioconda Downloads](https://img.shields.io/conda/dn/bioconda/Readzor?label=Bioconda%20downloads&color=%2352b924)](https://anaconda.org/channels/bioconda/packages/readzor/overview)
 [![Docker Downloads](https://img.shields.io/badge/dynamic/json?url=https://ghcr-badge.elias.eu.org/api/abjanssen/Readzor/readzor&query=downloadCount&label=Docker%20downloads&color=%2352b924)](https://github.com/abjanssen/Readzor/pkgs/container/readzor)
 
-<table>
-  <tr>
-    <td width="256" valign="middle">
-      <img src="docs/other/R.png" alt="Readzor logo" width="256" height="256">
-    </td>
-    <td valign="middle">
-      <h1>Welcome to Readzor</h1>
-      <p><b>Readzor</b> is a fast, modular, fully-featured FASTQ quality trimming and filtering pipeline, written in Python.</p>
-      <p>All processing modules are <b>off</b> by default, giving you full control over your workflow.</p>
-    </td>
-  </tr>
-</table>
+# Welcome to Readzor
+
+<img src="docs/other/R.png" alt="Readzor logo" width="256" height="256" align="left">
+
+**Readzor** is a fast, modular, and fully-featured FASTQ quality trimming and filtering pipeline, written in Python.
+Readzor trims and filters FASTQ reads: quality, adapters, homopolymers, Ns and low-complexity reads.
+
+Please note: all processing modules are **off** by default, giving you full control over your workflow.
+
+<br clear="left">
 
 ## Contents
 - [How it works](#how-it-works)
