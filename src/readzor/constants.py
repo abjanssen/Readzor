@@ -6,7 +6,7 @@ because ACTIVE_PROGRESS_TRACKER and WORKER_PARAMETERS are reassigned during a ru
 and a by-name import would keep the old value.
 """
 
-VERSION = "0.7.3"
+VERSION = "0.7.4"
 DEFAULT_ADAPTERS = [
     ["AmpliSeq", [
         ["AmpliSeq", "CTGTCTCTTATACACATCT"]  #https://support-docs.illumina.com/SHARE/AdapterSequences/Content/AmpliSeq-Sequences.htm
