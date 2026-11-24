@@ -249,29 +249,13 @@ To benchmark the performance of these methods, we determined the following:
 Readzor scans each read for the first `--adapter-seed` bases of each adapter, then checks the rest with proportionally scaled mismatches; adapter fragments shorter than the seed are therefore not found. 
 A grid search identified `--adapter-seed 6 --adapter-mismatch 2` as the best balance. Raising either increases recall at the cost of precision and genomic bases lost.
 
-<table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
-   <tr>
-     <th colspan="2" align="center" style="border: 1px solid black; padding: 8px; font-size: 30px;">
-       <b>Adapter sequence search performance</b>
-     </th>
-   </tr>
-   <tr>
-    <td align="center" style="border: 1px solid black; padding: 4px; width: 50%;">
-      <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_adapter_recall.png"><br>
-    </td>
-    <td align="center" style="border: 1px solid black; padding: 4px; width: 50%;">
-      <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_precision.png"><br>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" style="border: 1px solid black; padding: 4px; width: 50%;">
-      <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_f1.png"><br>
-    </td>
-    <td align="center" style="border: 1px solid black; padding: 4px; width: 50%;">
-      <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_genomic_bases_lost.png"><br>
-    </td>
-  </tr>
-</table>
+<h3 align="center">Adapter sequence search performance</h3>
+<p align="center">
+  <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_adapter_recall.png" width="49%">
+  <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_precision.png" width="49%">
+  <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_f1.png" width="49%">
+  <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_genomic_bases_lost.png" width="49%">
+</p>
 
 #### Overlapping sequences approach
 For paired-end data, when the insert is shorter than the read length, mates read into the adapters, which can be found by aligning the mates to each other. 
@@ -281,57 +265,21 @@ Inserts shorter than `--overlap-min-length` are missed.
 By setting `--overlap-portion-mismatch` to `100`, we isolated the effect of `--overlap-mismatches` on the adapter sequences found.
 Vice versa, by setting `--overlap-mismatches` to `999`, the behaviour of `--overlap-portion-mismatch`,was investigated.
 
-<table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
-  <tr>
-    <th colspan="2" align="center" style="border: 1px solid black; padding: 8px; font-size: 30px;">
-      <b>Overlapping sequences search performance: absolute number of mismatches.</b>
-     </th>
-   </tr>
-   <tr>
-    <td align="center" style="border: 1px solid black; padding: 4px; width: 50%;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_adapter_recall.png"><br>
-    </td>
-    <td align="center" style="border: 1px solid black; padding: 4px; width: 50%;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_precision.png"><br>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" style="border: 1px solid black; padding: 4px; width: 50%;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_f1.png"><br>
-    </td>
-    <td align="center" style="border: 1px solid black; padding: 4px; width: 50%;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_genomic_bases_lost.png"><br>
-    </td>
-  </tr>
-</table>
+<h3 align="center">Overlapping sequences search performance: absolute number of mismatches</h3>
+<p align="center">
+  <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_adapter_recall.png" width="49%">
+  <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_precision.png" width="49%">
+  <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_f1.png" width="49%">
+  <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_genomic_bases_lost.png" width="49%">
+</p>
 
-<table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
-  <tr>
-    <th align="center" style="border: 1px solid black; padding: 8px; font-size: 30px;">
-      <b>Overlapping sequences search performance: relative number of mismatches.</b>
-    </th>
-  </tr>
-  <tr>
-    <td align="center" style="border: 1px solid black; padding: 4px;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_adapter_recall.png"><br>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" style="border: 1px solid black; padding: 4px;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_precision.png"><br>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" style="border: 1px solid black; padding: 4px;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_f1.png"><br>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" style="border: 1px solid black; padding: 4px;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_genomic_bases_lost.png"><br>
-    </td>
-  </tr>
-</table>
+<h3 align="center">Overlapping sequences search performance: relative number of mismatches</h3>
+<p align="center">
+  <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_adapter_recall.png" width="100%">
+  <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_precision.png" width="100%">
+  <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_f1.png" width="100%">
+  <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_genomic_bases_lost.png" width="100%">
+</p>
 
 From both these datasets, we observe an inverse correlation between the precision and F1, and number of allowed mismathches, through the rapid increase in genomic bases lost.
 A minimal `--overlap-min-length` of`50` seems to strike a balance between different outcomes.
@@ -340,33 +288,13 @@ As Readzor uses the lowest number of these two settings to determine the allowed
 For shorter overlaps, `--overlap-portion-mismatch` will determine the number of mismatches allowed, but at longer overlaps, mismatches are capped by `--overlap-mismatches`, preventing widespread aspecific matching.
 As the combination of these two methods determine the allowed number of mismatches, a grid-search only needs to perform a limited number of searches, as one of both parameters can act as a _de facto_ cap.
 
-<table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
-  <tr>
-    <th align="center" style="border: 1px solid black; padding: 8px; font-size: 30px;">
-      <b>Overlapping sequences search performance</b>
-    </th>
-  </tr>
-  <tr>
-    <td align="center" style="border: 1px solid black; padding: 4px;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_adapter_recall.png">
-    </td>
-  </tr>
-  <tr>
-    <td align="center" style="border: 1px solid black; padding: 4px;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_precision.png">
-    </td>
-  </tr>
-  <tr>
-    <td align="center" style="border: 1px solid black; padding: 4px;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_f1.png" alt="F1 score">
-    </td>
-  </tr>
-  <tr>
-    <td align="center" style="border: 1px solid black; padding: 4px;">
-      <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_genomic_bases_lost.png">
-    </td>
-  </tr>
-</table>
+<h3 align="center">Overlapping sequences search performance</h3>
+<p align="center">
+  <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_adapter_recall.png" width="100%">
+  <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_precision.png" width="100%">
+  <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_f1.png" width="100%">
+  <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_genomic_bases_lost.png" width="100%">
+</p>
 
 From these results, the default `--overlap-min-length` has been set to `50`, `--overlap-mismatches` to `5`, and `--overlap-portion-mismatch` to `4`.
 These settings balance adapter recall, precision, and loss of genomic base pairs.
@@ -440,19 +368,9 @@ Most modules have a low processing burden: set-length end trimming (`--cut-flag`
 Sliding window quality trimming (`--slider-filter-flag`), overlap trimming (`--overlap-filter-flag`) and k-mer based low complexity filtering (`--kmer-filter-flag`), all added substantial time to the processing.
 When all modules were combined, processing took about 2.5× the baseline, or roughly the sum of the individual module costs. Memory usage is largely consistent across modules, with a slight increase when all modules are in use.
 
-<table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
-   <tr>
-     <th align="center" style="border: 1px solid black; padding: 8px; font-size: 30px;">
-       <b>Resource usage across processing modules</b>
-     </th>
-   </tr>
-   <tr>
-    <td align="center" style="border: 1px solid black; padding: 4px; width: 100%;">
-      <img src="docs/benchmarking/resource_usage_modules/resource_usage_modules.png"><br>
-      <sub><b>Figure X:</b> Processing time and peak memory usage per Readzor module.</sub>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="docs/benchmarking/resource_usage_modules/resource_usage_modules.png" width="100%">
+</p>
 
 ### Processing time and memory usage (compared to other tools)
 
@@ -462,37 +380,18 @@ For this comparison, we used multiple real-world sequencing data files, to mimic
 Readzor has built-in functionality to process multiple files. For fastp, we used [this](https://github.com/OpenGene/parallel/blob/main/fastp.py) recently published script to mimick this behaviour.
 Cutadapt and Trimmomatic do not have the same functionality, and were run in a loop stead.
 
-For the paired read comparison, whole-genome sequencing reads were obtained from BioProject [PRJEB74511](https://www.ncbi.nlm.nih.gov/bioproject/PRJEB74511/) (ERR12875316, ERR13030616-ERR13030639)
+For the paired read comparison, whole-genome sequencing reads were obtained from BioProject [PRJEB74511](https://www.ncbi.nlm.nih.gov/bioproject/PRJEB74511/) (ERR12875316, ERR13030616-ERR13030639).
 For the comparison for unpaired reads, we used the __S. pneumoniae__ D39V data available from BioProject [PRJNA1347041](https://www.ncbi.nlm.nih.gov/bioproject/PRJNA1347041/).
 
 #### Paired read comparison
-<table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
-   <tr>
-     <th align="center" style="border: 1px solid black; padding: 8px; font-size: 30px;">
-       <b>Resource usage across threads by popular short read processing tools: paired read processing</b>
-     </th>
-   </tr>
-   <tr>
-    <td align="center" style="border: 1px solid black; padding: 4px; width: 100%;">
-      <img src="docs/benchmarking/comparison_tools/paired/paired_comparison.png"><br>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="docs/benchmarking/comparison_tools/paired/paired_comparison.png" width="100%">
+</p>
 
 #### Unpaired read comparison
-<table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
-   <tr>
-     <th align="center" style="border: 1px solid black; padding: 8px; font-size: 30px;">
-       <b>Resource usage across threads by popular short read processing tools: unpaired read processing</b>
-     </th>
-   </tr>
-   <tr>
-    <td align="center" style="border: 1px solid black; padding: 4px; width: 100%;">
-      <img src="docs/benchmarking/comparison_tools/unpaired/unpaired_comparison.png"><br>
-      <sub><b>Figure X:</b> Processing time and peak memory usage per tool and processing regime.</sub>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="docs/benchmarking/comparison_tools/unpaired/unpaired_comparison.png" width="100%">
+</p>
 
 ### File compression
 Using a version of Readzor in which both gzip and isal were available, the difference between gzip and isal was benchmarked. 
@@ -504,14 +403,9 @@ From these results, Readzor uses [`isal`](https://github.com/pycompression/pytho
 The default compression level for when `--gzip` is set, has been set to `--gzip-level 1`.
 Across comparable output file size (isal compression level `1` versus gzip compression level `5`), the processing time reduces about X.Xx when gzipped input files are used, and output is compressed, with comparable memory usage.
 
-<table style="border: 2px solid black; border-collapse: collapse; width: 100%;">
-  <tr>
-    <td align="center" style="border: 1px solid black; padding: 4px; width: 100%;">
-      <img src="docs/benchmarking/compression_methods/compression_methods.png" alt="Compression benchmarking within Readzor."><br>
-      <sub><b>Figure 1:</b> Isal compression is faster than gzip.</sub>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="docs/benchmarking/compression_methods/compression_methods.png" width="100%">
+</p>
 
 ### Software and facilities
 Readzor has been benchmarked using the zen3 nodes of the [Curnagl](https://wiki.unil.ch/ci/books/high-performance-computing-hpc/page/curnagl) high-performance computering cluster of the University of Lausanne.
