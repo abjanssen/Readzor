@@ -11,9 +11,10 @@
 <img src="docs/other/logo.png" alt="Readzor logo" width="256" height="256" align="left">
 
 **Readzor** is a fast, modular, and fully-featured FASTQ quality trimming and filtering pipeline, written in Python.
-Readzor trims and filters FASTQ reads: quality, adapters, homopolymers, Ns and low-complexity reads.
+Readzor can trim and filter FASTQ reads for quality, adapters, homopolymers, Ns and low-complexity. 
+Designed with the user in mind, Readzor will detect read-pairing, Phred offsets, file compression formats, and integrates with HPC clusters.
 
-Please note: all processing modules are **off** by default, giving you full control over your workflow.
+By default, all processing modules are **off**, giving you full control over your workflow.
 
 <br clear="left">
 
@@ -474,7 +475,7 @@ For the comparison for unpaired reads, we used the _S. pneumoniae_ D39V data ava
 
 ### Software and facilities
 Readzor has been benchmarked using the zen3 nodes of the [Curnagl](https://wiki.unil.ch/ci/books/high-performance-computing-hpc/page/curnagl) high-performance computering cluster of the University of Lausanne.
-For benchmarking, the following software packages and versions were used:
+For benchmarking, the following software packages and versions were used, all read trimmer were installedin their own dedictated conda environment:
 * [Trimmomatic](https://github.com/usadellab/trimmomatic) (version 0.41)
 * [fastp](https://github.com/opengene/fastp) (version 1.3.6)
 * [Cutadapt](https://github.com/marcelm/cutadapt/) (version 5.2)
