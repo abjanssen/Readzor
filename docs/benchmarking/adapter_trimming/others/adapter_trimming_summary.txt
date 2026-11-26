@@ -1,0 +1,79 @@
+tool	mode	setting	mate	under_trimmed_reads	over_trimmed_reads	exact_reads	removed_reads	adapter_bases_removed	adapter_bases_left	genomic_bases_lost	genomic_bases_in_removed_reads	adapter_recall	precision	f1
+trimmomatic	paired end	"Readzor adapters, palindromic"	R1	46496	1123	27957098	0	1974908	201865	10457	0	0.907264	0.994733	0.948987
+trimmomatic	paired end	"Readzor adapters, palindromic"	R2	46470	1076	27957171	0	1974955	201899	10410	0	0.907252	0.994757	0.948991
+trimmomatic	paired end	"Readzor adapters, palindromic"	both	92966	2199	55914269	0	3949863	403764	20867	0	0.907258	0.994745	0.948989
+trimmomatic	paired end	"Readzor adapters, simple"	R1	84494	0	27920223	0	1546913	629860	0	0	0.710645	1	0.83085
+trimmomatic	paired end	"Readzor adapters, simple"	R1	84494	0	27920223	0	1546913	629860	0	0	0.710645	1	0.83085
+trimmomatic	paired end	"Readzor adapters, simple"	R1	84494	0	27920223	0	1546913	629860	0	0	0.710645	1	0.83085
+trimmomatic	paired end	Truseq3-PE	R1	46497	1123	27957097	0	1974851	201922	10457	0	0.907238	0.994733	0.948973
+trimmomatic	paired end	Truseq3-PE	R2	46471	1076	27957170	0	1974898	201956	10410	0	0.907226	0.994756	0.948977
+trimmomatic	paired end	Truseq3-PE	both	92968	2199	55914267	0	3949749	403878	20867	0	0.907232	0.994745	0.948975
+trimmomatic	paired end	Truseq3-PE-2	R1	45625	1128	27957964	0	1999795	176978	10844	0	0.918697	0.994607	0.955146
+trimmomatic	paired end	Truseq3-PE-2	R2	45632	1079	27958006	0	2000012	176842	10622	0	0.918763	0.994717	0.955232
+trimmomatic	paired end	Truseq3-PE-2	both	91257	2207	55915970	0	3999807	353820	21466	0	0.91873	0.994662	0.955189
+trimmomatic	paired end	TruSeq3-SE	R1	84494	5	27920218	0	1546913	629860	387	0	0.710645	0.99975	0.830764
+trimmomatic	paired end	TruSeq3-SE	R2	84598	0	27920119	0	1544998	631856	0	0	0.709739	1	0.830231
+trimmomatic	paired end	TruSeq3-SE	both	169092	5	55840337	0	3091911	1261716	387	0	0.710192	0.999875	0.830497
+trimmomatic	single end	"Readzor adapters, palindromic"	R1	133557	0	27871160	0	0	2176773	0	0	0	nan	0
+trimmomatic	single end	"Readzor adapters, palindromic"	R2	133557	0	27871160	0	0	2176854	0	0	0	nan	0
+trimmomatic	single end	"Readzor adapters, palindromic"	both	267114	0	55742320	0	0	4353627	0	0	0	nan	0
+trimmomatic	single end	"Readzor adapters, simple"	R1	84494	0	27920223	0	1546913	629860	0	0	0.710645	1	0.83085
+trimmomatic	single end	"Readzor adapters, simple"	R2	84598	0	27920119	0	1544998	631856	0	0	0.709739	1	0.830231
+trimmomatic	single end	"Readzor adapters, simple"	both	169092	0	55840342	0	3091911	1261716	0	0	0.710192	1	0.830541
+trimmomatic	single end	Truseq3-SE	R1	84494	5	27920218	0	1546913	629860	387	0	0.710645	0.99975	0.830764
+trimmomatic	single end	Truseq3-SE	R2	84598	0	27920119	0	1544998	631856	0	0	0.709739	1	0.830231
+trimmomatic	single end	Truseq3-SE	both	169092	5	55840337	0	3091911	1261716	387	0	0.710192	0.999875	0.830497
+trimmomatic	single end	Truseq3-PE	R1	133557	0	27871160	0	0	2176773	0	0	0	nan	0
+trimmomatic	single end	Truseq3-PE	R2	133557	0	27871160	0	0	2176854	0	0	0	nan	0
+trimmomatic	single end	Truseq3-PE	both	267114	0	55742320	0	0	4353627	0	0	0	nan	0
+trimmomatic	single end	Truseq3-PE-2	R1	84494	5	27920218	0	1546913	629860	387	0	0.710645	0.99975	0.830764
+trimmomatic	single end	Truseq3-PE-2	R2	84598	3	27920116	0	1544998	631856	212	0	0.709739	0.999863	0.830183
+trimmomatic	single end	Truseq3-PE-2	both	169092	8	55840334	0	3091911	1261716	599	0	0.710192	0.999806	0.830474
+trimmomatic	single end	"Readzor adapters, both palindromic and simple"	R1	84494	0	27920223	0	1546913	629860	0	0	0.710645	1	0.83085
+trimmomatic	single end	"Readzor adapters, both palindromic and simple"	R2	84598	0	27920119	0	1544998	631856	0	0	0.709739	1	0.830231
+trimmomatic	single end	"Readzor adapters, both palindromic and simple"	both	169092	0	55840342	0	3091911	1261716	0	0	0.710192	1	0.830541
+trimmomatic	paired end	"Readzor adapters, both palindromic and simple"	R1	45625	1123	27957969	0	1999795	176978	10457	0	0.918697	0.994798	0.955234
+trimmomatic	paired end	"Readzor adapters, both palindromic and simple"	R2	45632	1076	27958009	0	2000012	176842	10410	0	0.918763	0.994822	0.955281
+trimmomatic	paired end	"Readzor adapters, both palindromic and simple"	both	91257	2199	55915978	0	3999807	353820	20867	0	0.91873	0.99481	0.955258
+cutadapt	paired end	adapter specified per read	R1	14807	761938	27227972	0	2152699	24074	2486805	0	0.988941	0.463993	0.631635
+cutadapt	paired end	adapter specified per read	R2	14731	744160	27245826	0	2152999	23855	2427305	0	0.989042	0.470056	0.63725
+cutadapt	paired end	adapter specified per read	both	29538	1506098	54473798	0	4305698	47929	4914110	0	0.988991	0.467005	0.63443
+cutadapt	single end	adapter specified per read	R1	14807	761938	27227972	0	2152699	24074	2486805	0	0.988941	0.463993	0.631635
+cutadapt	single end	adapter specified per read	R2	14731	744160	27245826	0	2152999	23855	2427305	0	0.989042	0.470056	0.63725
+cutadapt	single end	adapter specified per read	both	29538	1506098	54473798	0	4305698	47929	4914110	0	0.988991	0.467005	0.63443
+cutadapt	paired end	adapter specified overall	R1	14807	761938	27227972	0	2152699	24074	2486805	0	0.988941	0.463993	0.631635
+cutadapt	paired end	adapter specified overall	R2	14731	744175	27245811	0	2152999	23855	2427500	0	0.989042	0.470036	0.637231
+cutadapt	paired end	adapter specified overall	both	29538	1506113	54473783	0	4305698	47929	4914305	0	0.988991	0.466995	0.634421
+cutadapt	single end	adapter specified overall	R1	14807	761938	27227972	0	2152699	24074	2486805	0	0.988941	0.463993	0.631635
+cutadapt	single end	adapter specified overall	R2	14731	744175	27245811	0	2152999	23855	2427500	0	0.989042	0.470036	0.637231
+cutadapt	single end	adapter specified overall	both	29538	1506113	54473783	0	4305698	47929	4914305	0	0.988991	0.466995	0.634421
+fastp	paired end	overlap	R1	1969	19038	27983710	0	2164399	12374	1143005	0	0.994315	0.65441	0.789325
+fastp	paired end	overlap	R2	1447	18486	27984784	0	2164950	11904	1142454	0	0.994532	0.654577	0.789514
+fastp	paired end	overlap	both	3416	37524	55968494	0	4329349	24278	2285459	0	0.994424	0.654494	0.78942
+fastp	paired end	overlap + adapter (specified per read)	R1	1558	46884	27956275	0	2174196	2577	1327212	0	0.998816	0.620949	0.765807
+fastp	paired end	overlap + adapter (specified per read)	R2	1043	45042	27958632	0	2174771	2083	1318219	0	0.999043	0.62261	0.767136
+fastp	paired end	overlap + adapter (specified per read)	both	2601	91926	55914907	0	4348967	4660	2645431	0	0.99893	0.621779	0.766471
+fastp	paired end	overlap + adapter detection	R1	1969	19038	27983710	0	2164399	12374	1143005	0	0.994315	0.65441	0.789325
+fastp	paired end	overlap + adapter detection	R2	1447	18486	27984784	0	2164950	11904	1142454	0	0.994532	0.654577	0.789514
+fastp	paired end	overlap + adapter detection	both	3416	37524	55968494	0	4329349	24278	2285459	0	0.994424	0.654494	0.78942
+fastp	paired end	overlap + adapter specified overall	R1	1537	47008	27956172	0	2174301	2472	1360781	0	0.998864	0.615064	0.761329
+fastp	paired end	overlap + adapter specified overall	R2	1022	45173	27958522	0	2174876	1978	1351719	0	0.999091	0.616707	0.762653
+fastp	paired end	overlap + adapter specified overall	both	2559	92181	55914694	0	4349177	4450	2712500	0	0.998978	0.615884	0.761991
+fastp	single end	adapter specified overall	R1	27955	27959	27948803	0	2109182	67591	217633	0	0.968949	0.906467	0.936667
+fastp	single end	adapter specified overall	R2	28116	26631	27949970	0	2108430	68424	208796	0	0.968567	0.909894	0.938314
+fastp	single end	adapter specified overall	both	56071	54590	55898773	0	4217612	136015	426429	0	0.968758	0.908177	0.93749
+fastp	single end	adapter detection	R1	133557	0	27871160	0	0	2176773	0	0	0	nan	0
+fastp	single end	adapter detection	R2	133557	0	27871160	0	0	2176854	0	0	0	nan	0
+fastp	single end	adapter detection	both	267114	0	55742320	0	0	4353627	0	0	0	nan	0
+fastp	single end	adapter specified per read	R1	27955	27859	27948903	0	2109182	67591	184299	0	0.968949	0.919642	0.943652
+fastp	single end	adapter specified per read	R2	28116	26581	27950020	0	2108430	68424	175943	0	0.968567	0.92298	0.945224
+fastp	single end	adapter specified per read	both	56071	54440	55898923	0	4217612	136015	360242	0	0.968758	0.921308	0.944437
+fastp	paired end	adapter specified per read	R1	27955	27859	27948903	0	2109182	67591	184299	0	0.968949	0.919642	0.943652
+fastp	paired end	adapter specified per read	R2	28116	26581	27950020	0	2108430	68424	175943	0	0.968567	0.92298	0.945224
+fastp	paired end	adapter specified per read	both	56071	54440	55898923	0	4217612	136015	360242	0	0.968758	0.921308	0.944437
+fastp	paired end	adapter detection	R1	133557	0	27871160	0	0	2176773	0	0	0	nan	0
+fastp	paired end	adapter detection	R2	133557	0	27871160	0	0	2176854	0	0	0	nan	0
+fastp	paired end	adapter detection	both	267114	0	55742320	0	0	4353627	0	0	0	nan	0
+fastp	paired end	adapter specified overall	R1	27955	27959	27948803	0	2109182	67591	217633	0	0.968949	0.906467	0.936667
+fastp	paired end	adapter specified overall	R2	28116	26631	27949970	0	2108430	68424	208796	0	0.968567	0.909894	0.938314
+fastp	paired end	adapter specified overall	both	56071	54590	55898773	0	4217612	136015	426429	0	0.968758	0.908177	0.93749

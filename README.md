@@ -8,7 +8,7 @@
 
 # Welcome to Readzor
 
-<img src="docs/other/R.png" alt="Readzor logo" width="256" height="256" align="left">
+<img src="docs/other/logo.png" alt="Readzor logo" width="256" height="256" align="left">
 
 **Readzor** is a fast, modular, and fully-featured FASTQ quality trimming and filtering pipeline, written in Python.
 Readzor trims and filters FASTQ reads: quality, adapters, homopolymers, Ns and low-complexity reads.
@@ -34,6 +34,8 @@ Please note: all processing modules are **off** by default, giving you full cont
 ## How it works
 Each enabled module assesses every raw read independently. The results are then merged, and the most stringent trim per read end is applied. For example, if quality trimming would remove 5 bases from the 3' end and adapter trimming would remove 12, Readzor removes 12.
  
+<img src="docs/other/summary.png" alt="Readzor summary" width="100%">
+
 ## Features
 **Modular trimming approach**:
 By design, each filter will independently assess each raw read. Outcomes are merged, and the most stringent trimming result per end is applied.\
@@ -239,154 +241,211 @@ Further options that can be specified to alter the behavior of Readzor.\
 ## Benchmarking
 
 ### Production of synthetic short read sequences
-To provide for a repeatable benchmarking method, and ground-truth for adapter removal, we produced a synthetic dataset from the _Streptococcus pneumoniae_ BHN418 (NCBI Accession [CP155538.1](https://www.ncbi.nlm.nih.gov/nuccore/CP155538.1)) genome using [NEAT](https://github.com/ncsa/NEAT).
-We produced a 151 bp, paired-end dataset, with a mean fragment size of 280 bp and standard deviation of 50 bp, with TruSeq adapters ligated where necessary. This resulted in a paired-end dataset totalling 56,009,434 reads, with 267,114 (0.476%) reads containing adapter sequences. 
-From the provided results (i.e. read headers and golden BAM file), the exact adapter content was parsed for use in adapter removal benchmarking.
+To provide for a ground-truth for adapter removal, we produced a synthetic dataset from the _Streptococcus pneumoniae_ BHN418 genome using [NEAT](https://github.com/ncsa/NEAT) (NCBI Accession [CP155538.1](https://www.ncbi.nlm.nih.gov/nuccore/CP155538.1)).
+We produced a 151 bp, paired-end dataset, with a mean fragment size of 280 bp and standard deviation of 50 bp, with TruSeq adapters ligated where necessary. 
+This dataset totals 56,009,434 reads, with 267,114 (0.476%) reads containing adapter sequences.
+The exact adapter content was parsed for use in adapter removal benchmarking using the information in the read headers and the golden BAM file.
 
 ### Adapter sequence trimming
-The removal of adapter sequences is an important step in the cleanup of short read sequences. Readzor can use two methods, either alone or in combination, to find and trim these sequences: adapter sequence search, and overlap search.
-To benchmark the performance of these methods, we determined the following:
+Readzor can use two methods to find and trim adapter sequences: sequence search and overlap search.
+To assess how these methods performed, we determined the following outcomes (amongst others):
 * Recall (portion of adapters succesfully found);
 * Precision (portion of removed bases that belonged to adapter sequences);
 * F1 (harmonic mean combining precision and recall, $`F_1 = 2 \cdot \frac{\text{precision} \cdot \text{recall}}{\text{precision} + \text{recall}}`$);
 * Genomic basese lost.
 
 #### Adapter sequence search approach
-Readzor scans each read for the first `--adapter-seed` bases of each adapter, then checks the rest with proportionally scaled mismatches; adapter fragments shorter than the seed are therefore not found. 
-A grid search identified `--adapter-seed 6 --adapter-mismatch 2` as the best balance. Raising either increases recall at the cost of precision and genomic bases lost.
+Adapter sequence search relies on the specification of known adapter sequences.
+Readzor scans each read for the first `--adapter-seed` bases of each adapter, adapter fragments shorter than the seed are therefore not found. 
+The mismatches allowed are scaled proportionally according to remaining number of nucleotides in the read.
+
+A grid search identified `--adapter-seed 6` and `--adapter-mismatch 2` as the best balance for precision and recall.
 
 <h3 align="center">Adapter sequence search performance</h3>
 <p align="center">
-  <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_adapter_recall.png" width="49%">
-  <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_precision.png" width="49%">
-  <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_f1.png" width="49%">
-  <img src="docs/benchmarking/adapter_trimming/adapter_heatmap_genomic_bases_lost.png" width="49%">
+  <img src="docs/benchmarking/adapter_trimming/readzor/adapter_sequence_search_recall.png" width="49%">
+  <img src="docs/benchmarking/adapter_trimming/readzor/adapter_sequence_search_precision.png" width="49%">
+  <img src="docs/benchmarking/adapter_trimming/readzor/adapter_sequence_search_f1.png" width="49%">
+  <img src="docs/benchmarking/adapter_trimming/readzor/adapter_sequence_search_genomic_bases_lost.png" width="49%">
 </p>
 
 #### Overlapping sequences approach
 For paired-end data, when the insert is shorter than the read length, mates read into the adapters, which can be found by aligning the mates to each other. 
-By aligning paired reads against each other, adapter sequences can be identified, without requiring specification of adapter sequences.
-Inserts shorter than `--overlap-min-length` are missed.
+Adapter sequences can thus be identified without requiring specification of adapter sequences.
+Inserts shorter than `--overlap-min-length` are not found.
 
 By setting `--overlap-portion-mismatch` to `100`, we isolated the effect of `--overlap-mismatches` on the adapter sequences found.
-Vice versa, by setting `--overlap-mismatches` to `999`, the behaviour of `--overlap-portion-mismatch`,was investigated.
+Vice versa, by setting `--overlap-mismatches` to `999`, the behaviour of `--overlap-portion-mismatch`, was investigated.
 
 <h3 align="center">Overlapping sequences search performance: absolute number of mismatches</h3>
 <p align="center">
-  <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_adapter_recall.png" width="49%">
-  <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_precision.png" width="49%">
-  <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_f1.png" width="49%">
-  <img src="docs/benchmarking/adapter_trimming/overlap_mismatches_heatmap_genomic_bases_lost.png" width="49%">
+  <img src="docs/benchmarking/adapter_trimming/readzor/overlap_mismatch_recall.png" width="49%">
+  <img src="docs/benchmarking/adapter_trimming/readzor/overlap_mismatch_precision.png" width="49%">
+  <img src="docs/benchmarking/adapter_trimming/readzor/overlap_mismatch_f1.png" width="49%">
+  <img src="docs/benchmarking/adapter_trimming/readzor/overlap_mismatch_genomic_bases_lost.png" width="49%">
 </p>
 
 <h3 align="center">Overlapping sequences search performance: relative number of mismatches</h3>
 <p align="center">
-  <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_adapter_recall.png" width="100%">
-  <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_precision.png" width="100%">
-  <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_f1.png" width="100%">
-  <img src="docs/benchmarking/adapter_trimming/overlap_portion_heatmap_genomic_bases_lost.png" width="100%">
+  <img src="docs/benchmarking/adapter_trimming/readzor/overlap_portion_recall.png" width="100%">
+  <img src="docs/benchmarking/adapter_trimming/readzor/overlap_portion_precision.png" width="100%">
+  <img src="docs/benchmarking/adapter_trimming/readzor/overlap_portion_f1.png" width="100%">
+  <img src="docs/benchmarking/adapter_trimming/readzor/overlap_portion_genomic_bases_lost.png" width="100%">
 </p>
 
 From both these datasets, we observe an inverse correlation between the precision and F1, and number of allowed mismathches, through the rapid increase in genomic bases lost.
 A minimal `--overlap-min-length` of`50` seems to strike a balance between different outcomes.
-To further characterize the behaviour of this trimming method, we set the `--overlap-min-length` at `50`, and varied the mismatch parameters.
-As Readzor uses the lowest number of these two settings to determine the allowed number of mismatches for a given overlap, we can finetune the overlap search.
-For shorter overlaps, `--overlap-portion-mismatch` will determine the number of mismatches allowed, but at longer overlaps, mismatches are capped by `--overlap-mismatches`, preventing widespread aspecific matching.
-As the combination of these two methods determine the allowed number of mismatches, a grid-search only needs to perform a limited number of searches, as one of both parameters can act as a _de facto_ cap.
 
-<h3 align="center">Overlapping sequences search performance</h3>
+To further characterize the behaviour of this trimming method, we set the `--overlap-min-length` at `50`, and varied the mismatch parameters.
+As Readzor uses the lowest number of these two settings to set the allowed number of mismatches for an identified overlap, we can finetune the overlap search.
+For shorter overlaps, `--overlap-portion-mismatch` will determine the number of mismatches allowed, but at longer overlaps, mismatches are capped by `--overlap-mismatches`, preventing widespread aspecific matching.
+As the combination of these two methods determine the allowed number of mismatches, a grid-search only needs to perform a limited number of searches, as one of both parameters acts as _de facto_ cap.
+
+<h3 align="center">Overlapping sequences search performance: fixed length 50</h3>
 <p align="center">
-  <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_adapter_recall.png" width="100%">
-  <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_precision.png" width="100%">
-  <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_f1.png" width="100%">
-  <img src="docs/benchmarking/adapter_trimming/overlap_length50_heatmap_genomic_bases_lost.png" width="100%">
+  <img src="docs/benchmarking/adapter_trimming/readzor/overlap_length50_recall.png" width="100%">
+  <img src="docs/benchmarking/adapter_trimming/readzor/overlap_length50_precision.png" width="100%">
+  <img src="docs/benchmarking/adapter_trimming/readzor/overlap_length50_f1.png" width="100%">
+  <img src="docs/benchmarking/adapter_trimming/readzor/overlap_length50_genomic_bases_lost.png" width="100%">
 </p>
 
 From these results, the default `--overlap-min-length` has been set to `50`, `--overlap-mismatches` to `5`, and `--overlap-portion-mismatch` to `4`.
 These settings balance adapter recall, precision, and loss of genomic base pairs.
 
 #### Combined adapter and overlap approach
-When desired, both adapter sequence search and overlapping sequences search can be run at the same time.
-For this synthetic dataset produced, this results in the following performance
+When desired, both adapter sequence search and overlap search can be combined to further optimize adapter trimming.
+For this synthetic dataset produced, the combination of these methods results in the following performance:
 
 <div align="center">
 
-| Method         | Recall | Precision |    F1 | Genomic bases lost |
-|:---------------|-------:|----------:|------:|-------------------:|
-| Adapter search |  0.951 |     0.993 | 0.971 |             27,172 | 
-| Overlap search |  0.982 |     0.780 | 0.869 |          1,202,900 | 
-| Combined       |  0.999 |     0.779 | 0.875 |          1,230,072 |  
+| Adapter trimming method  | Recall | Precision |    F1 | Genomic bases lost |
+|:-------------------------|-------:|----------:|------:|-------------------:|
+| Sequence search          |  0.951 |     0.993 | 0.971 |             27,172 | 
+| Overlap search           |  0.982 |     0.780 | 0.869 |          1,202,900 | 
+| **Combined search**      |  0.999 |     0.779 | 0.875 |          1,230,072 |  
 
 </div>
 
-These preset parameters strike a balance between the portion of adapters found, precision, and genomic bases lost. 
+The preset parameters strike a balance between the portion of adapters found, precision, and genomic bases lost. 
 When a more rigorous adapter trimming is desired, the parameters can be adapted. 
-A more detailed overview of the effect of different settings on these parameters can be found in the [benchmarking folder](docs/benchmarking/adapter_trimming_verification) in this repository. 
+A more detailed overview of the effect of different settings on these parameters can be found in the [benchmarking folder](docs/benchmarking/adapter_trimming/readzor) in this repository. 
 
 #### Comparison to other short-read trimming tools
 We compared the performance of Readzor's adpater trimming capabilities, to other popular read-trimming tools.
 
 As different tools can have different preset parameters, we ran these tools either with preset parameters, or by adapting their parameters to mimick each other (when possible).
-The commands used are listed in the [benchmarking folder](docs/benchmarking) in this repository. 
+The commands used are listed in the [benchmarking folder](docs/benchmarking/adapter_trimming/other) in this repository. 
 We provided each tool with the same adapter sequences, to further standardize adapter trimming.
 
-##### Preset parameters
-| Tool            | Configuration                                       | Recall | Precision |    F1 | Genomic bases lost | Note                                     |
-|:----------------|:----------------------------------------------------|-------:|----------:|------:|-------------------:|:-----------------------------------------|
-| **fastp**       | PE, overlap                                         |  0.994 |     0.654 | 0.789 |          2,285,459 |                                          |
-|                 | PE, overlap + adapter detection                     |  0.994 |     0.654 | 0.789 |          2,285,459 | No adapters detected                     |
-|                 | PE, overlap + Readzor adapters (per read)           |  0.998 |     0.622 | 0.766 |          2,645,431 |                                          |
-|                 | PE, overlap + Readzor adapters (overall)            |  0.998 |     0.616 | 0.761 |          2,712,500 |                                          |
-|                 | PE, adapter detection                               |  0.000 |         — | 0.000 |                  0 | No adapters detected, --overlap_len_require 999                     |
-|                 | PE, adapter detection + Readzor adapters (per read) |  0.968 |     0.921 | 0.944 |            360,242 | No adapters detected, --overlap_len_require 999                     |
-|                 | PE, adapter detection + Readzor adapters (overall)  |  0.968 |     0.908 | 0.937 |            426,429 | No adapters detected, --overlap_len_require 999                     |
-| **Cutadapt**    | PE, Readzor adapters (per read)                     |  0.988 |     0.467 | 0.634 |          4,914,110 |                                          |
-|                 | PE, Readzor adapters (overall)                      |  0.988 |     0.466 | 0.634 |          4,914,305 |                                          |
-|                 | SE, Readzor adapters (per read)                     |  0.988 |     0.467 | 0.634 |          4,914,110 |                                          |
-|                 | SE, Readzor adapters (overall)                      |  0.988 |     0.466 | 0.634 |          4,914,305 |                                          |
-| **Trimmomatic** | PE, Readzor adapters (none-prefix paired)           |  0.710 |     1.000 | 0.830 |                  0 |                                          | 
-|                 | PE, Readzor adapters (prefix paired)                |  0.124 |     0.964 | 0.219 |             20,310 |                                          | 
-|                 | PE, Readzor adapters (none-prefix + prefix paired)  |  0.831 |     0.994 | 0.905 |             20,310 |                                          |
-|                 | PE, TruSeq3-SE adapters                             |  0.710 |     0.998 | 0.830 |                387 |                                          |
-|                 | PE, TruSeq3-PE adapters                             |  0.907 |     0.995 | 0.949 |             20,867 |                                          |
-|                 | PE, TruSeq3-PE-2 adapters                           |  0.918 |     0.995 | 0.955 |             21,466 |                                          |
-|                 | SE, Readzor adapters (none-prefix paired)           |  0.710 |     1.000 | 0.830 |                  0 |                                          | 
-|                 | SE, Readzor adapters (prefix paired)                |  0.000 |         - | 0.000 |                  0 | No paired read for overlap filtering     | 
-|                 | SE, Readzor adapters (none-prefix + prefix paired)  |  0.710 |     1.000 | 0.830 |                  0 | No paired read for overlap filtering     |  
-|                 | SE, TruSeq3-SE adapters                             |  0.710 |     0.999 | 0.830 |                387 |                                          |
-|                 | SE, TruSeq3-PE adapters                             |  0.000 |         - | 0.000 |                  0 |                                          |
-|                 | SE, TruSeq3-PE-2 adapters                           |  0.710 |     0.999 | 0.830 |                599 |                                          |
-| **Readzor**     | PE, per read adapter specified                      |  0.951 |     0.993 | 0.971 |             27,172 |                                          | 
-|                 | PE, overall adapters specified                      |  0.951 |     0.993 | 0.971 |             27,172 |                                          | 
-|                 | SE, per read adapter specified                      |  0.951 |     0.993 | 0.971 |             27,172 |                                          | 
-|                 | SE, overall adapters specified                      |  0.951 |     0.993 | 0.971 |             27,172 |                                          | 
-|                 | PE, per read adapter specified + overlap            |  0.999 |     0.779 | 0.875 |          1,230,072 |                                          | 
-|                 | PE, overall adapters specified + overlap            |  0.999 |     0.779 | 0.875 |          1,230,072 |                                          | 
-|                 | PE, overlap                                         |  0.982 |     0.780 | 0.869 |          1,202,900 |                                          | 
+#### Summary
+**Paired-end**
+
+| Tool        | Configuration                         | Recall | Precision |    F1 | Genomic bases lost |
+|:------------|:--------------------------------------|-------:|----------:|------:|-------------------:|
+| Readzor     | Specified adapters + overlap          |  0.999 |     0.779 | 0.875 |          1,230,072 |
+| fastp       | Readzor adapters (per read) + overlap |  0.998 |     0.622 | 0.766 |          2,645,431 |
+| Cutadapt    | Readzor adapters (per read)           |  0.988 |     0.467 | 0.634 |          4,914,110 |
+| Trimmomatic | Readzor adapters, simple + palindrome |  0.918 |     0.994 | 0.955 |             20,867 |
+
+**Single-end**
+
+| Tool        | Configuration                         | Recall | Precision |    F1 | Genomic bases lost |
+|:------------|:--------------------------------------|-------:|----------:|------:|-------------------:|
+| Cutadapt    | Readzor adapters (per read)           |  0.988 |     0.467 | 0.634 |          4,914,110 |
+| fastp       | Readzor adapters (per read)           |  0.968 |     0.921 | 0.944 |            360,242 |
+| Readzor     | Specified adapters                    |  0.951 |     0.993 | 0.971 |             27,172 |
+| Trimmomatic | Readzor adapters, simple              |  0.710 |     1.000 | 0.830 |                  0 |
+
+#### Full results
+<details>
+<summary><b>fastp results</b></summary>
+
+| Mode | Adapters                             | Overlap | Recall | Precision |        F1 | Genomic bases lost |
+|:-----|:-------------------------------------|:--------|-------:|----------:|----------:|-------------------:|
+| PE   | —                                    |   Yes   |  0.994 |     0.654 |     0.789 |          2,285,459 |
+| PE   | Auto-detection¹                      |   Yes   |  0.994 |     0.654 |     0.789 |          2,285,459 |
+| PE   | Readzor (per read)                   |   Yes   |  0.998 |     0.622 |     0.766 |          2,645,431 |
+| PE   | Readzor (overall)                    |   Yes   |  0.998 |     0.616 |     0.761 |          2,712,500 |
+| PE   | Auto-detection¹                      |   No²   |  0.000 |         — |     0.000 |                  0 |
+| PE   | Auto-detection¹ + Readzor (per read) |   No²   |  0.968 |     0.921 |     0.944 |            360,242 |
+| PE   | Auto-detection¹ + Readzor (overall)  |   No²   |  0.968 |     0.908 |     0.937 |            426,429 |
+| SE   | Auto-detection¹                      |   No    |  0.000 |         — |     0.000 |                  0 |
+| SE   | Readzor (per read)                   |   No    |  0.968 |     0.921 |     0.944 |            360,242 |
+| SE   | Readzor (overall)                    |   No    |  0.968 |     0.908 |     0.937 |            426,429 |
+
+</details>
+
+<details>
+<summary><b>Cutadapt results</b></summary>
+
+| Mode | Adapters           | Recall | Precision |        F1 | Genomic bases lost |
+|:-----|:-------------------|-------:|----------:|----------:|-------------------:|
+| PE   | Readzor (per read) |  0.988 |     0.467 |     0.634 |          4,914,110 |
+| PE   | Readzor (overall)  |  0.988 |     0.466 |     0.634 |          4,914,305 |
+| SE   | Readzor (per read) |  0.988 |     0.467 |     0.634 |          4,914,110 |
+| SE   | Readzor (overall)  |  0.988 |     0.466 |     0.634 |          4,914,305 |
+
+</details>
+
+<details>
+<summary><b>Trimmomatic results</b></summary>
+
+| Mode | Adapters     | Clipping mode         | Recall | Precision |        F1 | Genomic bases lost |
+|:-----|:-------------|:----------------------|-------:|----------:|----------:|-------------------:|
+| PE   | Readzor      | Simple                |  0.710 |     1.000 |     0.830 |                  0 |
+| PE   | Readzor      | Palindrome            |  0.907 |     0.994 |     0.949 |             20,867 |
+| PE   | Readzor      | Simple + palindromic  |  0.918 |     0.994 |     0.955 |             20,867 |
+| PE   | TruSeq3-SE   | Simple                |  0.710 |     0.998 |     0.830 |                387 |
+| PE   | TruSeq3-PE   | Palindromic           |  0.907 |     0.995 |     0.949 |             20,867 |
+| PE   | TruSeq3-PE-2 | Simple + palindromic  |  0.918 |     0.995 |     0.955 |             21,466 |
+| SE   | Readzor      | Simple                |  0.710 |     1.000 |     0.830 |                  0 |
+| SE   | Readzor      | Palindromic³          |  0.000 |         — |     0.000 |                  0 |
+| SE   | Readzor      | Simple + palindromic³ |  0.710 |     1.000 |     0.830 |                  0 |
+| SE   | TruSeq3-SE   | Simple                |  0.710 |     0.999 |     0.830 |                387 |
+| SE   | TruSeq3-PE   | Palindromic³          |  0.000 |         — |     0.000 |                  0 |
+| SE   | TruSeq3-PE-2 | simple + palindromic³ |  0.710 |     0.999 |     0.830 |                599 |
+
+</details>
+
+<details>
+<summary><b>Readzor results</b></summary>
+
+| Mode | Adapters             | Overlap | Recall | Precision |        F1 | Genomic bases lost |
+|:-----|:---------------------|:--------|-------:|----------:|----------:|-------------------:|
+| PE   | Specified per read   |   No    |  0.951 |     0.993 |     0.971 |             27,172 |
+| PE   | Specified overall    |   No    |  0.951 |     0.993 |     0.971 |             27,172 |
+| SE   | Specified per read   |   No    |  0.951 |     0.993 |     0.971 |             27,172 |
+| SE   | Specified overall    |   Yes   |  0.951 |     0.993 |     0.971 |             27,172 |
+| PE   | Specified per read   |   Yes   |  0.999 |     0.779 |     0.875 |          1,230,072 |
+| PE   | Specified overall    |   Yes   |  0.999 |     0.779 |     0.875 |          1,230,072 |
+| PE   | —                    |   Yes   |  0.982 |     0.780 |     0.869 |          1,202,900 |
+
+</details>
+
+¹ fastp's adapter auto-detection found no adapters in this dataset.
+² Overlap trimming disabled with `--overlap_len_require 999`.
+³ Palindrome (overlap) clipping needs paired reads, so it has no effect in SE mode.
 
 ### Resource usage across processing modules
-To evaluate the impact of individual Readzor modules on processing time and memory usage, we processed the synthetic dataset with each module switched on separately. 
-Runs without any module (baseline) and with all modules combined were included for reference. 
-As adapter trimming uses a different search strategy when mismatches are allowed, we performed both perfect (`--adapter-mismatch 0`), and one mismatch (`--adapter-mismatch 1`) search, to investigate the impact of this change.
+The impact of individual Readzor modules on processing time and memory usage was determined, and runs without any module (baseline) and with all modules combined were included for reference. 
+Without any module, Readzor's processing time and memory usage are spent on unpacking, reading, pickling, validating, and compressing, writing files. 
+To compare the different strategies that adapter sequence search uses for mismatch-allowed search, we allowed for 0-5 mismatches.
+Most modules have a low processing burden, adding none to limited extra time and memory for processing. 
+Sliding window quality trimming, overlap trimming and k-mer low complexity filtering, added substantial time to the processing.
+When all modules are active, processing takes about 2.5× longer than the baseline scenario; roughly the sum of the individual module costs. 
 
-Without any module, Readzor's processing time and memory usage are spent on unpacking, reading, validating, and compressing, writing gzipped files. 
-Most modules have a low processing burden: set-length end trimming (`--cut-flag`), N-filtering (`--n-filter`), homopolymer trimming (`--poly-filter-flag`), adapter trimming (`--adapter-filter-flag`), and quality-dependent end trimming (`--endqual-filter-flag`) added limited extra time and memory usage. 
-Sliding window quality trimming (`--slider-filter-flag`), overlap trimming (`--overlap-filter-flag`) and k-mer based low complexity filtering (`--kmer-filter-flag`), all added substantial time to the processing.
-When all modules were combined, processing took about 2.5× the baseline, or roughly the sum of the individual module costs. Memory usage is largely consistent across modules, with a slight increase when all modules are in use.
+Memory usage is largely consistent across modules.
 
 <p align="center">
   <img src="docs/benchmarking/resource_usage_modules/resource_usage_modules.png" width="100%">
 </p>
 
 ### File compression
-Using a version of Readzor in which both gzip and isal were available, the difference between gzip and isal was benchmarked. 
-For isal, a compression level beyond `1` had no appreciable impact on final output size, yet increases processing time (when set to `3`). The peak memory usage does not increase with compression level. 
-When gzip was used, processing time increases substantially, increasing with higher compression levels.
-The use of isal drastically reduces processing time, both when compressed data needs to be read, and when output needs to be compressed, for a slightly higher peak memory usage.
-
-From these results, Readzor uses [`isal`](https://github.com/pycompression/python-isal) for its high-performance implementation of the DEFLATE algorithm.
-The default compression level for when `--gzip` is set, has been set to `--gzip-level 1`.
-Across comparable output file size (isal compression level `1` versus gzip compression level `5`), the processing time reduces about X.Xx when gzipped input files are used, and output is compressed, with comparable memory usage.
+The difference in performance between gzip and isal was determined using a Readzor version in which both were available.
+Isal drastically reduces processing time, both when reading compressed files and compressing results, although peak memory usage increases slightly.
+Because of this speed-up, Readzor uses [`isal`](https://github.com/pycompression/python-isal) for its high-performance implementation of the DEFLATE algorithm.
+The default compression level for when `--gzip` is set, has been set to `--gzip-level 1`, as no appreciable reduction in file size was observed when set higher.
+When aiming for comparable output file size (isal level `1` versus gzip level `5`), processing time is reduced about 2.2x (compressed files in- and output), with comparable memory usage.
 
 <p align="center">
   <img src="docs/benchmarking/compression_methods/compression_methods.png" width="100%">
@@ -401,7 +460,7 @@ Readzor has built-in functionality to process multiple files. For fastp, we used
 Cutadapt and Trimmomatic do not have the same functionality, and were run in a loop stead.
 
 For the paired read comparison, whole-genome sequencing reads were obtained from BioProject [PRJEB74511](https://www.ncbi.nlm.nih.gov/bioproject/PRJEB74511/) (ERR12875316, ERR13030616-ERR13030639).
-For the comparison for unpaired reads, we used the __S. pneumoniae__ D39V data available from BioProject [PRJNA1347041](https://www.ncbi.nlm.nih.gov/bioproject/PRJNA1347041/).
+For the comparison for unpaired reads, we used the _S. pneumoniae_ D39V data available from BioProject [PRJNA1347041](https://www.ncbi.nlm.nih.gov/bioproject/PRJNA1347041/) (SRX30876273-SRX30876312)
 
 #### Paired read comparison
 <p align="center">
