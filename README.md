@@ -169,7 +169,7 @@ Filters raw input, or trimmed output sequences for overall parameters. When a re
 `--n-filter` [FLAG]: Reject reads containing `N` bases anywhere in read. Turns off N nucleotide end trimming. Default: off.
 
 ### Set-Length end trimming
-Trim a set number of bases of the ends of each rea g`d, independent of sequence or quality.\
+Trim a set number of bases of the ends of each read, independent of sequence or quality.\
 `--cut-flag, -cf` [FLAG]: Turn on the set-length end trimming module. Default: off.\
 `--cut-start, -cs`: Number of bases to trim from the start of the read. Default: 0.\
 `--cut-end, -ce`: Number of bases to trim from the end of the read. Default: 0.\
