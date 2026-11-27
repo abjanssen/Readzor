@@ -30,7 +30,7 @@ from readzor.progress import ProgressTracker, count_reads_estimated
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_WORKERS_PER_COORDINATOR = 6
-GZIP_SIZE_FACTOR = 4  # rough uncompressed/compressed ratio, only used to order the inputs
+GZIP_SIZE_FACTOR = 4 
 
 def resolve_inputs(parameters):
     """
@@ -125,8 +125,6 @@ def coordinator_main(index, threads, parameters, output_dir, work_queue, result_
     until it gets None (or abort is set), run input_handler() on each, and
     send (index, status, file_stats, collector) for all of them back.
     """
-    # The parent owns the stdin temporary file; a coordinator must not delete
-    # it (input_handler's forced-exit path cleans up STDIN_TEMP_FILES).
     constants.STDIN_TEMP_FILES.clear()
     file_stats = {}
     merged = S.StatsCollector() if parameters["stats"] else None
@@ -189,8 +187,6 @@ def run_split(bundles, n_coordinators, parameters, output_dir):
     tracker = None
     progress_counter = None
     if parameters["show_progress"]:
-        # Estimate before the coordinators start, so they inherit the
-        # estimates (used in their log messages) instead of redoing them.
         for bundle in bundles:
             files = bundle["unpaired"] + bundle["interleaved"] + [f for pair in bundle["paired"] for f in pair]
             for file in files:
@@ -209,10 +205,10 @@ def run_split(bundles, n_coordinators, parameters, output_dir):
                 reported = done
 
     work_queue = mp.Queue()
-    for bundle in bundles:  # largest first, so the last inputs to finish are small
+    for bundle in bundles:
         work_queue.put(bundle)
     for _ in range(n_coordinators):
-        work_queue.put(None)  # one stop signal per coordinator
+        work_queue.put(None) 
     result_queue = mp.Queue()
     abort = mp.Event()
 
@@ -232,7 +228,7 @@ def run_split(bundles, n_coordinators, parameters, output_dir):
         while len(results) < len(processes):
             report_progress()
             try:
-                index, status, payload, collector = result_queue.get(timeout=0.2)
+                index, status, payload, collector = result_queue.get(timeout=0.1)
                 results[index] = (status, payload, collector)
                 continue
             except queue_module.Empty:
@@ -240,7 +236,6 @@ def run_split(bundles, n_coordinators, parameters, output_dir):
             dead = [i for i, p in enumerate(processes) if i not in results and not p.is_alive()]
             if not dead:
                 continue
-            # A result may have arrived between the timeout and the liveness check.
             while True:
                 try:
                     index, status, payload, collector = result_queue.get_nowait()
@@ -251,9 +246,8 @@ def run_split(bundles, n_coordinators, parameters, output_dir):
                 if i not in results:
                     exit_code = processes[i].exitcode
                     results[i] = ("interrupted" if exit_code == 130 else "died", exit_code, None)
-                    abort.set()  # stop the others from starting new inputs
+                    abort.set()
     except KeyboardInterrupt:
-        # SIGINT reaches the coordinators too; give them time to shut down cleanly.
         abort.set()
         for process in processes:
             process.join(timeout=15)
@@ -290,7 +284,6 @@ def run_split(bundles, n_coordinators, parameters, output_dir):
         raise KeyboardInterrupt
     if failures:
         raise RuntimeError("\n".join(failures))
-    # Same order as a normal run: unpaired, then interleaved, then paired inputs.
     type_order = {"unpaired": 0, "interleaved": 1, "paired": 2}
     file_stats = dict(sorted(file_stats.items(), key=lambda item: (type_order.get(item[1].get("type"), 3), item[0])))
     return file_stats, merged
