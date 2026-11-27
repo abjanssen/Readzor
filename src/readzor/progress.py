@@ -266,3 +266,29 @@ class ProgressTracker:
         line = line[: term_width - 1].ljust(term_width - 1)
         sys.stderr.write(line + "\x1b[K\n")
         sys.stderr.flush()
+
+class SharedCounterTracker:
+    """
+    Tracker used inside a coordinator process when a run is split (see
+    readzor.split): instead of drawing a bar, it adds processed reads to a
+    counter shared with the parent process, which draws one bar for all
+    coordinators.
+
+    Args:
+        counter (multiprocessing.Value): Shared integer counter.
+    """
+    def __init__(self, counter):
+        self.counter = counter
+
+    def update(self, n):
+        with self.counter.get_lock():
+            self.counter.value += n
+
+    def clear_line(self):
+        """Blank the parent's bar line before a log message (the parent redraws it)."""
+        if sys.stderr.isatty():
+            sys.stderr.write("\r\x1b[2K")
+            sys.stderr.flush()
+
+    def close(self, interrupted=False):
+        pass

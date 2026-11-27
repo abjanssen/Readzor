@@ -16,12 +16,12 @@ from isal import igzip
 from readzor import constants
 from readzor import stats as S
 from readzor.fastq_io import cleanup_stdin_temp_files, basename_file, common_name_parts, detect_phred_offset, find_paired_files, is_gz_file, lazy_fastq_blobs, open_fastq_writer
-from readzor.progress import ProgressTracker, count_reads_estimated
+from readzor.progress import ProgressTracker, SharedCounterTracker, count_reads_estimated
 from readzor.worker import unified_worker, worker_initializer
 
 logger = logging.getLogger(__name__)
 
-def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_files, output_dir, threads, chunk_size, show_progress, stdout, interleaved_out, write_rejected, discard_singles, parameters):
+def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_files, output_dir, threads, chunk_size, show_progress, stdout, interleaved_out, write_rejected, discard_singles, parameters, progress_counter=None):
     """
     Top-level orchestrator: sort the inputs, open the output files, and run
     all chunks of all inputs through a single multiprocessing pool.
@@ -77,6 +77,10 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
         discard_singles (bool): If True, no singleton files are opened for
             paired and interleaved inputs.
         parameters (dict): Run parameters.
+        progress_counter (multiprocessing.Value | None): When the run is
+            split over coordinator processes (readzor.split), the counter
+            that processed reads are added to; the parent process draws the
+            progress bar. Overrides show_progress. Defaults to None.
 
     Returns:
         tuple[dict, stats.StatsCollector | None]:
@@ -104,7 +108,9 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
     unpaired = auto_unpaired + (unpaired_files or [])
     paired = auto_paired + (paired_files or [])
     interleaved = auto_interleaved + (interleaved_files or [])
-    if show_progress:    
+    if progress_counter is not None:
+        tracker = SharedCounterTracker(progress_counter)
+    elif show_progress:
         for file in unpaired:
             constants.ESTIMATED_READ_COUNTS[file] = count_reads_estimated(file)
         for file in interleaved:
