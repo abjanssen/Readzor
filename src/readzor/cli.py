@@ -643,6 +643,10 @@ def parse_args():
         help="[INT] Number of threads to use. Default: platform-dependent through auto-detection: detection of assigned CPUs on HPC clusters, all-1 otherwise. Fallback: 1."
     )
     advanced_group.add_argument(
+        "--split-worker-threads", type = int, default = 2, metavar="",
+        help="[INT] Number of worker processes per feeder process. If --threads is higher, more feeders are started to increase processing speed. Default: 2."
+    )
+    advanced_group.add_argument(
         "--reads-for-phred-offset", type = int, default = 500, metavar="",
         help="[INT] Number of reads to sample per file for detection of Phred quality encoding offset. Default: 500."
     )
@@ -761,6 +765,7 @@ def parse_args():
     parameters["n_filter"] = args.n_filter
     parameters["phred_offset"] = args.phred_offset
     parameters["threads"] = args.threads
+    parameters["max_workers_per_process"] = max(1, args.split_worker_threads)
     parameters["chunk_size"] = args.chunk_size
     parameters["output_dir"] = args.output or os.getcwd()
     parameters["mgi_convert_flag"] = args.mgi_convert_flag
@@ -929,7 +934,14 @@ def main():
         created_output_dir = create_folder_structure(parameters["output_dir"])
         setup_logging(output_dir = created_output_dir, verbose = parameters["verbose"], parameters = parameters)
         log_parameters(parameters)
-        summary_results, collector = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"], discard_singles = parameters["discard_singles"], write_rejected = parameters["write_rejected"], parameters = parameters)
+        from readzor.split import decide_n_coordinators, make_bundles, resolve_inputs, run_split
+        unpaired, paired, interleaved = resolve_inputs(parameters)
+        bundles = make_bundles(unpaired, paired, interleaved)
+        n_coordinators = decide_n_coordinators(parameters, len(bundles))
+        if n_coordinators > 1:
+            summary_results, collector = run_split(bundles, n_coordinators, parameters, output_dir = created_output_dir)
+        else:
+            summary_results, collector = input_handler(unspecified_files = None, unpaired_files = unpaired, paired_files = paired, interleaved_files = interleaved, output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"], discard_singles = parameters["discard_singles"], write_rejected = parameters["write_rejected"], parameters = parameters)
         write_summary_and_statistics(summary_results, parameters, output_dir = created_output_dir, collector = collector)
         logger.info("Analysis successfully completed!")
         print_final_message(stdout = parameters["stdout"])

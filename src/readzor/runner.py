@@ -16,12 +16,12 @@ from isal import igzip
 from readzor import constants
 from readzor import stats as S
 from readzor.fastq_io import cleanup_stdin_temp_files, basename_file, common_name_parts, detect_phred_offset, find_paired_files, is_gz_file, lazy_fastq_blobs, open_fastq_writer
-from readzor.progress import ProgressTracker, count_reads_estimated
+from readzor.progress import ProgressTracker, SharedCounterTracker, count_reads_estimated
 from readzor.worker import unified_worker, worker_initializer
 
 logger = logging.getLogger(__name__)
 
-def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_files, output_dir, threads, chunk_size, show_progress, stdout, interleaved_out, write_rejected, discard_singles, parameters):
+def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_files, output_dir, threads, chunk_size, show_progress, stdout, interleaved_out, write_rejected, discard_singles, parameters, progress_counter=None, pool=None):
     """
     Top-level orchestrator: sort the inputs, open the output files, and run
     all chunks of all inputs through a single multiprocessing pool.
@@ -77,6 +77,16 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
         discard_singles (bool): If True, no singleton files are opened for
             paired and interleaved inputs.
         parameters (dict): Run parameters.
+        progress_counter (multiprocessing.Value | None): When the run is
+            split over coordinator processes (readzor.split), the counter
+            that processed reads are added to; the parent process draws the
+            progress bar. Overrides show_progress. Defaults to None.
+        pool (multiprocessing.pool.Pool | None): Worker pool to use, created
+            with worker_initializer and the same ``parameters``. A coordinator
+            (readzor.split) passes its own pool, so it is created once and
+            reused for all of its inputs instead of once per input; it is
+            left running. If None, a pool is created here and shut down at
+            the end. Defaults to None.
 
     Returns:
         tuple[dict, stats.StatsCollector | None]:
@@ -104,7 +114,9 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
     unpaired = auto_unpaired + (unpaired_files or [])
     paired = auto_paired + (paired_files or [])
     interleaved = auto_interleaved + (interleaved_files or [])
-    if show_progress:    
+    if progress_counter is not None:
+        tracker = SharedCounterTracker(progress_counter)
+    elif show_progress:
         for file in unpaired:
             constants.ESTIMATED_READ_COUNTS[file] = count_reads_estimated(file)
         for file in interleaved:
@@ -371,7 +383,10 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
     finished = False
     sys.setswitchinterval(0.0005)
     try:
-        with mp.Pool(threads, initializer=worker_initializer, initargs=(parameters,)) as pool:
+        own_pool = pool is None
+        if own_pool:
+            pool = mp.Pool(threads, initializer=worker_initializer, initargs=(parameters,))
+        try:
             submit = pool.imap if parameters["ordered_output"] else pool.imap_unordered
             results = submit(unified_worker, bounded_chunk_stream(), chunksize=1)
             try:
@@ -433,6 +448,9 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
                 signal.signal(signal.SIGINT, lambda signum, frame: os._exit(130))
                 raise
             finished = True
+        finally:
+            if own_pool:
+                pool.terminate()
     finally:
         tracker.close(interrupted = not finished) 
         constants.ACTIVE_PROGRESS_TRACKER = None

@@ -431,8 +431,6 @@ def read_info_from_header(header):
             base_id = header
     return base_id, read_num
 
-
-
 def detect_phred_offset(filepath, reads_for_phred_offset, phred_offset):
     """
     Detect the Phred quality encoding offset (33 or 64) of a FASTQ file.
@@ -508,6 +506,7 @@ def detect_phred_offset(filepath, reads_for_phred_offset, phred_offset):
         stacklevel=2,
     )
     return 33
+
 def validate_fastq(header, sequence, plus, quality, n_filter, min_length_input, max_length_input):
     """
     Check that a single FASTQ record is well-formed.
