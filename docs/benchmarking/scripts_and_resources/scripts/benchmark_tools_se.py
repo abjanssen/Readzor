@@ -51,7 +51,7 @@ COMMANDS = {
         "micromamba run -p ./envs/mm_trimmomatic trimmomatic -Xmx10G SE "
         "-phred33 -threads {threads} -compressLevel 5 "
         '"$input_file" "{out}_$(basename "$input_file")" '
-        "ILLUMINACLIP:./docs/adapters_truseq_fwd.fna:2:30:10:8:true "
+        "ILLUMINACLIP:./adapters_truseq_fwd.fna:2:30:10:8:true "
         "LEADING:20 TRAILING:20 MINLEN:50; "
         "done"
     ),

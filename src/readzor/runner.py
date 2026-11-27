@@ -5,15 +5,17 @@ import itertools
 import logging
 import multiprocessing as mp
 import os
+import signal
 import sys
 import threading
 import time
+import traceback
 
 from isal import igzip
 
 from readzor import constants
 from readzor import stats as S
-from readzor.fastq_io import basename_file, common_name_parts, detect_phred_offset, find_paired_files, is_gz_file, lazy_fastq_blobs, open_fastq_writer
+from readzor.fastq_io import cleanup_stdin_temp_files, basename_file, common_name_parts, detect_phred_offset, find_paired_files, is_gz_file, lazy_fastq_blobs, open_fastq_writer
 from readzor.progress import ProgressTracker, count_reads_estimated
 from readzor.worker import unified_worker, worker_initializer
 
@@ -277,70 +279,159 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
             logger.info("Finished processing paired files.")
     chunk_stream = unified_chunk_streamer()
 
-    backpressure = threading.Semaphore(threads * 5)
+    max_in_flight = threads * 5
+    backpressure = threading.Semaphore(max_in_flight)
+    stop_feeding = threading.Event()
     def bounded_chunk_stream():
         """
         Yield tasks from chunk_stream, blocking while threads * 5 tasks are
         still unprocessed (the semaphore is released for each result).
+        Stops early once stop_feeding is set (see stop_and_drain()).
         """
         for item in chunk_stream:
             backpressure.acquire()
+            if stop_feeding.is_set():
+                return
             yield item
-            
+
+    def stop_and_drain(results, timeout=10):
+        """
+        Called when the result loop is interrupted (Ctrl+C or an error).
+
+        Stops feeding new tasks and waits for the tasks already sent to the
+        workers (at most threads * 5) to come back, discarding their results.
+        Afterwards every worker is idle, so the pool can be shut down
+        safely. Shutting down the pool while it is still busy can hang
+        forever: the task-feeding thread waits for a backpressure permit
+        that is never released, or a worker is stopped in the middle of
+        sending a large result through the result pipe.
+
+        Returns:
+            bool: True if all outstanding results were received; False on
+                timeout or a second Ctrl+C (the pool is then shut down while
+                still busy, as before).
+        """
+        stop_feeding.set()
+        backpressure.release(max_in_flight + 1)
+        logger.info("Shutdown signal received, preparing to shut down.")
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.warning("Waited %s seconds, processing seems stuck; forcing shutdown instead.", timeout)
+                return False
+            try:
+                results.next(timeout=remaining)
+            except StopIteration:
+                return True
+            except mp.TimeoutError:
+                logger.warning("Waited %s seconds, processing seems stuck; forcing shutdown instead.", timeout)
+                return False
+            except KeyboardInterrupt:
+                logger.warning("Second shutdown signal received; forcing shutdown.")
+                return False
+            except Exception:
+                continue
+
+    def force_exit(error):
+        """
+        Exit immediately when stop_and_drain() could not wait for the
+        workers (second Ctrl+C or timeout). The pool is still busy, so its
+        normal shutdown could hang; instead the workers are killed, the
+        progress bar, output files and stdin temporary files are cleaned
+        up, and the process exits without running the pool's shutdown code.
+        Exit status: 130 after Ctrl+C, 1 after an error.
+        """
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        for child in mp.active_children():
+            child.kill()
+        tracker.close(interrupted=True)
+        constants.ACTIVE_PROGRESS_TRACKER = None
+        for handle in file_writing_handles.values():
+            try:
+                handle.close()
+            except OSError:
+                pass
+        cleanup_stdin_temp_files()
+        if isinstance(error, KeyboardInterrupt):
+            exit_code = 130
+            logger.info("Readzor interrupted by user — shutting down.")
+            if not parameters["verbose"]:
+                print("Readzor interrupted by user — shutting down.", file=sys.stderr)
+        else:
+            exit_code = 1
+            logger.error("Readzor stopped by an error.", exc_info=error)
+            traceback.print_exception(error)
+        logging.shutdown()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(exit_code)
+
     collector = S.StatsCollector() if parameters["stats"] else None
     finished = False
     sys.setswitchinterval(0.0005)
     try:
         with mp.Pool(threads, initializer=worker_initializer, initargs=(parameters,)) as pool:
             submit = pool.imap if parameters["ordered_output"] else pool.imap_unordered
-            for result in submit(unified_worker, bounded_chunk_stream(), chunksize=1):
-                backpressure.release()
-                report, result = result[-1], result[:-1]
-                if result[0] == "unpaired":
-                    _, filepath, chunk_results, kept, rejected, rejected_reads = result
-                    if parameters["stdout"]:
-                        if chunk_results:
-                            sys.stdout.buffer.write(chunk_results)
-                    else:
-                        if chunk_results:
-                            file_writing_handles[filepath].write(chunk_results)
-                        if write_rejected and rejected_reads:
-                            file_writing_handles[f"{filepath}_rejected"].write(rejected_reads)
+            results = submit(unified_worker, bounded_chunk_stream(), chunksize=1)
+            try:
+                for result in results:
+                    backpressure.release()
+                    report, result = result[-1], result[:-1]
+                    if result[0] == "unpaired":
+                        _, filepath, chunk_results, kept, rejected, rejected_reads = result
+                        if parameters["stdout"]:
+                            if chunk_results:
+                                sys.stdout.buffer.write(chunk_results)
+                        else:
+                            if chunk_results:
+                                file_writing_handles[filepath].write(chunk_results)
+                            if write_rejected and rejected_reads:
+                                file_writing_handles[f"{filepath}_rejected"].write(rejected_reads)
                 
-                    file_stats[filepath]["kept"] += kept
-                    file_stats[filepath]["rejected"] += rejected
-                    if collector is not None:
-                        collector.add(filepath, report)
-                    tracker.update(kept + rejected)
-                elif result[0] == "paired":
-                    _, file1, file2, paired_out_1, paired_out_2, R1_singles_out, R2_singles_out, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2, rejected_R1, rejected_R2 = result
-                    common_prefix = pair_keys[(file1, file2)]
-                    if parameters["stdout"]:
-                        if paired_out_1:
-                            sys.stdout.buffer.write(paired_out_1)
-                    else:
-                        payloads = {
-                            "paired": paired_out_1,
-                            "paired_1": paired_out_1,
-                            "paired_2": paired_out_2,
-                            "singles_1": R1_singles_out,
-                            "singles_2": R2_singles_out,
-                            "rejected": rejected_R1,
-                            "rejected_1": rejected_R1,
-                            "rejected_2": rejected_R2,
-                        }
-                        for role, handle_key in pair_output_keys(common_prefix).items():
-                            records = payloads[role]
-                            if records:
-                                file_writing_handles[handle_key].write(records)
-                    file_stats[common_prefix]["kept_pairs"] += num_paired
-                    file_stats[common_prefix]["kept_R1_singletons"] += num_R1_singles
-                    file_stats[common_prefix]["kept_R2_singletons"] += num_R2_singles
-                    file_stats[common_prefix]["rejected_R1"] += rejected_1
-                    file_stats[common_prefix]["rejected_R2"] += rejected_2
-                    if collector is not None:
-                        collector.add(common_prefix, report)
-                    tracker.update(num_paired * 2 + num_R1_singles + num_R2_singles + rejected_1 + rejected_2)
+                        file_stats[filepath]["kept"] += kept
+                        file_stats[filepath]["rejected"] += rejected
+                        if collector is not None:
+                            collector.add(filepath, report)
+                        tracker.update(kept + rejected)
+                    elif result[0] == "paired":
+                        _, file1, file2, paired_out_1, paired_out_2, R1_singles_out, R2_singles_out, num_paired, num_R1_singles, num_R2_singles, rejected_1, rejected_2, rejected_R1, rejected_R2 = result
+                        common_prefix = pair_keys[(file1, file2)]
+                        if parameters["stdout"]:
+                            if paired_out_1:
+                                sys.stdout.buffer.write(paired_out_1)
+                        else:
+                            payloads = {
+                                "paired": paired_out_1,
+                                "paired_1": paired_out_1,
+                                "paired_2": paired_out_2,
+                                "singles_1": R1_singles_out,
+                                "singles_2": R2_singles_out,
+                                "rejected": rejected_R1,
+                                "rejected_1": rejected_R1,
+                                "rejected_2": rejected_R2,
+                            }
+                            for role, handle_key in pair_output_keys(common_prefix).items():
+                                records = payloads[role]
+                                if records:
+                                    file_writing_handles[handle_key].write(records)
+                        file_stats[common_prefix]["kept_pairs"] += num_paired
+                        file_stats[common_prefix]["kept_R1_singletons"] += num_R1_singles
+                        file_stats[common_prefix]["kept_R2_singletons"] += num_R2_singles
+                        file_stats[common_prefix]["rejected_R1"] += rejected_1
+                        file_stats[common_prefix]["rejected_R2"] += rejected_2
+                        if collector is not None:
+                            collector.add(common_prefix, report)
+                        tracker.update(num_paired * 2 + num_R1_singles + num_R2_singles + rejected_1 + rejected_2)
+            except BaseException as error:
+                try:
+                    drained = stop_and_drain(results)
+                except KeyboardInterrupt:
+                    drained = False
+                if not drained:
+                    force_exit(error)
+                signal.signal(signal.SIGINT, lambda signum, frame: os._exit(130))
+                raise
             finished = True
     finally:
         tracker.close(interrupted = not finished) 
