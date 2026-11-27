@@ -1,0 +1,4 @@
+mate	under_trimmed_reads	over_trimmed_reads	exact_reads	removed_reads	adapter_bases_removed	adapter_bases_left	genomic_bases_lost	genomic_bases_in_removed_reads	adapter_recall	precision	f1
+R1	602	16744	27987371	0	2175091	1682	614820	0	0.999227	0.779627	0.875873
+R2	558	16765	27987394	0	2175346	1508	615252	0	0.999307	0.779527	0.87584
+both	1160	33509	55974765	0	4350437	3190	1230072	0	0.999267	0.779577	0.875856

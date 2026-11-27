@@ -1,22 +1,27 @@
 """Command-line interface and entry point."""
 
 import argparse
-import datetime
 import logging
-import multiprocessing as mp
 import os
-import random
 import re
 import sys
-import tempfile
 
 from readzor.constants import DEFAULT_ADAPTERS, FULL_AUTO_OVERRIDES, FULL_AUTO_PRESERVED_DESTS, VERSION
-from readzor.adapter_setup import load_adapters_from_arg
-from readzor.fastq_io import cleanup_stdin_temp_files, resolve_stdin_input
-from readzor.log import file_only_logger, setup_logging
-from readzor.runner import input_handler, log_parameters, write_summary_and_statistics
+from readzor.log import setup_logging
+
+# Startup speed: only lightweight modules are imported at module level, so
+# that --help, --version and --list-adapters return quickly. The processing
+# machinery (runner, fastq_io, adapter_setup, multiprocessing, ...) is
+# imported inside the functions that need it, once a real run is certain.
 
 logger = logging.getLogger(__name__)
+
+CITATION = (
+    "Axel B. Janssen\n"
+    "Readzor: A modular and user-friendly Swiss-army knife approach to short-read sequencing processing.\n"
+    "2026\n"
+    "https://doi.org/10.5281/zenodo.22336649"
+)
 
 def group_paired_input_into_pairs(files, parser):
     """
@@ -96,8 +101,10 @@ def create_folder_structure(output_dir):
     Returns:
         str: Absolute path to the newly created results folder.
     """
+    import datetime
+
     os.makedirs(output_dir, exist_ok=True)
-    base = os.path.join(output_dir, "Readzor_results_" + datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+    base =os.path.join(output_dir, "Readzor_results_" + datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
     created_output_dir, n = base, 2
     while True:
         try:
@@ -262,7 +269,7 @@ def parse_args():
     Side Effects:
         Sets up console logging. When run without any arguments, prints the
         help to stderr and exits with status 1. With --help (optionally
-        combined with --full-auto), --version or --list-adapters, prints
+        combined with --full-auto), --version, --reference or --list-adapters, prints
         the corresponding output and exits. With --full-auto, prints a
         warning to stdout that other options are ignored (--verbose is
         reset by full-auto too, so this is always printed). Calls
@@ -279,6 +286,7 @@ def parse_args():
 
     parser = argparse.ArgumentParser(
         prog="readzor",
+        usage=argparse.SUPPRESS,
         description="Readzor: a modular FASTQ quality trimming pipeline.\n\n"
                      "All modules are off by default. To use a module, specify a module flag. "
                      "Further specifications with module settings possible.",
@@ -297,6 +305,10 @@ def parse_args():
     general_group.add_argument(
         "--version", "-v", action = "store_true", default = False,
         help="[FLAG] Show Readzor version and exit."
+    )
+    general_group.add_argument(
+        "--reference", action = "store_true", default = False,
+        help="[FLAG] Show how to cite Readzor and exit."
     )
     general_group.add_argument(
         "--list-adapters", action = "store_true", default = False,
@@ -631,6 +643,10 @@ def parse_args():
         help="[INT] Number of threads to use. Default: platform-dependent through auto-detection: detection of assigned CPUs on HPC clusters, all-1 otherwise. Fallback: 1."
     )
     advanced_group.add_argument(
+        "--split-worker-threads", type = int, default = 2, metavar="",
+        help="[INT] Number of worker processes per feeder process. If --threads is higher, more feeders are started to increase processing speed. Default: 2."
+    )
+    advanced_group.add_argument(
         "--reads-for-phred-offset", type = int, default = 500, metavar="",
         help="[INT] Number of reads to sample per file for detection of Phred quality encoding offset. Default: 500."
     )
@@ -673,6 +689,10 @@ def parse_args():
         print(f"Readzor version: {VERSION}")
         sys.exit()
 
+    if args.reference:
+        print(f"\n{CITATION}\n")
+        sys.exit()
+
     if args.list_adapters:
         print_adapters()
         sys.exit()
@@ -698,6 +718,7 @@ def parse_args():
                     f"--full-auto was set but no FASTQ files were detected in {cwd}."
                 )
         elif not sys.stdin.isatty():
+            from readzor.fastq_io import resolve_stdin_input
             args.input_files = [resolve_stdin_input(parser)]
         else:
             parser.error(
@@ -744,6 +765,7 @@ def parse_args():
     parameters["n_filter"] = args.n_filter
     parameters["phred_offset"] = args.phred_offset
     parameters["threads"] = args.threads
+    parameters["max_workers_per_process"] = max(1, args.split_worker_threads)
     parameters["chunk_size"] = args.chunk_size
     parameters["output_dir"] = args.output or os.getcwd()
     parameters["mgi_convert_flag"] = args.mgi_convert_flag
@@ -806,7 +828,8 @@ def parse_args():
         parameters["interleaved_out"] = True
 
     if parameters.get("adapter_filter_flag"):
-        read1 = parameters.get("adapter_read_1")
+        from readzor.adapter_setup import load_adapters_from_arg
+        read1 =parameters.get("adapter_read_1")
         read2 = parameters.get("adapter_read_2")
         if read1 or read2:
             r1 = [seq.encode("utf-8") for _, seq in load_adapters_from_arg(read1)] if read1 else []
@@ -848,6 +871,9 @@ def print_final_message(stdout):
     """
     if stdout:
         return
+    import random
+    from readzor.log import file_only_logger
+
     sign_off_messages = [
     "Please come again!",
     "Thanks for trimming with Readzor!",
@@ -861,12 +887,7 @@ def print_final_message(stdout):
     "Readzor, signing off!"
     ]
     citation_notice = "If you find Readzor useful, please consider citing:"
-    citation = (
-        "Axel B. Janssen\n"
-        "Readzor: A modular and user-friendly Swiss-army knife approach to short-read sequencing processing.\n"
-        "2026\n"
-        "https://doi.org/10.5281/zenodo.22336649"
-    )
+    citation = CITATION
     sign_off = random.choice(sign_off_messages)
 
     print(f"\n{citation_notice}")
@@ -881,14 +902,19 @@ def main():
     """
     Readzor entry point.
 
-    Selects the multiprocessing start method (fork if available, otherwise
-    forkserver, otherwise spawn) and parses the command line. With
+    Parses the command line first, so that --help, --version and
+    --list-adapters exit before any heavy module is imported. Then selects
+    the multiprocessing start method (fork if available, otherwise
+    forkserver, otherwise spawn) and imports the processing pipeline. With
     --testrun, hands over to test_run(). Otherwise creates the timestamped
     results folder, starts file logging, logs all parameters, processes
     all inputs (input_handler()), writes results_summary.txt (with detailed
     statistics if --stats is set) and prints the completion message. On Ctrl+C, exits with status 130. Temporary stdin
     files are always removed.
     """
+    parameters = parse_args()
+
+    import multiprocessing as mp
     for method in ['fork', 'forkserver', 'spawn']:
         if method in mp.get_all_start_methods():
             try:
@@ -896,15 +922,26 @@ def main():
                 break
             except RuntimeError:
                 pass
-    parameters = parse_args()
+
+    from readzor.fastq_io import cleanup_stdin_temp_files
+
     if parameters["testrun"]:
         test_run(parameters)
         return
     try:
+        from readzor.runner import input_handler, log_parameters, write_summary_and_statistics
+
         created_output_dir = create_folder_structure(parameters["output_dir"])
         setup_logging(output_dir = created_output_dir, verbose = parameters["verbose"], parameters = parameters)
         log_parameters(parameters)
-        summary_results, collector = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"], discard_singles = parameters["discard_singles"], write_rejected = parameters["write_rejected"], parameters = parameters)
+        from readzor.split import decide_n_coordinators, make_bundles, resolve_inputs, run_split
+        unpaired, paired, interleaved = resolve_inputs(parameters)
+        bundles = make_bundles(unpaired, paired, interleaved)
+        n_coordinators = decide_n_coordinators(parameters, len(bundles))
+        if n_coordinators > 1:
+            summary_results, collector = run_split(bundles, n_coordinators, parameters, output_dir = created_output_dir)
+        else:
+            summary_results, collector = input_handler(unspecified_files = None, unpaired_files = unpaired, paired_files = paired, interleaved_files = interleaved, output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"], discard_singles = parameters["discard_singles"], write_rejected = parameters["write_rejected"], parameters = parameters)
         write_summary_and_statistics(summary_results, parameters, output_dir = created_output_dir, collector = collector)
         logger.info("Analysis successfully completed!")
         print_final_message(stdout = parameters["stdout"])
@@ -925,19 +962,27 @@ def test_run(parameters):
     log file and summary) is created inside a temporary directory that is
     deleted afterwards, console output is always verbose, and only the
     first ``threads`` chunks of each input are processed (one chunk per
-    worker). Temporary stdin files are always removed.
+    worker). On Ctrl+C, exits with status 130. Temporary stdin files are
+    always removed.
 
     Args:
         parameters (dict): Run parameters.
     """
+    import tempfile
+    from readzor.fastq_io import cleanup_stdin_temp_files
+
     try:
+        from readzor.runner import input_handler, log_parameters, write_summary_and_statistics
         with tempfile.TemporaryDirectory(prefix="readzor_testrun_") as tmp_dir:
             created_output_dir = create_folder_structure(tmp_dir)
             setup_logging(output_dir = created_output_dir, verbose = True, parameters = parameters)
             log_parameters(parameters)
             summary_results, collector = input_handler(unspecified_files = parameters["unspecified_files"], unpaired_files = parameters["unpaired_files"], paired_files = parameters["paired_files"], interleaved_files = parameters["interleaved_files"], output_dir = created_output_dir, threads = parameters["threads"], chunk_size = parameters["chunk_size"], show_progress = parameters["show_progress"], stdout = parameters["stdout"], interleaved_out = parameters["interleaved_out"],discard_singles = parameters["discard_singles"], write_rejected = parameters["write_rejected"], parameters = parameters)
             write_summary_and_statistics(summary_results, parameters, output_dir = created_output_dir, collector = collector)
+        logger.info("Testrun completed!")
+    except KeyboardInterrupt:
+        logger.info("Readzor test run interrupted by user — shutting down.")
+        sys.exit(130)
     finally:
         cleanup_stdin_temp_files()
         logger.info("All files deleted.")
-        logger.info("Testrun completed!")

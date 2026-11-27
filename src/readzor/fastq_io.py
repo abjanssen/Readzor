@@ -437,11 +437,21 @@ def detect_phred_offset(filepath, reads_for_phred_offset, phred_offset):
 
     If ``phred_offset`` is given, it is returned without reading the file.
     Otherwise up to ``reads_for_phred_offset`` records are sampled and the
-    lowest and highest quality characters are recorded:
-      - any character below ASCII 64 ('@') -> Phred+33 (Sanger/modern Illumina);
-      - otherwise, if no character is above ASCII 104 ('h') -> Phred+64
-        (older Illumina);
-      - otherwise the encoding is ambiguous and an error is raised.
+    quality characters are classified:
+      - any character below ASCII 64 ('@') -> Phred+33;
+      - any character above ASCII 105 ('i') -> Phred+33 (Phred+64 cannot
+        go that high; e.g. PacBio HiFi / ONT duplex up to '~');
+      - all characters within '@'..'K' (64-75) -> Phred+33 (as +64 this
+        would mean every base is Q0-11, which is implausible);
+      - otherwise the bulk of the distribution decides:
+          median >= 85 ('U') -> Phred+64 (Q21+ as +64; Q52+ as +33 is
+          implausible for short reads),
+          median <= 78 ('N') -> Phred+33,
+          anything in between -> Phred+33 with a warning, since Phred+64
+          has not been produced since Illumina 1.8 (2011).
+
+    The median is tested by counting (median >= t  <=>  at least half of the
+    values are >= t), which avoids sorting and is ~50x faster than np.median.
 
     When sampling, requires GZIP_DETECTION[filepath] to be set (see
     input_handler()).
@@ -455,9 +465,8 @@ def detect_phred_offset(filepath, reads_for_phred_offset, phred_offset):
         int: 33 or 64, the detected or provided Phred offset.
 
     Raises:
-        ValueError: If the FASTQ file cannot be read, contains no complete
-            FASTQ records, or if the observed ASCII range fits neither
-            encoding.
+        ValueError: If the FASTQ file cannot be read or contains no complete
+            FASTQ records.
     """
     if phred_offset is not None:
         return phred_offset
@@ -468,19 +477,35 @@ def detect_phred_offset(filepath, reads_for_phred_offset, phred_offset):
     qualities = b"".join(record[3] for record in parse_blob(blob))
     if not qualities:
         raise ValueError(f"No FASTQ records found in '{filepath}'; cannot detect Phred offset.")
+
     q_bytes = np.frombuffer(qualities, dtype=np.uint8)
     min_ascii = int(q_bytes.min())
     max_ascii = int(q_bytes.max())
+
+    # Unambiguous by range
     if min_ascii < 64:
         return 33
-    if max_ascii <= 104:
+    if max_ascii > 105:
+        return 33
+    if max_ascii <= 74:
+        return 33
+
+    # Ambiguous zone (ASCII 64-105): judge by where the bulk of the data sits
+    n = q_bytes.size
+    if 2 * np.count_nonzero(q_bytes >= 85) >= n:   # median >= 85
         return 64
-    min_char = chr(min_ascii) if 32 <= min_ascii <= 126 else '?'
-    max_char = chr(max_ascii) if 32 <= max_ascii <= 126 else '?'
-    raise ValueError(
-        f"Ambiguous Phred encoding detected in {filepath} (ASCII range {min_ascii}-{max_ascii} ['{min_char}' - '{max_char}']). "
-        f"Please specify the Phred offset (33/64) manually using the --phred-offset option."
+    if 2 * np.count_nonzero(q_bytes <= 78) >= n:   # median <= 78
+        return 33
+
+    min_char = chr(min_ascii)
+    max_char = chr(max_ascii)
+    logger.warning(
+        f"Ambiguous Phred encoding in {filepath} (ASCII range {min_ascii}-{max_ascii} "
+        f"['{min_char}' - '{max_char}']); assuming Phred+33. "
+        f"Use --phred-offset to specify 33/64 manually.",
+        stacklevel=2,
     )
+    return 33
 
 def validate_fastq(header, sequence, plus, quality, n_filter, min_length_input, max_length_input):
     """
