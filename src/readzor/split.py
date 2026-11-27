@@ -130,33 +130,40 @@ def coordinator_main(index, threads, parameters, output_dir, work_queue, result_
     merged = S.StatsCollector() if parameters["stats"] else None
     try:
         from readzor.runner import input_handler
+        from readzor.worker import worker_initializer
         coordinator_parameters = dict(parameters, threads=threads, show_progress=False)
         logger.info("Coordinator %d (pid %d) started with %d worker(s).", index + 1, os.getpid(), threads)
         n_done = 0
-        while not abort.is_set():
-            bundle = work_queue.get()
-            if bundle is None:
-                break
-            stats, collector = input_handler(
-                unspecified_files=None,
-                unpaired_files=bundle["unpaired"],
-                paired_files=bundle["paired"],
-                interleaved_files=bundle["interleaved"],
-                output_dir=output_dir,
-                threads=threads,
-                chunk_size=coordinator_parameters["chunk_size"],
-                show_progress=False,
-                stdout=False,
-                interleaved_out=coordinator_parameters["interleaved_out"],
-                write_rejected=coordinator_parameters["write_rejected"],
-                discard_singles=coordinator_parameters["discard_singles"],
-                parameters=coordinator_parameters,
-                progress_counter=progress_counter,
-            )
-            file_stats.update(stats)
-            if merged is not None and collector is not None:
-                merged.inputs.update(collector.inputs)
-            n_done += 1
+        # One pool for all inputs of this coordinator, created while the
+        # coordinator is still small: a new pool per input would fork its
+        # workers from a coordinator that has grown while processing the
+        # previous inputs, so every later worker would start larger.
+        with mp.Pool(threads, initializer=worker_initializer, initargs=(coordinator_parameters,)) as pool:
+            while not abort.is_set():
+                bundle = work_queue.get()
+                if bundle is None:
+                    break
+                stats, collector = input_handler(
+                    unspecified_files=None,
+                    unpaired_files=bundle["unpaired"],
+                    paired_files=bundle["paired"],
+                    interleaved_files=bundle["interleaved"],
+                    output_dir=output_dir,
+                    threads=threads,
+                    chunk_size=coordinator_parameters["chunk_size"],
+                    show_progress=False,
+                    stdout=False,
+                    interleaved_out=coordinator_parameters["interleaved_out"],
+                    write_rejected=coordinator_parameters["write_rejected"],
+                    discard_singles=coordinator_parameters["discard_singles"],
+                    parameters=coordinator_parameters,
+                    progress_counter=progress_counter,
+                    pool=pool,
+                )
+                file_stats.update(stats)
+                if merged is not None and collector is not None:
+                    merged.inputs.update(collector.inputs)
+                n_done += 1
         logger.info("Coordinator %d finished (%d input(s)).", index + 1, n_done)
         result_queue.put((index, "ok", file_stats, merged))
     except KeyboardInterrupt:

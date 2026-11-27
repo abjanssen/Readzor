@@ -21,7 +21,7 @@ from readzor.worker import unified_worker, worker_initializer
 
 logger = logging.getLogger(__name__)
 
-def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_files, output_dir, threads, chunk_size, show_progress, stdout, interleaved_out, write_rejected, discard_singles, parameters, progress_counter=None):
+def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_files, output_dir, threads, chunk_size, show_progress, stdout, interleaved_out, write_rejected, discard_singles, parameters, progress_counter=None, pool=None):
     """
     Top-level orchestrator: sort the inputs, open the output files, and run
     all chunks of all inputs through a single multiprocessing pool.
@@ -81,6 +81,12 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
             split over coordinator processes (readzor.split), the counter
             that processed reads are added to; the parent process draws the
             progress bar. Overrides show_progress. Defaults to None.
+        pool (multiprocessing.pool.Pool | None): Worker pool to use, created
+            with worker_initializer and the same ``parameters``. A coordinator
+            (readzor.split) passes its own pool, so it is created once and
+            reused for all of its inputs instead of once per input; it is
+            left running. If None, a pool is created here and shut down at
+            the end. Defaults to None.
 
     Returns:
         tuple[dict, stats.StatsCollector | None]:
@@ -377,7 +383,10 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
     finished = False
     sys.setswitchinterval(0.0005)
     try:
-        with mp.Pool(threads, initializer=worker_initializer, initargs=(parameters,)) as pool:
+        own_pool = pool is None
+        if own_pool:
+            pool = mp.Pool(threads, initializer=worker_initializer, initargs=(parameters,))
+        try:
             submit = pool.imap if parameters["ordered_output"] else pool.imap_unordered
             results = submit(unified_worker, bounded_chunk_stream(), chunksize=1)
             try:
@@ -439,6 +448,9 @@ def input_handler(unspecified_files, unpaired_files, paired_files, interleaved_f
                 signal.signal(signal.SIGINT, lambda signum, frame: os._exit(130))
                 raise
             finished = True
+        finally:
+            if own_pool:
+                pool.terminate()
     finally:
         tracker.close(interrupted = not finished) 
         constants.ACTIVE_PROGRESS_TRACKER = None
