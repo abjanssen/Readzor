@@ -29,7 +29,7 @@ from readzor.progress import ProgressTracker, count_reads_estimated
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_WORKERS_PER_COORDINATOR = 6
+DEFAULT_MAX_WORKERS_PER_COORDINATOR = 2
 GZIP_SIZE_FACTOR = 4 
 
 def resolve_inputs(parameters):

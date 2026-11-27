@@ -643,8 +643,8 @@ def parse_args():
         help="[INT] Number of threads to use. Default: platform-dependent through auto-detection: detection of assigned CPUs on HPC clusters, all-1 otherwise. Fallback: 1."
     )
     advanced_group.add_argument(
-        "--max-workers-per-process", type = int, default = 6, metavar="",
-        help="[INT] Maximum number of workers one main process feeds. If --threads is higher, several main processes share the work, each taking the next input file (or file pair) from a common queue when it is free (not with --stdout or --testrun). Default: 6."
+        "--split-worker-threads", type = int, default = 2, metavar="",
+        help="[INT] Number of worker processes per feeder process. If --threads is higher, more feeders are started to increase processing speed. Default: 2."
     )
     advanced_group.add_argument(
         "--reads-for-phred-offset", type = int, default = 500, metavar="",
@@ -765,7 +765,7 @@ def parse_args():
     parameters["n_filter"] = args.n_filter
     parameters["phred_offset"] = args.phred_offset
     parameters["threads"] = args.threads
-    parameters["max_workers_per_process"] = max(1, args.max_workers_per_process)
+    parameters["max_workers_per_process"] = max(1, args.split_worker_threads)
     parameters["chunk_size"] = args.chunk_size
     parameters["output_dir"] = args.output or os.getcwd()
     parameters["mgi_convert_flag"] = args.mgi_convert_flag
